@@ -1,0 +1,41 @@
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui:/app/backend/data
+
+  vllm-engine:
+    image: nvcr.io/nvidia/vllm:26.04-py3
+    container_name: vllm-engine
+    gpus: all
+    ipc: host
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command:
+      - vllm
+      - serve
+      - openai/gpt-oss-120b
+      - --tensor-parallel-size
+      - "1"
+      - --gpu-memory-utilization
+      - "0.80"
+      - --tool-call-parser=openai
+      - --reasoning-parser=openai_gptoss
+      - --trust-remote-code
+
+volumes:
+  open-webui:
+
