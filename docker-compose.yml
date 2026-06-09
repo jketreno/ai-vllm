@@ -1,7 +1,132 @@
 
 services:
+  # ── CLARE₂ services ──────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: clare2-redis
+    restart: unless-stopped
+    profiles:
+      - clare2
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  clare2-pipeline:
+    build:
+      context: clare2/pipeline
+      dockerfile: Dockerfile
+    container_name: clare2-pipeline
+    restart: unless-stopped
+    profiles:
+      - clare2
+    env_file:
+      - .env
+    ports:
+      - "${CLARE2_PIPELINE_PORT:-8090}:8090"
+      - "${CLARE2_METRICS_PORT:-9091}:9091"
+    volumes:
+      - ./corpus:/corpus
+      - ./logs/clare2:/logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  clare2-infer:
+    image: nvcr.io/nvidia/vllm:26.04-py3
+    container_name: clare2-infer
+    restart: unless-stopped
+    profiles:
+      - clare2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    ports:
+      - "${CLARE2_INFER_PORT:-8001}:8001"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./models:/models:ro
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      - CLARE2_BASE_MODEL_PATH=${CLARE2_BASE_MODEL_PATH:-/models/base}
+      - CLARE2_BASE_MODEL_NAME=${CLARE2_BASE_MODEL_NAME:-Qwen2.5-Coder-32B-Instruct}
+      - ENABLE_LORA=true
+      - MAX_LORA_RANK=${CLARE2_LORA_R:-32}
+    command:
+      - vllm
+      - serve
+      - "${CLARE2_BASE_MODEL_NAME:-Qwen2.5-Coder-32B-Instruct}"
+      - --port
+      - "8001"
+      - --enable-lora
+      - --lora-modules
+      - "temper=/models/adapters/current"
+      - --gpu-memory-utilization
+      - "${CLARE2_GPU_MEMORY_UTILIZATION:-0.70}"
+      - --max-lora-rank
+      - "${CLARE2_LORA_R:-32}"
+      - --trust-remote-code
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # Training container — not started on normal `compose up`
+  # Started on-demand by clare2-pipeline at 00:00 via Docker socket
+  clare2-train:
+    build:
+      context: clare2/train
+      dockerfile: Dockerfile
+    container_name: clare2-train
+    profiles:
+      - training
+      - clare2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./corpus:/corpus:ro
+      - ./models:/models
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      - CLARE2_BASE_MODEL_PATH=${CLARE2_BASE_MODEL_PATH:-/models/base}
+      - CLARE2_LORA_R=${CLARE2_LORA_R:-32}
+      - CLARE2_LORA_ALPHA=${CLARE2_LORA_ALPHA:-64}
+      - CLARE2_MAX_SEQ_LENGTH=${CLARE2_MAX_SEQ_LENGTH:-2048}
+      - CLARE2_PIPELINE_URL=http://clare2-pipeline:8090
+    entrypoint: ["/bin/bash", "/app/train.sh"]
+
+  # ── Existing services ─────────────────────────────────────────────────────────
+
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    build:
+      context: open-webui
+      dockerfile: Dockerfile.open-webui
     container_name: open-webui
     env_file:
       - .env
@@ -15,6 +140,7 @@ services:
   vllm-engine:
     image: nvcr.io/nvidia/vllm:26.04-py3
     container_name: vllm-engine
+    restart: unless-stopped
     gpus: all
     ipc: host
     ports:
@@ -24,17 +150,66 @@ services:
     ulimits:
       memlock: -1
       stack: 67108864
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
     command:
       - vllm
       - serve
-      - openai/gpt-oss-120b
+      # ── Qwen3.5-35B-A3B (MoE, 3B active params) — DGX Spark GB10 optimized ──
+      # BKM sources: https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html
+      #              https://medium.com/@stablehigashi/vllm-installation-on-dgx-spark-gb10-sm-121-and-qwen-3-5-serving-guide-9eba91e448f8
+      #              https://kenhuangus.substack.com/p/troubleshooting-guide-running-qwen35
+      - Qwen/Qwen3.5-35B-A3B-FP8
+      - --port
+      - "8000"
+      # DGX Spark GB10 is a single unified superchip; TP=1 is correct
       - --tensor-parallel-size
       - "1"
+      # MoE expert parallelism — distributes routing across available compute
+      - --enable-expert-parallel
+      # 0.90 leaves headroom for OS and KV cache on 128GB unified memory
       - --gpu-memory-utilization
-      - "0.80"
-      - --tool-call-parser=openai
-      - --reasoning-parser=openai_gptoss
+      - "0.90"
+      # 128K context; reduce to 65536 if OOM during heavy concurrent use
+      - --max-model-len
+      - "131072"
+      # FP8 KV cache: halves KV memory, negligible accuracy loss
+      - --kv-cache-dtype
+      - fp8
+      # Qwen3 thinking/reasoning mode (send enable_thinking=false per-request to disable)
+      - --reasoning-parser=qwen3
+      # Tool calling — qwen3_coder parser handles Qwen3.x function-call format
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      # Prefix caching improves throughput for repeated system prompts
+      - --enable-prefix-caching
+      # Mamba cache align mode requires block_size (2096) <= max_num_batched_tokens
+      - --max-num-batched-tokens
+      - "4096"
       - --trust-remote-code
+      # ── gpt-oss-120b config (commented out for future re-deployment) ──────────
+      # - openai/gpt-oss-120b
+      # - --tensor-parallel-size
+      # - "1"
+      # - --gpu-memory-utilization
+      # - "0.80"
+      # - --tool-call-parser=openai
+      # - --reasoning-parser=openai_gptoss
+      # - --trust-remote-code
+
+  nginx:
+    container_name: nginx
+    build: nginx/.
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    # Mount host logs directory to container's nginx log directory
+    volumes:
+      - ./logs:/var/log/nginx
 
 volumes:
   open-webui:
