@@ -137,6 +137,44 @@ services:
     volumes:
       - open-webui:/app/backend/data
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   vllm-engine:
     image: nvcr.io/nvidia/vllm:26.04-py3
     container_name: vllm-engine
@@ -213,4 +251,6 @@ services:
 
 volumes:
   open-webui:
+  ollama_data:
+  qdrant_storage:
 
