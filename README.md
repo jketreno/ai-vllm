@@ -23,6 +23,10 @@ both vLLM and the trainer. Set `CLARE2_MODEL_CACHE` to use another host
 directory. Use `./setup-clare2.sh --no-start` to prepare without startup.
 No Python packages are installed on the host.
 
+Inference and MCP bind to localhost by default. Set
+`CLARE2_BIND_ADDRESS=0.0.0.0` during setup for authenticated LAN access, and
+restrict ports `8000` and `8002` with the host firewall.
+
 Secrets remain under `secrets/` with mode `0600`; `.env` contains no
 credentials.
 

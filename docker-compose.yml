@@ -15,6 +15,7 @@ x-clare2-env: &clare2-env
   CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare"}}
   CLARE2_MAX_CPU_LORAS: "8"
   CLARE2_PROXY_TOKEN_FILE: /run/secrets/clare2_proxy_token
+  CLARE2_MCP_TOKEN_FILE: /run/secrets/clare2_mcp_token
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
   CLARE2_CALLBACK_SECRET_FILE: /run/secrets/clare2_callback_secret
 
@@ -74,7 +75,7 @@ services:
     restart: unless-stopped
     environment: *clare2-env
     ports:
-      - "127.0.0.1:${CLARE2_PROXY_PORT:-8000}:8000"
+      - "${CLARE2_BIND_ADDRESS:-127.0.0.1}:${CLARE2_PROXY_PORT:-8000}:8000"
       - "127.0.0.1:${CLARE2_METRICS_PORT:-9091}:9091"
     secrets:
       - clare2_proxy_token
@@ -91,7 +92,7 @@ services:
         condition: service_started
       vllm-engine:
         condition: service_healthy
-    networks: [control, inference]
+    networks: [control, inference, operator]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
@@ -105,13 +106,16 @@ services:
     command: ["python", "-m", "app.mcp_server"]
     environment: *clare2-env
     ports:
-      - "127.0.0.1:${CLARE2_MCP_PORT:-8002}:8002"
+      - "${CLARE2_BIND_ADDRESS:-127.0.0.1}:${CLARE2_MCP_PORT:-8002}:8002"
+    secrets:
+      - clare2_mcp_token
+      - clare2_callback_secret
     volumes:
       - ./models:/models:ro
     depends_on:
       clare2-policy:
         condition: service_healthy
-    networks: [control]
+    networks: [control, operator]
 
   vllm-engine:
     image: nvcr.io/nvidia/vllm:26.04-py3
@@ -122,8 +126,10 @@ services:
     expose: ["8001"]
     environment:
       VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     volumes:
-      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface:ro
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface/hub:ro
       - ./models:/models:ro
     networks: [inference]
     ulimits:
@@ -183,7 +189,7 @@ services:
     secrets:
       - clare2_callback_secret
     volumes:
-      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface/hub
       - ./corpus:/corpus:ro
       - ./models:/models
     networks: [control]
@@ -265,6 +271,8 @@ secrets:
     file: ${LDAP_APP_PASSWORD_FILE:-./secrets/ldap_app_password}
   clare2_proxy_token:
     file: ${CLARE2_PROXY_TOKEN_FILE:-./secrets/clare2_proxy_token}
+  clare2_mcp_token:
+    file: ${CLARE2_MCP_TOKEN_FILE:-./secrets/clare2_mcp_token}
   clare2_operator_token:
     file: ${CLARE2_OPERATOR_TOKEN_FILE:-./secrets/clare2_operator_token}
   clare2_callback_secret:

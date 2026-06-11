@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -8,19 +9,23 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+import app.mcp_server as mcp_server
 from app.controller import AdapterController
 from app.evaluator import compare
 from app.local_llm import generate
+from app.mcp_server import mcp
 from app.proxy import router_api
 from app.registry import AdapterRegistry, RegistryError
-from app.routing import Router
-from app.security import require_bearer, verify_callback
+from app.routing import RouteError, Router
+from app.runtime import maintenance
+from app.security import BearerASGIMiddleware, require_bearer, verify_callback
 
 BASE = {
     "model_id": "Qwen/Qwen3.5-35B-A3B-FP8",
@@ -215,6 +220,30 @@ class ControllerTests(unittest.TestCase):
 
 
 class SecurityAndEvaluationTests(unittest.TestCase):
+    def test_mcp_tools_advertise_descriptions(self):
+        tools = asyncio.run(mcp.list_tools())
+        descriptions = {tool.name: tool.description for tool in tools}
+        expected = {
+            "clare_temper_route",
+            "clare_temper_status",
+            "clare_temper_list",
+        }
+        self.assertEqual(set(descriptions), expected)
+        for name in expected:
+            self.assertTrue(descriptions[name], f"{name} must have a description")
+
+    def test_asgi_bearer_middleware(self):
+        app = FastAPI()
+
+        @app.get("/health")
+        def health():
+            return {"status": "ok"}
+
+        client = TestClient(BearerASGIMiddleware(app, "secret"))
+        self.assertEqual(client.get("/health").status_code, 401)
+        response = client.get("/health", headers={"Authorization": "Bearer secret"})
+        self.assertEqual(response.status_code, 200)
+
     def test_bearer_and_callback_hmac(self):
         require_bearer("secret", "Bearer secret")
         with self.assertRaises(HTTPException):
@@ -225,6 +254,49 @@ class SecurityAndEvaluationTests(unittest.TestCase):
         verify_callback("secret", body, timestamp, signature)
         with self.assertRaises(HTTPException):
             verify_callback("secret", body, timestamp, "wrong")
+
+    def test_mcp_route_tool_calls_policy_internal_api(self):
+        def fake_request(method, url, headers=None, timeout=None, **kwargs):
+            self.assertEqual(method, "POST")
+            self.assertEqual(url, "http://policy.local/internal/routes")
+            self.assertEqual(headers, {"Authorization": "Bearer internal-secret"})
+            self.assertEqual(timeout, 30)
+            self.assertEqual(
+                kwargs["json"],
+                {
+                    "project": "clare",
+                    "task_kind": "review",
+                    "capabilities": ["chat"],
+                },
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "route_id": "r1",
+                    "project_id": "github:jketreno/clare",
+                    "adapter_id": None,
+                    "policy_rule": "base_fallback",
+                    "expires_at": "2026-06-12T00:00:00+00:00",
+                },
+                request=httpx.Request(method, url),
+            )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "CLARE2_POLICY_URL": "http://policy.local",
+                "CLARE2_CALLBACK_SECRET": "internal-secret",
+            },
+            clear=False,
+        ), patch("app.mcp_server.httpx.request", side_effect=fake_request):
+            original_url = mcp_server.POLICY_URL
+            mcp_server.POLICY_URL = "http://policy.local"
+            try:
+                result = mcp_server.clare_temper_route("clare", "review", ["chat"])
+            finally:
+                mcp_server.POLICY_URL = original_url
+
+        self.assertEqual(result["route_id"], "r1")
 
     def test_promotion_requires_threshold_and_no_category_regression(self):
         probes = [
@@ -259,6 +331,56 @@ class SecurityAndEvaluationTests(unittest.TestCase):
 
 
 class ProxyIntegrationTests(unittest.TestCase):
+    def test_proxy_streams_upstream_chunks_and_releases_request(self):
+        captured = {"stream": False, "response_closed": False, "client_closed": False}
+
+        class ChunkStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"choices":[{"delta":{"content":"one"}}]}\n\n'
+                yield b"data: [DONE]\n\n"
+
+            async def aclose(self):
+                captured["response_closed"] = True
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            def build_request(self, method, url, content, headers):
+                return httpx.Request(method, url, content=content, headers=headers)
+
+            async def send(self, request, *, stream):
+                captured["stream"] = stream
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    stream=ChunkStream(),
+                    request=request,
+                )
+
+            async def aclose(self):
+                captured["client_closed"] = True
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient",
+            FakeAsyncClient,
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "ignored", "messages": [], "stream": True},
+            )
+
+        self.assertTrue(captured["stream"])
+        self.assertIn('data: {"choices"', response.text)
+        self.assertIn("data: [DONE]", response.text)
+        self.assertTrue(captured["response_closed"])
+        self.assertTrue(captured["client_closed"])
+        self.assertEqual(maintenance.active, 0)
+
     def test_proxy_overwrites_model_and_blocks_management_routes(self):
         captured: dict = {}
 
@@ -301,6 +423,72 @@ class ProxyIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["model"], "Qwen/Qwen3.5-35B-A3B-FP8")
         self.assertEqual(blocked.status_code, 404)
+
+    def test_proxy_accepts_route_id_in_path(self):
+        captured: dict = {}
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def request(self, method, url, content, headers):
+                del method, headers
+                captured["url"] = url
+                captured.update(json.loads(content))
+                return httpx.Response(
+                    200,
+                    json={"choices": []},
+                    headers={"content-type": "application/json"},
+                )
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        route = SimpleNamespace(
+            adapter_id="adapter-from-route",
+            policy_rule="project_capability_match",
+            project_id="github:jketreno/clare",
+        )
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient",
+            FakeAsyncClient,
+        ), patch("app.proxy.router.get", return_value=route) as get_route, patch(
+            "app.proxy.controller.ensure_loaded"
+        ) as ensure_loaded:
+            response = client.post(
+                "/route-from-path/v1/chat/completions",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "ignored", "messages": []},
+            )
+        self.assertEqual(response.status_code, 200)
+        get_route.assert_called_once_with("route-from-path")
+        ensure_loaded.assert_called_once_with("adapter-from-route")
+        self.assertEqual(captured["url"], "http://vllm-engine:8001/v1/chat/completions")
+        self.assertEqual(captured["model"], "adapter-from-route")
+
+    def test_proxy_path_route_id_takes_precedence_over_header(self):
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.router.get", side_effect=RouteError("unknown route")
+        ) as get_route:
+            response = client.post(
+                "/path-route/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "X-CLARE-Route-ID": "header-route",
+                },
+                json={"model": "ignored", "messages": []},
+            )
+        self.assertEqual(response.status_code, 401)
+        get_route.assert_called_once_with("path-route")
 
 
 if __name__ == "__main__":

@@ -29,9 +29,10 @@ def digest(value: str) -> str:
 
 
 def revision(api: HfApi, model: str, configured: str | None, token: str) -> str:
-    if configured and not configured.startswith("REPLACE_WITH_"):
-        return configured
-    return api.model_info(model, revision=configured or None, token=token).sha
+    requested = (configured or "").strip()
+    if requested.startswith("REPLACE_WITH_"):
+        requested = ""
+    return api.model_info(model, revision=requested or None, token=token).sha
 
 
 def main() -> None:

@@ -9,6 +9,7 @@ import pathlib
 import time
 
 from fastapi import Header, HTTPException
+from starlette.responses import JSONResponse
 
 
 def secret_value(name: str) -> str:
@@ -54,3 +55,26 @@ def bearer_dependency(expected: str):
         require_bearer(expected, authorization)
 
     return dependency
+
+
+class BearerASGIMiddleware:
+    """Require a fixed bearer token for HTTP requests to an ASGI app."""
+
+    def __init__(self, app, expected: str) -> None:
+        self.app = app
+        self.expected = expected
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        authorization = headers.get(b"authorization", b"").decode("latin-1")
+        try:
+            require_bearer(self.expected, authorization)
+        except HTTPException:
+            response = JSONResponse({"detail": "invalid bearer token"}, status_code=401)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from . import corpus, distiller, lifecycle, metrics, summarizer
 from .proxy import router_api as proxy_router
 from .registry import RegistryError
-from .runtime import controller, initialize_registry, maintenance, registry
+from .routing import RouteError
+from .runtime import controller, initialize_registry, maintenance, registry, router
 from .security import bearer_dependency, secret_value, verify_callback
 
 logging.basicConfig(
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="CLARE₂ Policy Proxy", version="1.0.0")
 scheduler = BackgroundScheduler(timezone="UTC")
 operator_auth = bearer_dependency(secret_value("CLARE2_OPERATOR_TOKEN"))
+internal_route_auth = bearer_dependency(secret_value("CLARE2_CALLBACK_SECRET"))
 
 
 class TrainingDonePayload(BaseModel):
@@ -37,6 +39,12 @@ class TrainingDonePayload(BaseModel):
 
 class SummarizePayload(BaseModel):
     reference_at: datetime | None = None
+
+
+class RouteCreatePayload(BaseModel):
+    project: str
+    task_kind: str
+    capabilities: list[str] = Field(default_factory=list)
 
 
 @app.on_event("startup")
@@ -186,6 +194,44 @@ def trigger_summarize(
         raise HTTPException(status_code=400, detail="unsupported summary level")
     background_tasks.add_task(operation, payload.reference_at)
     return {"status": "started", "level": level}
+
+
+@app.post("/internal/routes", dependencies=[Depends(internal_route_auth)])
+def create_internal_route(payload: RouteCreatePayload) -> dict:
+    try:
+        route = router.create_route(payload.project, payload.task_kind, payload.capabilities)
+    except RouteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "route_id": route.route_id,
+        "project_id": route.project_id,
+        "adapter_id": route.adapter_id,
+        "policy_rule": route.policy_rule,
+        "expires_at": route.expires_at.isoformat(),
+    }
+
+
+@app.get("/internal/routes/{route_id}", dependencies=[Depends(internal_route_auth)])
+def internal_route_status(route_id: str) -> dict:
+    try:
+        route = router.get(route_id)
+    except RouteError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {
+        "route_id": route.route_id,
+        "adapter_id": route.adapter_id,
+        "policy_rule": route.policy_rule,
+        "available": True,
+        "expires_at": route.expires_at.isoformat(),
+    }
+
+
+@app.get("/internal/routes", dependencies=[Depends(internal_route_auth)])
+def internal_route_list(project: str) -> list[dict]:
+    try:
+        return router.list_approved(project)
+    except RouteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 app.include_router(proxy_router)

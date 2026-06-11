@@ -13,4 +13,5 @@ read_secret() {
 read_secret OPENAI_API_KEY
 read_secret LDAP_APP_PASSWORD
 
+python /usr/local/lib/clare-open-webui-managed-config.py
 exec bash /app/backend/start.sh "$@"

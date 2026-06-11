@@ -16,6 +16,7 @@ Usage: ./setup-clare2.sh [--no-start] [--capture-project PATH]...
 Environment:
   HF_TOKEN                 Hugging Face access token (prompted when interactive)
   CLARE2_MODEL_CACHE       Host model cache (default: ./models/huggingface)
+  CLARE2_BIND_ADDRESS      Inference/MCP host bind (default: 127.0.0.1)
   CLARE2_INFERENCE_MODEL   Serving model repository
   CLARE2_TRAIN_MODEL       Training model repository
   CLARE2_PROJECT_MAP       Canonical repository map JSON
@@ -110,6 +111,7 @@ fi
 chmod 600 "$HF_TOKEN_FILE"
 
 secret clare2_proxy_token
+secret clare2_mcp_token
 secret clare2_operator_token
 secret clare2_callback_secret
 [[ -e "${SECRETS_DIR}/ldap_app_password" ]] ||
@@ -122,15 +124,17 @@ done
 
 INFERENCE_MODEL="${CLARE2_INFERENCE_MODEL:-$(read_env CLARE2_INFERENCE_MODEL Qwen/Qwen3.5-35B-A3B-FP8)}"
 TRAIN_MODEL="${CLARE2_TRAIN_MODEL:-$(read_env CLARE2_TRAIN_MODEL Qwen/Qwen3.5-35B-A3B)}"
-INFERENCE_REVISION=$(read_env CLARE2_INFERENCE_REVISION "")
-TRAIN_REVISION=$(read_env CLARE2_TRAIN_REVISION "")
+INFERENCE_REVISION="${CLARE2_INFERENCE_REVISION:-$(read_env CLARE2_INFERENCE_REVISION "")}"
+TRAIN_REVISION="${CLARE2_TRAIN_REVISION:-$(read_env CLARE2_TRAIN_REVISION "")}"
 MLFLOW_PORT="${CLARE2_MLFLOW_PORT:-$(read_env CLARE2_MLFLOW_PORT 5000)}"
+BIND_ADDRESS="${CLARE2_BIND_ADDRESS:-$(read_env CLARE2_BIND_ADDRESS 127.0.0.1)}"
 
 write_env CLARE2_INFERENCE_MODEL "$INFERENCE_MODEL"
 write_env CLARE2_DISTILL_MODEL "$INFERENCE_MODEL"
 write_env CLARE2_TRAIN_MODEL "$TRAIN_MODEL"
 write_env CLARE2_MODEL_CACHE "$MODEL_CACHE"
 write_env CLARE2_MLFLOW_PORT "$MLFLOW_PORT"
+write_env CLARE2_BIND_ADDRESS "$BIND_ADDRESS"
 [[ -z "${CLARE2_PROJECT_MAP:-}" ]] || write_env CLARE2_PROJECT_MAP "$CLARE2_PROJECT_MAP"
 [[ -z "${CLARE2_PROJECT_ID:-}" ]] || write_env CLARE2_PROJECT_ID "$CLARE2_PROJECT_ID"
 
@@ -161,7 +165,7 @@ docker compose config --quiet
 echo "Building CLARE₂ services..."
 docker compose --profile training build \
   mlflow docker-socket-proxy clare2-policy clare2-mcp clare2-train
-docker compose --profile training create --no-deps clare2-train
+docker compose --profile training create clare2-train
 
 if $START_SERVICES; then
   docker compose up -d mlflow redis docker-socket-proxy vllm-engine clare2-policy clare2-mcp
@@ -188,8 +192,9 @@ fi
 cat <<EOF
 CLARE₂ setup complete.
 Model cache: $MODEL_CACHE
-MCP endpoint: http://127.0.0.1:8002/mcp
-Policy endpoint: http://127.0.0.1:8000
+Inference/MCP bind address: $BIND_ADDRESS
+MCP port: 8002 (/mcp/)
+Policy port: 8000
 MLflow UI: http://127.0.0.1:${MLFLOW_PORT}
 Agent wrapper: ${ROOT}/clare2/scripts/clare2-agent.sh
 EOF
