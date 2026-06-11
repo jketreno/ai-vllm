@@ -2,7 +2,8 @@
 
 This stack serves `Qwen/Qwen3.5-35B-A3B-FP8` through an authenticated CLARE₂
 policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
-only on the private `inference` Docker network.
+only on the private `inference` Docker network. The same local Qwen3.5 service
+performs distillation, summarization, evaluation, and agent inference.
 
 ## Security Setup
 
@@ -10,7 +11,6 @@ Copy `.env.example` to `.env`, then set the exact Hugging Face revision and
 base/tokenizer hashes. Create these files with mode `0600`:
 
 ```text
-secrets/anthropic_api_key
 secrets/huggingface_token
 secrets/ldap_app_password
 secrets/clare2_proxy_token
@@ -39,7 +39,7 @@ docker compose up -d
 
 Public bindings:
 
-- `127.0.0.1:8000`: authenticated OpenAI-compatible policy proxy and operator API
+- `127.0.0.1:8000`: authenticated inference policy proxy and operator API
 - `127.0.0.1:8002`: CLARE Temper MCP server
 - `127.0.0.1:9091`: Prometheus metrics
 - `0.0.0.0:8080`: Open WebUI

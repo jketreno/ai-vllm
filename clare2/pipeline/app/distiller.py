@@ -6,16 +6,12 @@ import os
 import pathlib
 from datetime import datetime, timezone
 
-import anthropic
-import openai
-
 from . import metrics
-from .security import secret_value
+from .local_llm import generate
 
 log = logging.getLogger(__name__)
 
 CORPUS_ROOT = pathlib.Path(os.environ.get("CORPUS_ROOT", "/corpus"))
-DISTILL_MODEL = os.environ.get("CLARE2_DISTILL_MODEL", "claude-haiku-4-5")
 RECURRENCE_GATE = 2  # minimum evidence_count within a session to pass gate
 
 
@@ -45,30 +41,9 @@ def _read_session(path: pathlib.Path) -> list[dict]:
 
 
 def _call_distill_llm(session_text: str, prompt_template: str) -> str:
-    """Call the distillation LLM with the session content."""
+    """Call local Qwen3.5 with the session content."""
     prompt = prompt_template.replace("{{SESSION_CONTENT}}", session_text)
-
-    if DISTILL_MODEL.startswith("claude"):
-        client = anthropic.Anthropic(api_key=secret_value("ANTHROPIC_API_KEY"))
-        message = client.messages.create(
-            model=DISTILL_MODEL,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text
-    else:
-        # Local model via OpenAI-compatible endpoint
-        local_url = os.environ.get("CLARE2_LOCAL_LLM_URL", "http://clare2-policy:8000/v1")
-        client = openai.OpenAI(
-            base_url=local_url,
-            api_key=secret_value("CLARE2_PROXY_TOKEN"),
-        )
-        resp = client.chat.completions.create(
-            model=DISTILL_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-        )
-        return resp.choices[0].message.content
+    return generate(prompt)
 
 
 def _parse_patterns(llm_output: str) -> list[dict]:

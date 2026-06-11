@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.controller import AdapterController
 from app.evaluator import compare
+from app.local_llm import generate
 from app.proxy import router_api
 from app.registry import AdapterRegistry, RegistryError
 from app.routing import Router
@@ -244,6 +245,17 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             probes,
         )
         self.assertFalse(regressed["approved"])
+
+    def test_local_generation_uses_deterministic_qwen_request(self):
+        response = unittest.mock.Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "[]"}}]}
+        with patch("app.local_llm.httpx.post", return_value=response) as post:
+            self.assertEqual(generate("distill this"), "[]")
+        response.raise_for_status.assert_called_once()
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["model"], "Qwen/Qwen3.5-35B-A3B-FP8")
+        self.assertEqual(payload["temperature"], 0)
+        self.assertEqual(payload["seed"], 42)
 
 
 class ProxyIntegrationTests(unittest.TestCase):

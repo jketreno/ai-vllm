@@ -1,4 +1,4 @@
-"""Authenticated policy proxy for OpenAI-compatible inference endpoints."""
+"""Authenticated policy proxy for chat-completions inference endpoints."""
 
 from __future__ import annotations
 

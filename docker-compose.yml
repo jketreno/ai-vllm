@@ -6,6 +6,7 @@ x-clare2-env: &clare2-env
   CLARE2_VLLM_URL: http://vllm-engine:8001
   CLARE2_DOCKER_PROXY_URL: http://docker-socket-proxy:2375
   CLARE2_INFERENCE_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.5-35B-A3B-FP8}
+  CLARE2_DISTILL_MODEL: ${CLARE2_DISTILL_MODEL:-Qwen/Qwen3.5-35B-A3B-FP8}
   CLARE2_TRAIN_MODEL: ${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.5-35B-A3B}
   CLARE2_INFERENCE_REVISION: ${CLARE2_INFERENCE_REVISION:?pin the FP8 Hugging Face revision}
   CLARE2_TRAIN_REVISION: ${CLARE2_TRAIN_REVISION:?pin the matching non-FP8 Hugging Face revision}
@@ -13,7 +14,6 @@ x-clare2-env: &clare2-env
   CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
   CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare"}}
   CLARE2_MAX_CPU_LORAS: "8"
-  ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
   CLARE2_PROXY_TOKEN_FILE: /run/secrets/clare2_proxy_token
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
   CLARE2_CALLBACK_SECRET_FILE: /run/secrets/clare2_callback_secret
@@ -46,7 +46,6 @@ services:
       - "127.0.0.1:${CLARE2_PROXY_PORT:-8000}:8000"
       - "127.0.0.1:${CLARE2_METRICS_PORT:-9091}:9091"
     secrets:
-      - anthropic_api_key
       - clare2_proxy_token
       - clare2_operator_token
       - clare2_callback_secret
@@ -228,8 +227,6 @@ volumes:
   qdrant_storage: {}
 
 secrets:
-  anthropic_api_key:
-    file: ${ANTHROPIC_API_KEY_FILE:-./secrets/anthropic_api_key}
   huggingface_token:
     file: ${HF_TOKEN_FILE:-./secrets/huggingface_token}
   ldap_app_password:

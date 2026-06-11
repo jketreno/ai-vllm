@@ -6,17 +6,12 @@ import os
 import pathlib
 from datetime import datetime, timedelta, timezone
 
-import anthropic
-import openai
-
 from . import metrics
-from .security import secret_value
+from .local_llm import generate
 
 log = logging.getLogger(__name__)
 
 CORPUS_ROOT = pathlib.Path(os.environ.get("CORPUS_ROOT", "/corpus"))
-DISTILL_MODEL = os.environ.get("CLARE2_DISTILL_MODEL", "claude-haiku-4-5")
-
 WEEKLY_GATE = 2
 MONTHLY_GATE = 3
 QUARTERLY_GATE = 2
@@ -43,26 +38,7 @@ def _call_llm_merge(records: list[dict], level: str) -> list[dict]:
         f"Input records:\n{json.dumps(records, indent=2)}"
     )
 
-    if DISTILL_MODEL.startswith("claude"):
-        client = anthropic.Anthropic(api_key=secret_value("ANTHROPIC_API_KEY"))
-        message = client.messages.create(
-            model=DISTILL_MODEL,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = message.content[0].text
-    else:
-        local_url = os.environ.get("CLARE2_LOCAL_LLM_URL", "http://clare2-policy:8000/v1")
-        client = openai.OpenAI(
-            base_url=local_url,
-            api_key=secret_value("CLARE2_PROXY_TOKEN"),
-        )
-        resp = client.chat.completions.create(
-            model=DISTILL_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-        )
-        text = resp.choices[0].message.content
+    text = generate(prompt)
 
     text = text.strip()
     if text.startswith("```"):
