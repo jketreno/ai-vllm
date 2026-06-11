@@ -1,0 +1,6 @@
+# Raw session captures — can be large; exclude from git
+# Distilled episodes, summaries, themes, and training corpus ARE tracked
+sessions/
+
+# Never track model weights
+/home/jketreno/docker/ai-vllm/models/base/

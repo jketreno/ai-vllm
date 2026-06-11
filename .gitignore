@@ -1,1 +1,7 @@
 .env
+secrets/
+models/adapters/*
+!models/adapters/.gitkeep
+!models/adapters/registry.example.json
+corpus/meta/lifecycle.json
+corpus/meta/lifecycle.lock

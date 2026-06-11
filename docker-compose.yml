@@ -1,256 +1,242 @@
+name: ai-vllm
+
+x-clare2-env: &clare2-env
+  MODELS_ROOT: /models
+  CORPUS_ROOT: /corpus
+  CLARE2_VLLM_URL: http://vllm-engine:8001
+  CLARE2_DOCKER_PROXY_URL: http://docker-socket-proxy:2375
+  CLARE2_INFERENCE_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.5-35B-A3B-FP8}
+  CLARE2_TRAIN_MODEL: ${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.5-35B-A3B}
+  CLARE2_INFERENCE_REVISION: ${CLARE2_INFERENCE_REVISION:?pin the FP8 Hugging Face revision}
+  CLARE2_TRAIN_REVISION: ${CLARE2_TRAIN_REVISION:?pin the matching non-FP8 Hugging Face revision}
+  CLARE2_BASE_CONFIG_HASH: ${CLARE2_BASE_CONFIG_HASH:?set the base config SHA256}
+  CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
+  CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare"}}
+  CLARE2_MAX_CPU_LORAS: "8"
+  ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
+  CLARE2_PROXY_TOKEN_FILE: /run/secrets/clare2_proxy_token
+  CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
+  CLARE2_CALLBACK_SECRET_FILE: /run/secrets/clare2_callback_secret
 
 services:
-  # ── CLARE₂ services ──────────────────────────────────────────────────────────
-
   redis:
-    image: redis:7-alpine
-    container_name: clare2-redis
+    image: redis:7.4-alpine
     restart: unless-stopped
-    profiles:
-      - clare2
+    networks: [control]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  clare2-pipeline:
+  docker-socket-proxy:
+    build:
+      context: clare2/socket-proxy
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [control]
+
+  clare2-policy:
     build:
       context: clare2/pipeline
-      dockerfile: Dockerfile
-    container_name: clare2-pipeline
     restart: unless-stopped
-    profiles:
-      - clare2
-    env_file:
-      - .env
+    environment: *clare2-env
     ports:
-      - "${CLARE2_PIPELINE_PORT:-8090}:8090"
-      - "${CLARE2_METRICS_PORT:-9091}:9091"
+      - "127.0.0.1:${CLARE2_PROXY_PORT:-8000}:8000"
+      - "127.0.0.1:${CLARE2_METRICS_PORT:-9091}:9091"
+    secrets:
+      - anthropic_api_key
+      - clare2_proxy_token
+      - clare2_operator_token
+      - clare2_callback_secret
     volumes:
       - ./corpus:/corpus
+      - ./models:/models
       - ./logs/clare2:/logs
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       redis:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+      vllm-engine:
+        condition: service_healthy
+    networks: [control, inference]
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  clare2-infer:
-    image: nvcr.io/nvidia/vllm:26.04-py3
-    container_name: clare2-infer
+  clare2-mcp:
+    build:
+      context: clare2/pipeline
     restart: unless-stopped
-    profiles:
-      - clare2
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    ipc: host
+    command: ["python", "-m", "app.mcp_server"]
+    environment: *clare2-env
     ports:
-      - "${CLARE2_INFER_PORT:-8001}:8001"
+      - "127.0.0.1:${CLARE2_MCP_PORT:-8002}:8002"
+    volumes:
+      - ./models:/models:ro
+    depends_on:
+      clare2-policy:
+        condition: service_healthy
+    networks: [control]
+
+  vllm-engine:
+    image: nvcr.io/nvidia/vllm:26.04-py3
+    restart: unless-stopped
+    gpus: all
+    ipc: host
+    expose: ["8001"]
+    environment:
+      VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
+    secrets:
+      - source: huggingface_token
+        target: /root/.cache/huggingface/token
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./models:/models:ro
+    networks: [inference]
     ulimits:
       memlock: -1
       stack: 67108864
-    environment:
-      - CLARE2_BASE_MODEL_PATH=${CLARE2_BASE_MODEL_PATH:-/models/base}
-      - CLARE2_BASE_MODEL_NAME=${CLARE2_BASE_MODEL_NAME:-Qwen2.5-Coder-32B-Instruct}
-      - ENABLE_LORA=true
-      - MAX_LORA_RANK=${CLARE2_LORA_R:-32}
     command:
       - vllm
       - serve
-      - "${CLARE2_BASE_MODEL_NAME:-Qwen2.5-Coder-32B-Instruct}"
+      - ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.5-35B-A3B-FP8}
+      - --revision
+      - ${CLARE2_INFERENCE_REVISION}
       - --port
       - "8001"
-      - --enable-lora
-      - --lora-modules
-      - "temper=/models/adapters/current"
+      - --tensor-parallel-size
+      - "1"
+      - --enable-expert-parallel
       - --gpu-memory-utilization
-      - "${CLARE2_GPU_MEMORY_UTILIZATION:-0.70}"
+      - "0.90"
+      - --max-model-len
+      - "131072"
+      - --kv-cache-dtype
+      - fp8
+      - --reasoning-parser=qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --enable-prefix-caching
+      - --max-num-batched-tokens
+      - "4096"
+      - --enable-lora
       - --max-lora-rank
-      - "${CLARE2_LORA_R:-32}"
+      - "32"
+      - --max-loras
+      - "2"
+      - --max-cpu-loras
+      - "8"
       - --trust-remote-code
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 300s
 
-  # Training container — not started on normal `compose up`
-  # Started on-demand by clare2-pipeline at 00:00 via Docker socket
   clare2-train:
     build:
       context: clare2/train
-      dockerfile: Dockerfile
-    container_name: clare2-train
-    profiles:
-      - training
-      - clare2
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    profiles: [training]
+    gpus: all
     ipc: host
+    environment:
+      <<: *clare2-env
+      CLARE2_PROJECT_ID: ${CLARE2_PROJECT_ID:-global}
+      CLARE2_PIPELINE_URL: http://clare2-policy:8000
+    secrets:
+      - source: huggingface_token
+        target: /root/.cache/huggingface/token
+      - clare2_callback_secret
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./corpus:/corpus:ro
       - ./models:/models
+    networks: [control]
     ulimits:
       memlock: -1
       stack: 67108864
-    environment:
-      - CLARE2_BASE_MODEL_PATH=${CLARE2_BASE_MODEL_PATH:-/models/base}
-      - CLARE2_LORA_R=${CLARE2_LORA_R:-32}
-      - CLARE2_LORA_ALPHA=${CLARE2_LORA_ALPHA:-64}
-      - CLARE2_MAX_SEQ_LENGTH=${CLARE2_MAX_SEQ_LENGTH:-2048}
-      - CLARE2_PIPELINE_URL=http://clare2-pipeline:8090
-    entrypoint: ["/bin/bash", "/app/train.sh"]
-
-  # ── Existing services ─────────────────────────────────────────────────────────
 
   open-webui:
     build:
       context: open-webui
       dockerfile: Dockerfile.open-webui
-    container_name: open-webui
-    env_file:
-      - .env
-    ports:
-      - "8080:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      OPENAI_API_BASE_URL: http://clare2-policy:8000/v1
+      OPENAI_API_KEY_FILE: /run/secrets/clare2_proxy_token
+      LDAP_APP_PASSWORD_FILE: /run/secrets/ldap_app_password
+      ENABLE_LDAP: ${ENABLE_LDAP:-False}
+      LDAP_SERVER_HOST: ${LDAP_SERVER_HOST:-ldap.example.com}
+      LDAP_SERVER_PORT: ${LDAP_SERVER_PORT:-636}
+      LDAP_USE_TLS: ${LDAP_USE_TLS:-True}
+      LDAP_APP_DN: ${LDAP_APP_DN:-}
+      LDAP_SEARCH_BASE: ${LDAP_SEARCH_BASE:-}
+      LDAP_SEARCH_FILTER: ${LDAP_SEARCH_FILTER:-(uid=%(user)s)}
+      LDAP_ATTRIBUTE_FOR_USERNAME: ${LDAP_ATTRIBUTE_FOR_USERNAME:-uid}
+      LDAP_ATTRIBUTE_FOR_MAIL: ${LDAP_ATTRIBUTE_FOR_MAIL:-mail}
+    secrets:
+      - clare2_proxy_token
+      - ldap_app_password
+    ports: ["8080:8080"]
     volumes:
       - open-webui:/app/backend/data
+    networks: [control, frontend]
 
   ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
+    image: ollama/ollama:0.9.0
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+    gpus: all
+    ports: ["127.0.0.1:${OLLAMA_PORT:-11434}:11434"]
     volumes:
       - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+    networks: [frontend]
 
   qdrant:
     image: qdrant/qdrant:v1.13.6
-    container_name: qdrant
     restart: unless-stopped
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-
-  vllm-engine:
-    image: nvcr.io/nvidia/vllm:26.04-py3
-    container_name: vllm-engine
-    restart: unless-stopped
-    gpus: all
-    ipc: host
-    ports:
-      - "8000:8000"
-    volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
-    ulimits:
-      memlock: -1
-      stack: 67108864
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-    command:
-      - vllm
-      - serve
-      # ── Qwen3.5-35B-A3B (MoE, 3B active params) — DGX Spark GB10 optimized ──
-      # BKM sources: https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html
-      #              https://medium.com/@stablehigashi/vllm-installation-on-dgx-spark-gb10-sm-121-and-qwen-3-5-serving-guide-9eba91e448f8
-      #              https://kenhuangus.substack.com/p/troubleshooting-guide-running-qwen35
-      - Qwen/Qwen3.5-35B-A3B-FP8
-      - --port
-      - "8000"
-      # DGX Spark GB10 is a single unified superchip; TP=1 is correct
-      - --tensor-parallel-size
-      - "1"
-      # MoE expert parallelism — distributes routing across available compute
-      - --enable-expert-parallel
-      # 0.90 leaves headroom for OS and KV cache on 128GB unified memory
-      - --gpu-memory-utilization
-      - "0.90"
-      # 128K context; reduce to 65536 if OOM during heavy concurrent use
-      - --max-model-len
-      - "131072"
-      # FP8 KV cache: halves KV memory, negligible accuracy loss
-      - --kv-cache-dtype
-      - fp8
-      # Qwen3 thinking/reasoning mode (send enable_thinking=false per-request to disable)
-      - --reasoning-parser=qwen3
-      # Tool calling — qwen3_coder parser handles Qwen3.x function-call format
-      - --enable-auto-tool-choice
-      - --tool-call-parser=qwen3_coder
-      # Prefix caching improves throughput for repeated system prompts
-      - --enable-prefix-caching
-      # Mamba cache align mode requires block_size (2096) <= max_num_batched_tokens
-      - --max-num-batched-tokens
-      - "4096"
-      - --trust-remote-code
-      # ── gpt-oss-120b config (commented out for future re-deployment) ──────────
-      # - openai/gpt-oss-120b
-      # - --tensor-parallel-size
-      # - "1"
-      # - --gpu-memory-utilization
-      # - "0.80"
-      # - --tool-call-parser=openai
-      # - --reasoning-parser=openai_gptoss
-      # - --trust-remote-code
+    networks: [frontend]
 
   nginx:
-    container_name: nginx
-    build: nginx/.
-    ports:
-      - "80:80"
+    build: nginx
     restart: unless-stopped
-    # Mount host logs directory to container's nginx log directory
+    ports: ["80:80"]
     volumes:
       - ./logs:/var/log/nginx
+    networks: [frontend]
+
+networks:
+  control:
+    internal: true
+  inference:
+    internal: true
+  frontend: {}
 
 volumes:
-  open-webui:
-  ollama_data:
-  qdrant_storage:
+  open-webui: {}
+  ollama_data: {}
+  qdrant_storage: {}
 
+secrets:
+  anthropic_api_key:
+    file: ${ANTHROPIC_API_KEY_FILE:-./secrets/anthropic_api_key}
+  huggingface_token:
+    file: ${HF_TOKEN_FILE:-./secrets/huggingface_token}
+  ldap_app_password:
+    file: ${LDAP_APP_PASSWORD_FILE:-./secrets/ldap_app_password}
+  clare2_proxy_token:
+    file: ${CLARE2_PROXY_TOKEN_FILE:-./secrets/clare2_proxy_token}
+  clare2_operator_token:
+    file: ${CLARE2_OPERATOR_TOKEN_FILE:-./secrets/clare2_operator_token}
+  clare2_callback_secret:
+    file: ${CLARE2_CALLBACK_SECRET_FILE:-./secrets/clare2_callback_secret}

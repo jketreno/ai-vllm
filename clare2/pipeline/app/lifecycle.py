@@ -1,0 +1,268 @@
+"""Persisted nightly adapter lifecycle with failure recovery."""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import logging
+import os
+import pathlib
+import tempfile
+import time
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Any, Iterator
+
+import httpx
+
+from . import evaluator, metrics
+from .runtime import BASE_MODEL_ID, VLLM_URL, controller, maintenance, registry
+
+log = logging.getLogger(__name__)
+STATE_ROOT = pathlib.Path(os.environ.get("CLARE2_STATE_ROOT", "/corpus/meta"))
+STATE_PATH = STATE_ROOT / "lifecycle.json"
+LOCK_PATH = STATE_ROOT / "lifecycle.lock"
+DOCKER_PROXY_URL = os.environ.get("CLARE2_DOCKER_PROXY_URL", "http://docker-socket-proxy:2375")
+VLLM_CONTAINER = os.environ.get("CLARE2_VLLM_CONTAINER", "vllm-engine")
+TRAIN_CONTAINER = os.environ.get("CLARE2_TRAIN_CONTAINER", "clare2-train")
+DRAIN_TIMEOUT = float(os.environ.get("CLARE2_DRAIN_TIMEOUT", "900"))
+START_TIMEOUT = float(os.environ.get("CLARE2_START_TIMEOUT", "900"))
+
+PHASES = {
+    "idle",
+    "draining",
+    "training",
+    "restarting",
+    "loading",
+    "evaluating",
+    "promoting",
+    "recovering",
+    "failed",
+}
+
+
+def status() -> dict[str, Any]:
+    if not STATE_PATH.exists():
+        return {"phase": "idle", "run_id": None}
+    return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+
+
+def drain_and_stop_infer() -> None:
+    with single_run():
+        started = time.monotonic()
+        run_id = os.environ.get("CLARE2_RUN_ID") or _new_run_id()
+        _set_state("draining", run_id=run_id)
+        maintenance.enter()
+        try:
+            if not maintenance.wait_for_drain(DRAIN_TIMEOUT):
+                raise TimeoutError("timed out waiting for in-flight inference")
+            _container("stop", VLLM_CONTAINER)
+            _set_state("training", run_id=run_id)
+        except Exception as exc:
+            _recover(run_id, exc)
+            raise
+        finally:
+            metrics.maintenance_duration.observe(time.monotonic() - started)
+
+
+def start_training() -> None:
+    with single_run():
+        state = status()
+        run_id = state.get("run_id") or _new_run_id()
+        if state.get("phase") not in {"training", "idle"}:
+            raise RuntimeError(f"cannot start training from {state.get('phase')}")
+        _set_state("training", run_id=run_id)
+        try:
+            _container("start", TRAIN_CONTAINER)
+        except Exception as exc:
+            _recover(run_id, exc)
+            raise
+
+
+def complete_training(adapter_id: str, run_id: str) -> dict[str, Any]:
+    with single_run():
+        state = status()
+        if state.get("completed_adapter_id") == adapter_id:
+            return state
+        if state.get("run_id") != run_id or state.get("phase") != "training":
+            raise RuntimeError("callback does not match the active training run")
+        try:
+            candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"
+            candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+            if adapter_id not in registry.read()["adapters"]:
+                registry.add_adapter(candidate)
+            _set_state("restarting", run_id=run_id, candidate_id=adapter_id)
+            _container("start", VLLM_CONTAINER)
+            _wait_for_vllm()
+            controller.reconcile()
+
+            document = registry.read()
+            current_id = document["aliases"]["current"]
+            baseline_id = current_id or BASE_MODEL_ID
+            _set_state("loading", run_id=run_id, candidate_id=adapter_id)
+            if current_id:
+                controller.ensure_loaded(current_id)
+            controller.ensure_loaded(adapter_id)
+
+            _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
+            report = evaluator.compare(adapter_id, baseline_id, _invoke_probe)
+            if not report["approved"]:
+                registry.transition(adapter_id, "rejected")
+                metrics.lifecycle_outcomes.labels(outcome="rejected").inc()
+                _set_state(
+                    "idle",
+                    run_id=run_id,
+                    candidate_id=adapter_id,
+                    completed_adapter_id=adapter_id,
+                    outcome="rejected",
+                    evaluation=report,
+                )
+                maintenance.exit()
+                return status()
+
+            _set_state("promoting", run_id=run_id, candidate_id=adapter_id)
+            registry.promote(adapter_id, report)
+            controller.reconcile()
+            metrics.lifecycle_outcomes.labels(outcome="promoted").inc()
+            _set_state(
+                "idle",
+                run_id=run_id,
+                candidate_id=adapter_id,
+                completed_adapter_id=adapter_id,
+                outcome="promoted",
+                evaluation=report,
+            )
+            maintenance.exit()
+            return status()
+        except Exception as exc:
+            _recover(run_id, exc, adapter_id=adapter_id)
+            raise
+
+
+def rollback() -> dict[str, Any]:
+    with single_run():
+        maintenance.enter()
+        if not maintenance.wait_for_drain(DRAIN_TIMEOUT):
+            maintenance.exit()
+            raise TimeoutError("timed out draining before rollback")
+        prior = registry.read()["aliases"].copy()
+        document, adapter_id = registry.rollback()
+        try:
+            controller.ensure_loaded(adapter_id)
+            completion = _invoke_probe(
+                adapter_id,
+                {"prompt": "Reply with exactly: CLARE_ROLLBACK_OK", "expected_keyword": "CLARE_ROLLBACK_OK"},
+            )
+            if "CLARE_ROLLBACK_OK" not in completion:
+                raise RuntimeError("rollback smoke request failed")
+            metrics.lifecycle_outcomes.labels(outcome="rollback").inc()
+            return {"current": document["aliases"]["current"], "rollback": document["aliases"]["rollback"]}
+        except Exception:
+            registry.update(lambda data: data["aliases"].update(prior))
+            if prior["current"]:
+                controller.ensure_loaded(prior["current"])
+            raise
+        finally:
+            maintenance.exit()
+
+
+def _recover(run_id: str, error: Exception, adapter_id: str | None = None) -> None:
+    log.exception("Lifecycle failure; recovering prior approved adapter")
+    _set_state("recovering", run_id=run_id, candidate_id=adapter_id, error=str(error))
+    try:
+        if adapter_id and adapter_id in registry.read()["adapters"]:
+            registry.transition(adapter_id, "failed")
+        _container("start", VLLM_CONTAINER)
+        _wait_for_vllm()
+        controller.reconcile()
+        current = registry.read()["aliases"]["current"]
+        if current:
+            controller.ensure_loaded(current)
+        metrics.lifecycle_outcomes.labels(outcome="recovered").inc()
+    finally:
+        maintenance.exit()
+        _set_state("failed", run_id=run_id, candidate_id=adapter_id, error=str(error))
+
+
+def _invoke_probe(model: str, probe: dict[str, Any]) -> str:
+    response = httpx.post(
+        f"{VLLM_URL}/v1/chat/completions",
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": probe["prompt"]}],
+            "temperature": 0,
+            "seed": 42,
+            "max_tokens": 256,
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
+def _container(action: str, name: str) -> None:
+    if action not in {"start", "stop"}:
+        raise ValueError("unsupported container action")
+    response = httpx.post(f"{DOCKER_PROXY_URL}/containers/{name}/{action}", timeout=30)
+    if response.status_code not in {204, 304}:
+        response.raise_for_status()
+
+
+def _wait_for_vllm() -> None:
+    deadline = time.monotonic() + START_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(f"{VLLM_URL}/health", timeout=5)
+            if response.is_success:
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(2)
+    raise TimeoutError("vLLM did not become healthy")
+
+
+def _set_state(phase: str, **fields: Any) -> None:
+    if phase not in PHASES:
+        raise ValueError(f"unknown lifecycle phase: {phase}")
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    data = status()
+    data.update(fields)
+    data["phase"] = phase
+    data["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+    _atomic_json(STATE_PATH, data)
+    for label in PHASES:
+        metrics.lifecycle_phase.labels(phase=label).set(1 if label == phase else 0)
+
+
+def _atomic_json(path: pathlib.Path, data: dict[str, Any]) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _new_run_id() -> str:
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"run-{stamp}-{uuid.uuid4().hex[:12]}"
+
+
+@contextmanager
+def single_run() -> Iterator[None]:
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    with LOCK_PATH.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another lifecycle operation is active") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)

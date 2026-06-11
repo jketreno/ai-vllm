@@ -1,0 +1,19 @@
+{
+  "adapters": {},
+  "aliases": {
+    "current": null,
+    "rollback": null
+  },
+  "base": {
+    "architecture": "Qwen3_5MoeForConditionalGeneration",
+    "config_hash": "REPLACE_WITH_SHA256",
+    "inference_quantization": "fp8",
+    "inference_model_id": "Qwen/Qwen3.5-35B-A3B-FP8",
+    "inference_revision": "REPLACE_WITH_FP8_HF_REVISION",
+    "model_id": "Qwen/Qwen3.5-35B-A3B",
+    "revision": "REPLACE_WITH_MATCHING_NON_FP8_HF_REVISION",
+    "tokenizer_hash": "REPLACE_WITH_SHA256"
+  },
+  "schema_version": 1,
+  "updated_at": "1970-01-01T00:00:00+00:00"
+}

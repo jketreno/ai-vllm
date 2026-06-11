@@ -1,104 +1,115 @@
-# ai-vllm
+# ai-vllm with CLARE₂
 
-Docker Compose stack for running:
+This stack serves `Qwen/Qwen3.5-35B-A3B-FP8` through an authenticated CLARE₂
+policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
+only on the private `inference` Docker network.
 
-- `vllm-engine` on port `8000`
-- `open-webui` on port `8080`
+## Security Setup
 
-This project is set up to expose an OpenAI-compatible vLLM endpoint and connect Open WebUI to it.
+Copy `.env.example` to `.env`, then set the exact Hugging Face revision and
+base/tokenizer hashes. Create these files with mode `0600`:
 
-## Requirements
+```text
+secrets/anthropic_api_key
+secrets/huggingface_token
+secrets/ldap_app_password
+secrets/clare2_proxy_token
+secrets/clare2_operator_token
+secrets/clare2_callback_secret
+```
 
-- Docker with the Compose plugin
-- NVIDIA Container Toolkit / GPU-enabled Docker runtime
-- Access to a supported NVIDIA GPU
-- Hugging Face model access for `openai/gpt-oss-120b`
+Generate the three CLARE₂ tokens independently with at least 32 random bytes.
+Credentials formerly stored in `.env` must be rotated at their providers.
+This repository has no tracked `.env` history; verify that remains true with:
 
-## Files
-
-- `docker-compose.yml`: service definitions for Open WebUI and vLLM
-- `.env`: Open WebUI environment variables, including LDAP settings
-
-## Services
-
-### `vllm-engine`
-
-- Image: `nvcr.io/nvidia/vllm:26.04-py3`
-- Port: `8000`
-- GPU access enabled with `gpus: all`
-- Uses `ipc: host` and increased ulimits as recommended by vLLM
-- Mounts the local Hugging Face cache from `~/.cache/huggingface`
-
-### `open-webui`
-
-- Image: `ghcr.io/open-webui/open-webui:main`
-- Port: `8080`
-- Persists data in the named Docker volume `open-webui`
-- Loads configuration from `.env`
-- Configured to talk to the local vLLM-backed OpenAI-compatible endpoint
+```bash
+git log --all -- .env
+```
 
 ## Start
 
-Bring the stack up in the project directory:
+The trainer container must exist in a stopped state so the restricted Docker
+proxy only needs container inspect/start/stop access:
 
 ```bash
+docker compose --profile training build
+docker compose --profile training create clare2-train
 docker compose up -d
 ```
 
-Recreate a single service after config changes:
+Public bindings:
 
-```bash
-docker compose up -d --force-recreate open-webui
-docker compose up -d --force-recreate vllm-engine
+- `127.0.0.1:8000`: authenticated OpenAI-compatible policy proxy and operator API
+- `127.0.0.1:8002`: CLARE Temper MCP server
+- `127.0.0.1:9091`: Prometheus metrics
+- `0.0.0.0:8080`: Open WebUI
+
+There is no host binding for raw vLLM.
+
+## Agent Routing
+
+Agents call `clare_temper_route(project, task_kind, capabilities)` and retain
+the returned opaque route ID for the session. Requests send:
+
+```text
+Authorization: Bearer <clare2_proxy_token>
+X-CLARE-Route-ID: <opaque route id>
 ```
 
-## Logs
+The proxy ignores the client's `model`, loads the pinned approved adapter when
+needed, and forwards the immutable adapter ID upstream. Missing route context
+uses the pinned base model. Management routes are never proxied.
 
-Follow all logs:
+Policy order:
 
-```bash
-docker compose logs -f
+1. Approved project adapter matching all requested capabilities.
+2. Approved global adapter matching all requested capabilities.
+3. Base Qwen3.5 model.
+
+## Adapter Registry
+
+`models/adapters/registry.json` is the source of truth. It records the exact
+base fingerprint, immutable adapter metadata, lifecycle state, evaluation, and
+the `current`/`rollback` aliases. Adapter directories must have the same name
+as their immutable ID and may not be symlinks.
+
+The service creates the initial registry from `.env`; replace every placeholder
+fingerprint before training. `registry.example.json` documents the schema.
+
+## Nightly Lifecycle
+
+The persisted, single-run state machine performs:
+
+```text
+maintenance -> drain -> stop vLLM -> train -> restart base -> reconcile
+-> load current and candidate -> deterministic comparison -> promote/reject
+-> resume
 ```
 
-Follow one service:
+Promotion requires all mandatory probes, pass rate `>= 0.90`, and no category
+regression. Failure restarts the prior approved adapter and preserves the
+candidate directory.
 
-```bash
-docker compose logs -f open-webui
-docker compose logs -f vllm-engine
+Operator calls require `Authorization: Bearer <clare2_operator_token>`:
+
+```text
+GET  /operator/adapters
+GET  /operator/status
+POST /operator/promote/{adapter_id}
+POST /operator/rollback
+POST /operator/maintenance/{enter|exit}
 ```
 
-## Endpoints
+Training callbacks use a timestamped HMAC and are idempotent.
 
-- Open WebUI: `http://localhost:8080`
-- vLLM OpenAI-compatible API: `http://localhost:8000/v1`
-
-## LDAP
-
-Open WebUI LDAP settings live in `.env`.
-
-Important details for this setup:
-
-- Open WebUI reads `LDAP_*` variables, not `OWEBUI_LDAP_*`
-- `ENABLE_LDAP=True` enables LDAP auth
-- `LDAP_USE_TLS=False` is correct for plain LDAP on port `389`
-- If your directory uses LDAPS, switch to port `636` and set `LDAP_USE_TLS=True`
-
-## Validate Configuration
-
-Render the effective Compose config:
+## Verification
 
 ```bash
-docker compose config
+PYTHONPATH=clare2/pipeline python -m unittest discover -s clare2/pipeline/tests
+docker compose config --quiet
 ```
 
-Check that Open WebUI received the LDAP env vars:
-
-```bash
-docker exec open-webui sh -lc 'env | grep "^ENABLE_LDAP\|^LDAP_" | sort'
-```
-
-## Stop
-
-```bash
-docker compose down
-```
+GPU acceptance should use a small Qwen-compatible base and two distinguishable
+LoRA fixtures before enabling the nightly schedule. Confirm each route selects
+its fixture, unload/reload works, restart reconciliation succeeds, and requests
+without a route use the base model.
