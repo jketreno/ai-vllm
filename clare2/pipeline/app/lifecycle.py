@@ -80,7 +80,11 @@ def start_training() -> None:
             raise
 
 
-def complete_training(adapter_id: str, run_id: str) -> dict[str, Any]:
+def complete_training(
+    adapter_id: str,
+    run_id: str,
+    mlflow_run_id: str | None = None,
+) -> dict[str, Any]:
     with single_run():
         state = status()
         if state.get("completed_adapter_id") == adapter_id:
@@ -92,7 +96,12 @@ def complete_training(adapter_id: str, run_id: str) -> dict[str, Any]:
             candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
             if adapter_id not in registry.read()["adapters"]:
                 registry.add_adapter(candidate)
-            _set_state("restarting", run_id=run_id, candidate_id=adapter_id)
+            _set_state(
+                "restarting",
+                run_id=run_id,
+                candidate_id=adapter_id,
+                mlflow_run_id=mlflow_run_id,
+            )
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
@@ -115,6 +124,7 @@ def complete_training(adapter_id: str, run_id: str) -> dict[str, Any]:
                     run_id=run_id,
                     candidate_id=adapter_id,
                     completed_adapter_id=adapter_id,
+                    mlflow_run_id=mlflow_run_id,
                     outcome="rejected",
                     evaluation=report,
                 )
@@ -130,6 +140,7 @@ def complete_training(adapter_id: str, run_id: str) -> dict[str, Any]:
                 run_id=run_id,
                 candidate_id=adapter_id,
                 completed_adapter_id=adapter_id,
+                mlflow_run_id=mlflow_run_id,
                 outcome="promoted",
                 evaluation=report,
             )

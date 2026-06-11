@@ -36,6 +36,7 @@ meta = json.load(open(sys.argv[1]))
 print(json.dumps({
     "adapter_id": meta["adapter_id"],
     "run_id": meta["run_id"],
+    "mlflow_run_id": meta["mlflow_run_id"],
     "loss": meta["final_loss"],
     "epoch_losses": [entry["loss"] for entry in meta["loss_history"]],
 }, separators=(",", ":")))

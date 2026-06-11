@@ -3,5 +3,7 @@ secrets/
 models/adapters/*
 !models/adapters/.gitkeep
 !models/adapters/registry.example.json
+models/huggingface/
+/mlflow/
 corpus/meta/lifecycle.json
 corpus/meta/lifecycle.lock

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 
-COPY train.py train.sh ./
+COPY train.py train.sh mlflow_tracking.py ./
 RUN chmod +x train.sh
 
 ENTRYPOINT ["/bin/bash", "/app/train.sh"]

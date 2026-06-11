@@ -5,42 +5,43 @@ policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
 only on the private `inference` Docker network. The same local Qwen3.5 service
 performs distillation, summarization, evaluation, and agent inference.
 
-## Security Setup
+## Automated Setup
 
-Copy `.env.example` to `.env`, then set the exact Hugging Face revision and
-base/tokenizer hashes. Create these files with mode `0600`:
-
-```text
-secrets/huggingface_token
-secrets/ldap_app_password
-secrets/clare2_proxy_token
-secrets/clare2_operator_token
-secrets/clare2_callback_secret
-```
-
-Generate the three CLARE₂ tokens independently with at least 32 random bytes.
-Credentials formerly stored in `.env` must be rotated at their providers.
-This repository has no tracked `.env` history; verify that remains true with:
+Run the Dockerized bootstrap. It creates secrets, resolves and downloads pinned
+models into a repository bind mount, computes model fingerprints, builds the
+services, and starts the core stack:
 
 ```bash
-git log --all -- .env
+HF_TOKEN='<Hugging Face token>' \
+CLARE2_PROJECT_MAP='{"clare":"github:jketreno/clare"}' \
+CLARE2_PROJECT_ID='github:jketreno/clare' \
+./setup-clare2.sh --capture-project /path/to/clare
 ```
 
-## Start
+Models are stored under `models/huggingface/` by default and bind-mounted into
+both vLLM and the trainer. Set `CLARE2_MODEL_CACHE` to use another host
+directory. Use `./setup-clare2.sh --no-start` to prepare without startup.
+No Python packages are installed on the host.
 
-The trainer container must exist in a stopped state so the restricted Docker
-proxy only needs container inspect/start/stop access:
+Secrets remain under `secrets/` with mode `0600`; `.env` contains no
+credentials.
+
+Launch Codex through the capture wrapper so its lifecycle hooks and CLARE
+verification events write to the same session:
 
 ```bash
-docker compose --profile training build
-docker compose --profile training create clare2-train
-docker compose up -d
+./clare2/scripts/clare2-agent.sh codex /path/to/clare
 ```
+
+Codex's private transcript directory is not used as an ingestion API. The
+project hooks normalize prompts and final responses directly into
+`corpus/sessions/YYYY/MM/DD/<session-id>.jsonl`.
 
 Public bindings:
 
 - `127.0.0.1:8000`: authenticated inference policy proxy and operator API
 - `127.0.0.1:8002`: CLARE Temper MCP server
+- `127.0.0.1:5000`: MLflow experiment tracking UI
 - `127.0.0.1:9091`: Prometheus metrics
 - `0.0.0.0:8080`: Open WebUI
 
@@ -101,6 +102,20 @@ POST /operator/maintenance/{enter|exit}
 ```
 
 Training callbacks use a timestamped HMAC and are idempotent.
+
+## MLflow Tracking
+
+The private `mlflow` service stores run metadata in `mlflow/data/mlflow.db` and
+artifacts under `mlflow/artifacts/`. The UI is bound only to localhost:
+
+```text
+http://127.0.0.1:5000
+```
+
+Every QLoRA run logs its immutable adapter and lifecycle IDs, project, exact
+base revision, corpus and dependency hashes, hyperparameters, skipped-record
+counts, per-step/final loss, duration, metadata, and generated adapter files.
+The raw training corpus is not uploaded to MLflow.
 
 ## Verification
 

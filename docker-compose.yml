@@ -19,6 +19,37 @@ x-clare2-env: &clare2-env
   CLARE2_CALLBACK_SECRET_FILE: /run/secrets/clare2_callback_secret
 
 services:
+  mlflow:
+    build:
+      context: clare2/mlflow
+      args:
+        MLFLOW_VERSION: ${CLARE2_MLFLOW_VERSION:-3.13.0}
+    restart: unless-stopped
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - sqlite:////mlflow/data/mlflow.db
+      - --artifacts-destination
+      - /mlflow/artifacts
+      - --serve-artifacts
+      - --allowed-hosts
+      - mlflow:*,localhost:*,127.0.0.1:*
+    ports:
+      - "127.0.0.1:${CLARE2_MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - ./mlflow:/mlflow
+    networks: [control, operator]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   redis:
     image: redis:7.4-alpine
     restart: unless-stopped
@@ -84,17 +115,15 @@ services:
 
   vllm-engine:
     image: nvcr.io/nvidia/vllm:26.04-py3
+    container_name: vllm-engine
     restart: unless-stopped
     gpus: all
     ipc: host
     expose: ["8001"]
     environment:
       VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
-    secrets:
-      - source: huggingface_token
-        target: /root/.cache/huggingface/token
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface:ro
       - ./models:/models:ro
     networks: [inference]
     ulimits:
@@ -139,6 +168,7 @@ services:
       start_period: 300s
 
   clare2-train:
+    container_name: clare2-train
     build:
       context: clare2/train
     profiles: [training]
@@ -148,15 +178,18 @@ services:
       <<: *clare2-env
       CLARE2_PROJECT_ID: ${CLARE2_PROJECT_ID:-global}
       CLARE2_PIPELINE_URL: http://clare2-policy:8000
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: ${CLARE2_MLFLOW_EXPERIMENT:-clare2-qlora}
     secrets:
-      - source: huggingface_token
-        target: /root/.cache/huggingface/token
       - clare2_callback_secret
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
       - ./corpus:/corpus:ro
       - ./models:/models
     networks: [control]
+    depends_on:
+      mlflow:
+        condition: service_healthy
     ulimits:
       memlock: -1
       stack: 67108864
@@ -219,6 +252,7 @@ networks:
     internal: true
   inference:
     internal: true
+  operator: {}
   frontend: {}
 
 volumes:
@@ -227,8 +261,6 @@ volumes:
   qdrant_storage: {}
 
 secrets:
-  huggingface_token:
-    file: ${HF_TOKEN_FILE:-./secrets/huggingface_token}
   ldap_app_password:
     file: ${LDAP_APP_PASSWORD_FILE:-./secrets/ldap_app_password}
   clare2_proxy_token:

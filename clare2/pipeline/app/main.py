@@ -30,6 +30,7 @@ operator_auth = bearer_dependency(secret_value("CLARE2_OPERATOR_TOKEN"))
 class TrainingDonePayload(BaseModel):
     adapter_id: str
     run_id: str
+    mlflow_run_id: str | None = None
     loss: float | None = None
     epoch_losses: list[float] = Field(default_factory=list)
 
@@ -90,7 +91,12 @@ async def training_done(
         metrics.training_loss_by_epoch.labels(epoch=str(epoch)).set(loss)
     if payload.loss is not None:
         metrics.training_loss_final.set(payload.loss)
-    background_tasks.add_task(lifecycle.complete_training, payload.adapter_id, payload.run_id)
+    background_tasks.add_task(
+        lifecycle.complete_training,
+        payload.adapter_id,
+        payload.run_id,
+        payload.mlflow_run_id,
+    )
     return {"status": "accepted"}
 
 

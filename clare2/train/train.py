@@ -18,6 +18,8 @@ from transformers import TrainerCallback
 from trl import SFTConfig, SFTTrainer
 from unsloth import FastModel
 
+from mlflow_tracking import TrainingTracker
+
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 
@@ -106,8 +108,9 @@ def load_corpus(
 
 
 class FiniteLossCallback(TrainerCallback):
-    def __init__(self) -> None:
+    def __init__(self, tracker: TrainingTracker | None = None) -> None:
         self.loss_history: list[dict[str, float]] = []
+        self.tracker = tracker
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs and "loss" in logs:
@@ -115,6 +118,8 @@ class FiniteLossCallback(TrainerCallback):
             if not math.isfinite(loss):
                 raise FloatingPointError(f"non-finite training loss: {loss}")
             self.loss_history.append({"step": float(state.global_step), "loss": loss})
+            if self.tracker is not None:
+                self.tracker.log_metric("train.loss", loss, step=state.global_step)
 
 
 def main() -> None:
@@ -124,117 +129,168 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=False)
     train_file = pathlib.Path(args.train_file)
     started = time.monotonic()
-
-    model, tokenizer = FastModel.from_pretrained(
-        model_name=args.model_name,
-        revision=args.revision,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=True,
-        dtype="bfloat16",
-        trust_remote_code=True,
+    tracker = TrainingTracker(
+        lifecycle_run_id=args.run_id,
+        adapter_id=args.adapter_id,
+        project_id=args.project_id,
     )
-    model = FastModel.get_peft_model(
-        model,
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=TARGET_MODULES,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=args.seed,
-    )
-    dataset, skipped = load_corpus(train_file, tokenizer, args.max_seq_length)
-    callback = FiniteLossCallback()
-    training_args = SFTConfig(
-        output_dir=str(output_dir),
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        warmup_ratio=0.03,
-        lr_scheduler_type="cosine",
-        logging_steps=1,
-        save_strategy="epoch",
-        bf16=True,
-        max_length=args.max_seq_length,
-        dataset_text_field="text",
-        report_to="none",
-        seed=args.seed,
-    )
-    trainer = SFTTrainer(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset,
-        args=training_args,
-        callbacks=[callback],
-    )
-    result = trainer.train()
-    if not math.isfinite(float(result.training_loss)):
-        raise FloatingPointError("final training loss is not finite")
-
-    model.save_pretrained(str(output_dir), safe_serialization=True)
-    tokenizer.save_pretrained(str(output_dir))
-    PeftConfig.from_pretrained(str(output_dir))
-
-    config_hash = text_hash(model.config.to_json_string())
-    tokenizer_hash = text_hash(json.dumps(tokenizer.init_kwargs, sort_keys=True, default=str))
     corpus_hash = file_hash(train_file)
     lock_path = pathlib.Path(args.dependency_lock)
-    metadata = {
-        "adapter_id": args.adapter_id,
-        "run_id": args.run_id,
-        "created_at": datetime.now(tz=timezone.utc).isoformat(),
-        "corpus_hash": corpus_hash,
-        "base": {
-            "model_id": args.model_name,
-            "revision": args.revision,
-            "config_hash": config_hash,
-            "tokenizer_hash": tokenizer_hash,
-        },
-        "dependency_lock_hash": file_hash(lock_path),
-        "seed": args.seed,
-        "hyperparameters": {
-            "rank": args.lora_r,
-            "alpha": args.lora_alpha,
-            "dropout": args.lora_dropout,
+    mlflow_run_id = tracker.start(
+        {
+            "base_model": args.model_name,
+            "base_revision": args.revision,
+            "corpus_hash": corpus_hash,
+            "dependency_lock_hash": file_hash(lock_path),
+            "seed": args.seed,
+            "lora_rank": args.lora_r,
+            "lora_alpha": args.lora_alpha,
+            "lora_dropout": args.lora_dropout,
+            "target_modules": TARGET_MODULES,
             "max_seq_length": args.max_seq_length,
             "epochs": args.num_train_epochs,
+            "batch_size": args.per_device_train_batch_size,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
             "learning_rate": args.learning_rate,
             "bf16": True,
             "load_in_4bit": True,
         },
-        "target_modules": TARGET_MODULES,
-        "training_records": len(dataset),
-        "skipped_records": skipped,
-        "loss_history": callback.loss_history,
-        "final_loss": float(result.training_loss),
-        "duration_seconds": round(time.monotonic() - started, 3),
-    }
-    (output_dir / "training_meta.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    candidate = {
-        "id": args.adapter_id,
-        "directory": args.adapter_id,
-        "created_at": metadata["created_at"],
-        "corpus_hash": corpus_hash,
-        "base": metadata["base"],
-        "peft": {
-            "rank": args.lora_r,
-            "alpha": args.lora_alpha,
-            "dropout": args.lora_dropout,
+        {
+            "clare2.stage": "training",
+            "clare2.framework": "unsloth",
+            "clare2.quantization": "qlora-4bit",
         },
-        "target_modules": TARGET_MODULES,
-        "evaluation": None,
-        "project_scope": args.project_id,
-        "capabilities": ["code", "review"],
-        "status": "candidate",
-    }
-    (output_dir / "candidate_manifest.json").write_text(
-        json.dumps(candidate, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
+
+    try:
+        model, tokenizer = FastModel.from_pretrained(
+            model_name=args.model_name,
+            revision=args.revision,
+            max_seq_length=args.max_seq_length,
+            load_in_4bit=True,
+            dtype="bfloat16",
+            trust_remote_code=True,
+        )
+        model = FastModel.get_peft_model(
+            model,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=TARGET_MODULES,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=args.seed,
+        )
+        dataset, skipped = load_corpus(train_file, tokenizer, args.max_seq_length)
+        tracker.log_metric("corpus.training_records", float(len(dataset)))
+        for reason, count in skipped.items():
+            tracker.log_metric(f"corpus.skipped.{reason}", float(count))
+        tracker.log_dict(skipped, "corpus/skipped_records.json")
+        callback = FiniteLossCallback(tracker)
+        training_args = SFTConfig(
+            output_dir=str(output_dir),
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            warmup_ratio=0.03,
+            lr_scheduler_type="cosine",
+            logging_steps=1,
+            save_strategy="epoch",
+            bf16=True,
+            max_length=args.max_seq_length,
+            dataset_text_field="text",
+            report_to="none",
+            seed=args.seed,
+        )
+        trainer = SFTTrainer(
+            model=model,
+            processing_class=tokenizer,
+            train_dataset=dataset,
+            args=training_args,
+            callbacks=[callback],
+        )
+        result = trainer.train()
+        if not math.isfinite(float(result.training_loss)):
+            raise FloatingPointError("final training loss is not finite")
+
+        model.save_pretrained(str(output_dir), safe_serialization=True)
+        tokenizer.save_pretrained(str(output_dir))
+        PeftConfig.from_pretrained(str(output_dir))
+
+        config_hash = text_hash(model.config.to_json_string())
+        tokenizer_hash = text_hash(json.dumps(tokenizer.init_kwargs, sort_keys=True, default=str))
+        tracker.log_params(
+            {
+                "base_config_hash": config_hash,
+                "tokenizer_hash": tokenizer_hash,
+            }
+        )
+        metadata = {
+            "adapter_id": args.adapter_id,
+            "run_id": args.run_id,
+            "mlflow_run_id": mlflow_run_id,
+            "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            "corpus_hash": corpus_hash,
+            "base": {
+                "model_id": args.model_name,
+                "revision": args.revision,
+                "config_hash": config_hash,
+                "tokenizer_hash": tokenizer_hash,
+            },
+            "dependency_lock_hash": file_hash(lock_path),
+            "seed": args.seed,
+            "hyperparameters": {
+                "rank": args.lora_r,
+                "alpha": args.lora_alpha,
+                "dropout": args.lora_dropout,
+                "max_seq_length": args.max_seq_length,
+                "epochs": args.num_train_epochs,
+                "learning_rate": args.learning_rate,
+                "bf16": True,
+                "load_in_4bit": True,
+            },
+            "target_modules": TARGET_MODULES,
+            "training_records": len(dataset),
+            "skipped_records": skipped,
+            "loss_history": callback.loss_history,
+            "final_loss": float(result.training_loss),
+            "duration_seconds": round(time.monotonic() - started, 3),
+        }
+        (output_dir / "training_meta.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        candidate = {
+            "id": args.adapter_id,
+            "directory": args.adapter_id,
+            "created_at": metadata["created_at"],
+            "corpus_hash": corpus_hash,
+            "base": metadata["base"],
+            "peft": {
+                "rank": args.lora_r,
+                "alpha": args.lora_alpha,
+                "dropout": args.lora_dropout,
+            },
+            "target_modules": TARGET_MODULES,
+            "evaluation": None,
+            "project_scope": args.project_id,
+            "capabilities": ["code", "review"],
+            "status": "candidate",
+            "mlflow_run_id": mlflow_run_id,
+        }
+        (output_dir / "candidate_manifest.json").write_text(
+            json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tracker.log_metric("train.final_loss", float(result.training_loss))
+        tracker.log_metric("train.duration_seconds", metadata["duration_seconds"])
+        tracker.log_dict(metadata, "training/training_meta.json")
+        tracker.log_adapter_artifacts(output_dir)
+        tracker.finish()
+    except Exception:
+        tracker.finish("FAILED")
+        raise
 
 
 if __name__ == "__main__":
