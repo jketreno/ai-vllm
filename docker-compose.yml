@@ -310,8 +310,8 @@ services:
     image: qdrant/qdrant:v1.13.6
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
-      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     networks: [frontend]
