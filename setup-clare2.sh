@@ -19,6 +19,7 @@ Environment:
   CLARE2_BIND_ADDRESS      Inference/MCP host bind (default: 127.0.0.1)
   CLARE2_INFERENCE_MODEL   Serving model repository
   CLARE2_TRAIN_MODEL       Training model repository
+  SPAM_MODEL               Spam classification model repository
   CLARE2_PROJECT_MAP       Canonical repository map JSON
   CLARE2_PROJECT_ID        Adapter project scope
 EOF
@@ -114,6 +115,7 @@ secret clare2_proxy_token
 secret clare2_mcp_token
 secret clare2_operator_token
 secret clare2_callback_secret
+secret spam_api_token
 [[ -e "${SECRETS_DIR}/ldap_app_password" ]] ||
   printf '%s' "disabled" >"${SECRETS_DIR}/ldap_app_password"
 chmod 600 "${SECRETS_DIR}/ldap_app_password"
@@ -124,14 +126,17 @@ done
 
 INFERENCE_MODEL="${CLARE2_INFERENCE_MODEL:-$(read_env CLARE2_INFERENCE_MODEL Qwen/Qwen3.5-35B-A3B-FP8)}"
 TRAIN_MODEL="${CLARE2_TRAIN_MODEL:-$(read_env CLARE2_TRAIN_MODEL Qwen/Qwen3.5-35B-A3B)}"
+SPAM_MODEL="${SPAM_MODEL:-$(read_env SPAM_MODEL Qwen/Qwen3.5-4B)}"
 INFERENCE_REVISION="${CLARE2_INFERENCE_REVISION:-$(read_env CLARE2_INFERENCE_REVISION "")}"
 TRAIN_REVISION="${CLARE2_TRAIN_REVISION:-$(read_env CLARE2_TRAIN_REVISION "")}"
+SPAM_REVISION="${SPAM_MODEL_REVISION:-$(read_env SPAM_MODEL_REVISION "")}"
 MLFLOW_PORT="${CLARE2_MLFLOW_PORT:-$(read_env CLARE2_MLFLOW_PORT 5000)}"
 BIND_ADDRESS="${CLARE2_BIND_ADDRESS:-$(read_env CLARE2_BIND_ADDRESS 127.0.0.1)}"
 
 write_env CLARE2_INFERENCE_MODEL "$INFERENCE_MODEL"
 write_env CLARE2_DISTILL_MODEL "$INFERENCE_MODEL"
 write_env CLARE2_TRAIN_MODEL "$TRAIN_MODEL"
+write_env SPAM_MODEL "$SPAM_MODEL"
 write_env CLARE2_MODEL_CACHE "$MODEL_CACHE"
 write_env CLARE2_MLFLOW_PORT "$MLFLOW_PORT"
 write_env CLARE2_BIND_ADDRESS "$BIND_ADDRESS"
@@ -153,8 +158,10 @@ docker run --rm \
   "$SETUP_IMAGE" \
   --inference-model "$INFERENCE_MODEL" \
   --training-model "$TRAIN_MODEL" \
+  --spam-model "$SPAM_MODEL" \
   --inference-revision "$INFERENCE_REVISION" \
-  --training-revision "$TRAIN_REVISION"
+  --training-revision "$TRAIN_REVISION" \
+  --spam-revision "$SPAM_REVISION"
 
 while IFS='=' read -r key value; do
   [[ -n "$key" ]] && write_env "$key" "$value"
@@ -164,11 +171,11 @@ echo "Validating Compose configuration..."
 docker compose config --quiet
 echo "Building CLARE₂ services..."
 docker compose --profile training build \
-  mlflow docker-socket-proxy clare2-policy clare2-mcp clare2-train
+  mlflow docker-socket-proxy clare2-policy clare2-mcp clare2-train spam-classifier
 docker compose --profile training create clare2-train
 
 if $START_SERVICES; then
-  docker compose up -d mlflow redis docker-socket-proxy vllm-engine clare2-policy clare2-mcp
+  docker compose up -d mlflow redis docker-socket-proxy vllm-engine clare2-policy clare2-mcp spam-vllm spam-classifier
   echo "Waiting for MLflow..."
   for _ in $(seq 1 60); do
     curl --fail --silent "http://127.0.0.1:${MLFLOW_PORT}/health" >/dev/null && break
@@ -182,6 +189,14 @@ if $START_SERVICES; then
   done
   curl --fail --silent http://127.0.0.1:8000/health
   printf '\n'
+  echo "Waiting for the spam classifier..."
+  for _ in $(seq 1 120); do
+    curl --fail --silent http://127.0.0.1:8003/health >/dev/null && break
+    sleep 5
+  done
+  curl --fail --silent http://127.0.0.1:8003/health
+  printf '\n'
+
   OPERATOR_TOKEN=$(<"${SECRETS_DIR}/clare2_operator_token")
   curl --fail --silent \
     -H "Authorization: Bearer ${OPERATOR_TOKEN}" \
@@ -196,5 +211,6 @@ Inference/MCP bind address: $BIND_ADDRESS
 MCP port: 8002 (/mcp/)
 Policy port: 8000
 MLflow UI: http://127.0.0.1:${MLFLOW_PORT}
+Spam classifier port: 8003
 Agent wrapper: ${ROOT}/clare2/scripts/clare2-agent.sh
 EOF

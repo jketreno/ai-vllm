@@ -5,6 +5,10 @@ policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
 only on the private `inference` Docker network. The same local Qwen3.5 service
 performs distillation, summarization, evaluation, and agent inference.
 
+It also serves the smaller `Qwen/Qwen3.5-4B` through a dedicated authenticated
+spam-classification API. The classifier uses vLLM JSON-schema constrained
+decoding and is isolated from the general-purpose inference endpoint.
+
 ## Automated Setup
 
 Run the Dockerized bootstrap. It creates secrets, resolves and downloads pinned
@@ -47,9 +51,51 @@ Public bindings:
 - `127.0.0.1:8002`: CLARE Temper MCP server
 - `127.0.0.1:5000`: MLflow experiment tracking UI
 - `127.0.0.1:9091`: Prometheus metrics
+- `127.0.0.1:8003`: authenticated spam-classification API
 - `0.0.0.0:8080`: Open WebUI
 
 There is no host binding for raw vLLM.
+
+## Spam Classification
+
+The classifier accepts parsed email data rather than raw RFC 822 input. This
+keeps MIME parsing and mail mutation out of the model-facing service:
+
+```bash
+SPAM_TOKEN=$(<secrets/spam_api_token)
+curl --fail --silent \
+  -H "Authorization: Bearer ${SPAM_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "envelope_from": "billing@lookalike.example",
+    "envelope_to": ["user@example.com"],
+    "headers": [
+      {"name": "From", "value": "Example Billing <billing@lookalike.example>"},
+      {"name": "Authentication-Results", "value": "spf=fail; dkim=fail"}
+    ],
+    "subject": "Your account will be closed today",
+    "text_body": "Verify your password immediately at the supplied link."
+  }' \
+  http://127.0.0.1:8003/v1/classify
+```
+
+The response contract is:
+
+```json
+{
+  "schema_version": "1",
+  "classification": "SPAM",
+  "spam_score": 0.97,
+  "threshold": 0.8,
+  "reasons": ["Urgent credential-verification request", "SPF and DKIM failed"],
+  "model": "Qwen/Qwen3.5-4B"
+}
+```
+
+`spam_score` is the model's estimate, not a calibrated probability. Tune
+`SPAM_THRESHOLD` against a representative labeled mailbox before allowing the
+mail-server integration to modify messages. A model or API failure returns an
+error and must not be interpreted as spam.
 
 ## Agent Routing
 

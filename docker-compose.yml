@@ -147,7 +147,7 @@ services:
       - "1"
       - --enable-expert-parallel
       - --gpu-memory-utilization
-      - "0.90"
+      - "${CLARE2_GPU_MEMORY_UTILIZATION:-0.76}"
       - --max-model-len
       - "131072"
       - --kv-cache-dtype
@@ -172,6 +172,71 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  spam-vllm:
+    image: nvcr.io/nvidia/vllm:26.04-py3
+    container_name: spam-vllm
+    restart: unless-stopped
+    gpus: all
+    ipc: host
+    expose: ["8001"]
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface/hub:ro
+    depends_on:
+      vllm-engine:
+        condition: service_healthy
+    networks: [spam]
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command:
+      - vllm
+      - serve
+      - ${SPAM_MODEL:-Qwen/Qwen3.5-4B}
+      - --revision
+      - ${SPAM_MODEL_REVISION:?pin the spam model Hugging Face revision}
+      - --port
+      - "8001"
+      - --gpu-memory-utilization
+      - "${SPAM_GPU_MEMORY_UTILIZATION:-0.20}"
+      - --max-model-len
+      - "${SPAM_MAX_MODEL_LEN:-16384}"
+      - --enable-prefix-caching
+      - --max-num-batched-tokens
+      - "4096"
+      - --trust-remote-code
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  spam-classifier:
+    build: spam-classifier
+    restart: unless-stopped
+    environment:
+      SPAM_MODEL: ${SPAM_MODEL:-Qwen/Qwen3.5-4B}
+      SPAM_VLLM_URL: http://spam-vllm:8001
+      SPAM_THRESHOLD: ${SPAM_THRESHOLD:-0.80}
+      SPAM_MAX_MESSAGE_CHARS: ${SPAM_MAX_MESSAGE_CHARS:-60000}
+      SPAM_API_TOKEN_FILE: /run/secrets/spam_api_token
+    secrets:
+      - spam_api_token
+    ports:
+      - "${SPAM_BIND_ADDRESS:-127.0.0.1}:${SPAM_API_PORT:-8003}:8000"
+    depends_on:
+      spam-vllm:
+        condition: service_healthy
+    networks: [spam, operator]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   clare2-train:
     container_name: clare2-train
@@ -258,6 +323,8 @@ networks:
     internal: true
   inference:
     internal: true
+  spam:
+    internal: true
   operator: {}
   frontend: {}
 
@@ -277,3 +344,5 @@ secrets:
     file: ${CLARE2_OPERATOR_TOKEN_FILE:-./secrets/clare2_operator_token}
   clare2_callback_secret:
     file: ${CLARE2_CALLBACK_SECRET_FILE:-./secrets/clare2_callback_secret}
+  spam_api_token:
+    file: ${SPAM_API_TOKEN_FILE:-./secrets/spam_api_token}

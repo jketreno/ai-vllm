@@ -16,8 +16,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inference-model", required=True)
     parser.add_argument("--training-model", required=True)
+    parser.add_argument("--spam-model", required=True)
     parser.add_argument("--inference-revision")
     parser.add_argument("--training-revision")
+    parser.add_argument("--spam-revision")
     parser.add_argument("--cache-dir", default="/cache")
     parser.add_argument("--token-file", default="/run/secrets/huggingface_token")
     parser.add_argument("--output", default="/output/model.env")
@@ -54,6 +56,12 @@ def main() -> None:
         args.training_revision,
         token,
     )
+    spam_revision = revision(
+        api,
+        args.spam_model,
+        args.spam_revision,
+        token,
+    )
 
     print(f"Downloading {args.inference_model}@{inference_revision}", flush=True)
     snapshot_download(
@@ -66,6 +74,13 @@ def main() -> None:
     training_path = snapshot_download(
         repo_id=args.training_model,
         revision=training_revision,
+        cache_dir=args.cache_dir,
+        token=token,
+    )
+    print(f"Downloading {args.spam_model}@{spam_revision}", flush=True)
+    snapshot_download(
+        repo_id=args.spam_model,
+        revision=spam_revision,
         cache_dir=args.cache_dir,
         token=token,
     )
@@ -87,6 +102,7 @@ def main() -> None:
         "CLARE2_TOKENIZER_HASH": digest(
             json.dumps(tokenizer.init_kwargs, sort_keys=True, default=str)
         ),
+        "SPAM_MODEL_REVISION": spam_revision,
     }
     output = pathlib.Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
