@@ -121,7 +121,7 @@ secret spam_api_token
 chmod 600 "${SECRETS_DIR}/ldap_app_password"
 
 for project in "${CAPTURE_PROJECTS[@]}"; do
-  "${ROOT}/clare2/scripts/install-codex-capture.sh" "$project"
+  "${ROOT}/clare2/scripts/clare2-install-hooks.sh" "$project"
 done
 
 INFERENCE_MODEL="${CLARE2_INFERENCE_MODEL:-$(read_env CLARE2_INFERENCE_MODEL Qwen/Qwen3.5-35B-A3B-FP8)}"
@@ -210,7 +210,7 @@ Model cache: $MODEL_CACHE
 Inference/MCP bind address: $BIND_ADDRESS
 MCP port: 8002 (/mcp/)
 Policy port: 8000
-MLflow UI: http://127.0.0.1:${MLFLOW_PORT}
 Spam classifier port: 8003
+MLflow UI: http://127.0.0.1:${MLFLOW_PORT}
 Agent wrapper: ${ROOT}/clare2/scripts/clare2-agent.sh
 EOF
