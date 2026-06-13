@@ -1,5 +1,8 @@
 .env
 secrets/
+__pycache__/
+*.py[cod]
+logs/*.log
 models/adapters/*
 !models/adapters/.gitkeep
 !models/adapters/registry.example.json
