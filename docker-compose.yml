@@ -227,7 +227,7 @@ services:
     secrets:
       - spam_api_token
     ports:
-      - "${SPAM_BIND_ADDRESS:-127.0.0.1}:${SPAM_API_PORT:-8003}:8000"
+      - "${SPAM_API_PORT:-8003}:8000"
     depends_on:
       spam-vllm:
         condition: service_healthy
