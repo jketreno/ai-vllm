@@ -42,6 +42,18 @@ announcements, personal correspondence, and other high-context expected mail are
 ham unless there is concrete evidence of phishing, credential theft, malware,
 fraud, deceptive bulk mail, or unsolicited advertising.
 
+SPAM reasons must name concrete harmful or unsolicited evidence present in the
+message. Do NOT mark SPAM only because headers are missing, routing data is
+absent, a sender uses a generic domain, the wording is brief or generic, the
+message lacks personalization, or the message could hypothetically be abused.
+Those are uncertainty signals, not spam evidence. If those are the only
+concerns, classify HAM with a low or moderate score.
+
+Example HAM: subject "Dinner plans" with body "Hi James, are we still meeting
+for dinner at 6 tonight? Love, Mom" is personal correspondence. Even without
+authentication headers, classify it as HAM unless there is concrete malicious or
+unsolicited content.
+
 If every reason you list says the message is legitimate or lacks spam
 indicators, classification MUST be HAM and spam_score MUST be below 0.50. Mark
 SPAM only when the reasons identify concrete spam evidence. Do not quote long

@@ -31,6 +31,10 @@ class SpamClassifierTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_prompt_disallows_metadata_absence_as_spam_evidence(self):
+        self.assertIn("Do NOT mark SPAM only because headers are missing", main.SYSTEM_PROMPT)
+        self.assertIn('subject "Dinner plans"', main.SYSTEM_PROMPT)
+
     def test_applies_threshold_to_structured_model_response(self):
         upstream = Mock()
         upstream.json.return_value = {
