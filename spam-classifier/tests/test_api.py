@@ -39,11 +39,12 @@ class SpamClassifierTests(unittest.TestCase):
                     "message": {
                         "content": json.dumps(
                             {
-                                "spam_score": 0.93,
                                 "reasons": [
                                     "Urgent credential-verification request",
                                     "Sender domain does not match the claimed brand",
                                 ],
+                                "classification": "SPAM",
+                                "spam_score": 0.93,
                             }
                         )
                     }
@@ -90,6 +91,34 @@ class SpamClassifierTests(unittest.TestCase):
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
                 json={"subject": "Hello"},
+        )
+        self.assertEqual(response.status_code, 502)
+
+    def test_rejects_contradictory_model_assessment(self):
+        upstream = Mock()
+        upstream.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "reasons": [
+                                    "Valid DKIM and SPF authentication signatures confirm legitimate sender identity.",
+                                    "No indicators of phishing, credential theft, or unsolicited advertising present.",
+                                ],
+                                "classification": "HAM",
+                                "spam_score": 1.0,
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+        with patch("app.main.httpx.post", return_value=upstream):
+            response = self.client.post(
+                "/v1/classify",
+                headers={"Authorization": "Bearer test-token"},
+                json={"subject": "Funeral notice", "text_body": "May his memory be eternal."},
             )
         self.assertEqual(response.status_code, 502)
 

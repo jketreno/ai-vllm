@@ -30,10 +30,23 @@ phishing, credential theft, advance-fee fraud, malware delivery, and deceptive
 bulk mail. Legitimate transactional mail, requested newsletters, and normal
 personal or business correspondence are ham.
 
-Estimate the probability that the message is spam. Use authentication and
-routing headers as evidence when present, but do not assume a missing header
-means spam. Give one to five short, specific reasons. Do not quote long passages
-from the message and do not include any fields outside the required JSON schema.
+First identify one to five short, specific reasons that support the final
+classification. Then choose the classification. Finally choose a spam_score
+that is consistent with the reasons and classification.
+
+Use authentication and routing headers as evidence when present, but do not
+assume a missing header means spam. Valid SPF, DKIM, or DMARC authentication is
+evidence against spoofing. Known legitimate service providers, transactional
+mail, requested newsletters, church/community notices, obituary or funeral
+announcements, personal correspondence, and other high-context expected mail are
+ham unless there is concrete evidence of phishing, credential theft, malware,
+fraud, deceptive bulk mail, or unsolicited advertising.
+
+If every reason you list says the message is legitimate or lacks spam
+indicators, classification MUST be HAM and spam_score MUST be below 0.50. Mark
+SPAM only when the reasons identify concrete spam evidence. Do not quote long
+passages from the message and do not include any fields outside the required
+JSON schema.
 """
 
 
@@ -73,10 +86,19 @@ class ClassifyRequest(BaseModel):
 class ModelAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    spam_score: float = Field(ge=0.0, le=1.0)
     reasons: list[Annotated[str, StringConstraints(min_length=1, max_length=240)]] = (
         Field(min_length=1, max_length=5)
     )
+    classification: Classification
+    spam_score: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "ModelAssessment":
+        if self.classification == Classification.HAM and self.spam_score >= SPAM_THRESHOLD:
+            raise ValueError("HAM classification must score below threshold")
+        if self.classification == Classification.SPAM and self.spam_score < SPAM_THRESHOLD:
+            raise ValueError("SPAM classification must score at or above threshold")
+        return self
 
 
 class ClassifyResponse(BaseModel):
@@ -168,13 +190,8 @@ def health() -> dict:
 )
 def classify(payload: ClassifyRequest) -> ClassifyResponse:
     assessment = _classify_with_model(payload)
-    classification = (
-        Classification.SPAM
-        if assessment.spam_score >= SPAM_THRESHOLD
-        else Classification.HAM
-    )
     return ClassifyResponse(
-        classification=classification,
+        classification=assessment.classification,
         spam_score=assessment.spam_score,
         threshold=SPAM_THRESHOLD,
         reasons=assessment.reasons,
