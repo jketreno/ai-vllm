@@ -94,7 +94,7 @@ class SpamClassifierTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 502)
 
-    def test_rejects_contradictory_model_assessment(self):
+    def test_normalizes_ham_score_that_contradicts_classification(self):
         upstream = Mock()
         upstream.json.return_value = {
             "choices": [
@@ -120,7 +120,41 @@ class SpamClassifierTests(unittest.TestCase):
                 headers={"Authorization": "Bearer test-token"},
                 json={"subject": "Funeral notice", "text_body": "May his memory be eternal."},
             )
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(result["classification"], "HAM")
+        self.assertLess(result["spam_score"], result["threshold"])
+
+    def test_normalizes_spam_score_that_contradicts_classification(self):
+        upstream = Mock()
+        upstream.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "reasons": [
+                                    "Urgent credential-verification request",
+                                    "Sender domain does not match the claimed brand",
+                                ],
+                                "classification": "SPAM",
+                                "spam_score": 0.1,
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+        with patch("app.main.httpx.post", return_value=upstream):
+            response = self.client.post(
+                "/v1/classify",
+                headers={"Authorization": "Bearer test-token"},
+                json={"subject": "Urgent password reset", "text_body": "Send your password now."},
+            )
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(result["classification"], "SPAM")
+        self.assertGreaterEqual(result["spam_score"], result["threshold"])
 
 
 if __name__ == "__main__":

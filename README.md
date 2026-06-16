@@ -94,8 +94,9 @@ The response contract is:
 
 `classification` is produced by the model, not inferred from the score alone.
 The constrained model schema asks for evidence first, then classification, then
-`spam_score`; the API rejects internally inconsistent model outputs. The score
-is still the model's estimate, not a calibrated probability. Tune
+`spam_score`; if the numeric score contradicts the classification, the API
+normalizes the score to the matching side of the threshold. The score is still
+the model's estimate, not a calibrated probability. Tune
 `SPAM_THRESHOLD` against a representative labeled mailbox before allowing the
 mail-server integration to modify messages. A model or API failure returns an
 error and must not be interpreted as spam.

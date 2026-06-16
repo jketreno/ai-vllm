@@ -93,11 +93,15 @@ class ModelAssessment(BaseModel):
     spam_score: float = Field(ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def validate_consistency(self) -> "ModelAssessment":
+    def normalize_score(self) -> "ModelAssessment":
+        # The model is asked to decide from evidence first and assign the score
+        # last. If the last numeric field contradicts the explicit decision,
+        # keep the decision and move the score back to the matching side of the
+        # threshold instead of turning legitimate mail into an API failure.
         if self.classification == Classification.HAM and self.spam_score >= SPAM_THRESHOLD:
-            raise ValueError("HAM classification must score below threshold")
+            self.spam_score = min(0.49, SPAM_THRESHOLD - 0.01)
         if self.classification == Classification.SPAM and self.spam_score < SPAM_THRESHOLD:
-            raise ValueError("SPAM classification must score at or above threshold")
+            self.spam_score = SPAM_THRESHOLD
         return self
 
 
