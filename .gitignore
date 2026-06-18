@@ -10,3 +10,5 @@ models/huggingface/
 /mlflow/
 corpus/meta/lifecycle.json
 corpus/meta/lifecycle.lock
+corpus
+.vscode/extensions.json
