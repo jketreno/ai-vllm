@@ -155,6 +155,8 @@ services:
       - "131072"
       - --kv-cache-dtype
       - fp8
+      - --max-num-seqs
+      - "${CLARE2_MAX_NUM_SEQS:-8}"
       # FIX: Use the native qwen3 parser with default boundaries to allow vLLM to intercept properly
       - --reasoning-parser=qwen3
       - --reasoning-config
