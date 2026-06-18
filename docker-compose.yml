@@ -176,7 +176,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 300s
+      start_period: 900s
 
   spam-vllm:
     image: nvcr.io/nvidia/vllm:26.04-py3
@@ -218,7 +218,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 180s
+      start_period: 900s
 
   spam-classifier:
     build: spam-classifier
