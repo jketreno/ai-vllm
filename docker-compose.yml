@@ -14,6 +14,9 @@ x-clare2-env: &clare2-env
   CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
   CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare"}}
   CLARE2_MAX_CPU_LORAS: "8"
+  CLARE2_DEFAULT_ENABLE_THINKING: ${CLARE2_DEFAULT_ENABLE_THINKING:-true}
+  CLARE2_DEFAULT_THINKING_TOKEN_BUDGET: ${CLARE2_DEFAULT_THINKING_TOKEN_BUDGET:-1024}
+  CLARE2_MAX_THINKING_TOKEN_BUDGET: ${CLARE2_MAX_THINKING_TOKEN_BUDGET:-2048}
   CLARE2_PROXY_TOKEN_FILE: /run/secrets/clare2_proxy_token
   CLARE2_MCP_TOKEN_FILE: /run/secrets/clare2_mcp_token
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
@@ -153,6 +156,8 @@ services:
       - --kv-cache-dtype
       - fp8
       - --reasoning-parser=qwen3
+      - --reasoning-config
+      - '{"reasoning_start_str":"<think>","reasoning_end_str":"I have to give the solution based on the reasoning directly now.</think>"}'
       - --enable-auto-tool-choice
       - --tool-call-parser=qwen3_coder
       - --enable-prefix-caching

@@ -27,6 +27,8 @@ ALLOWED_ENDPOINTS = {
     "/health",
 }
 BLOCKED_MANAGEMENT_PARTS = {"load_lora_adapter", "unload_lora_adapter"}
+DEFAULT_THINKING_TOKEN_BUDGET = 1024
+MAX_THINKING_TOKEN_BUDGET = 2048
 
 
 def parse_endpoint_and_route(path: str, header_route_id: str | None) -> tuple[str, str | None]:
@@ -38,6 +40,52 @@ def parse_endpoint_and_route(path: str, header_route_id: str | None) -> tuple[st
         endpoint = "/" + rest
         route_id = first
     return endpoint, route_id
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        log.warning("invalid integer environment value name=%s value=%r", name, value)
+        return default
+
+
+def apply_thinking_defaults(payload: dict) -> None:
+    chat_template_kwargs = payload.get("chat_template_kwargs")
+    if chat_template_kwargs is None:
+        chat_template_kwargs = {}
+        payload["chat_template_kwargs"] = chat_template_kwargs
+    elif not isinstance(chat_template_kwargs, dict):
+        return
+
+    thinking_requested = chat_template_kwargs.get("enable_thinking")
+    if thinking_requested is None:
+        thinking_requested = env_bool("CLARE2_DEFAULT_ENABLE_THINKING", True)
+        chat_template_kwargs["enable_thinking"] = thinking_requested
+
+    if thinking_requested is False:
+        return
+
+    max_budget = env_int("CLARE2_MAX_THINKING_TOKEN_BUDGET", MAX_THINKING_TOKEN_BUDGET)
+    if "thinking_token_budget" in payload:
+        budget = payload["thinking_token_budget"]
+        if isinstance(budget, int) and not isinstance(budget, bool) and budget > max_budget:
+            payload["thinking_token_budget"] = max_budget
+        return
+
+    default_budget = env_int("CLARE2_DEFAULT_THINKING_TOKEN_BUDGET", DEFAULT_THINKING_TOKEN_BUDGET)
+    if default_budget > 0:
+        payload["thinking_token_budget"] = min(default_budget, max_budget)
 
 
 @router_api.api_route(
@@ -95,6 +143,8 @@ async def forward(
             except json.JSONDecodeError as exc:
                 raise HTTPException(status_code=400, detail="invalid JSON request") from exc
             payload["model"] = adapter_id or BASE_MODEL_ID
+            if endpoint == "/v1/chat/completions":
+                apply_thinking_defaults(payload)
             stream_requested = payload.get("stream") is True
             body = json.dumps(payload).encode()
         started = time.monotonic()

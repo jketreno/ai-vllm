@@ -115,6 +115,10 @@ The proxy ignores the client's `model`, loads the pinned approved adapter when
 needed, and forwards the immutable adapter ID upstream. Missing route context
 uses the pinned base model. Management routes are never proxied.
 
+Qwen thinking is enabled but bounded by default for chat-completion callers.
+See `THINKING-CONFIG.md` for the caller-configurable `extra_body` fields,
+LangGraph examples, and no-thinking request form.
+
 Policy order:
 
 1. Approved project adapter matching all requested capabilities.
