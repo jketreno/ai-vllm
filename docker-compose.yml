@@ -133,6 +133,7 @@ services:
     environment:
       VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
       VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "1"
+      VLLM_MARLIN_USE_ATOMIC_ADD: "1"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     volumes:
@@ -148,6 +149,7 @@ services:
       - ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
       - --revision
       - ${CLARE2_INFERENCE_REVISION}
+      - -O3
       - --port
       - "8001"
       - --tensor-parallel-size
@@ -177,8 +179,14 @@ services:
       - --max-cpu-loras
       - "8"
       - --trust-remote-code
+      - --default-chat-template-kwargs
+      - '{"preserve_thinking": true}'
+      - --speculative-config
+      - '{"method": "mtp", "num_speculative_tokens": 3}'
       - --generation-config
-      - vllm
+      - auto
+      - --override-generation-config
+      - '{"temperature": 0.6, "top_p": 0.95, "top_k": 20}'
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
       interval: 30s
