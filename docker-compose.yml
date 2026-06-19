@@ -183,9 +183,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 900s
-    depends_on:
-      spam-vllm:
-        condition: service_healthy
 
   spam-vllm:
     image: nvcr.io/nvidia/vllm:26.04-py3
@@ -232,6 +229,9 @@ services:
       timeout: 5s
       retries: 20
       start_period: 900s
+    depends_on:
+      vllm-engine:
+        condition: service_healthy
 
   spam-classifier:
     build: spam-classifier
