@@ -1,0 +1,84 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CLARE: Verify CI",
+      "type": "shell",
+      "command": "./clare/verify-ci.sh",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Run all CI/CD checks locally. Must pass before marking work complete."
+    },
+    {
+      "label": "CLARE: Verify CI (fast)",
+      "type": "shell",
+      "command": "./clare/verify-ci.sh --fast",
+      "group": "test",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Run CI checks, skipping slow architecture tests."
+    },
+    {
+      "label": "CLARE: Verify CI (fix)",
+      "type": "shell",
+      "command": "./clare/verify-ci.sh --fix",
+      "group": "test",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Run CI checks with auto-fix for lint issues."
+    },
+    {
+      "label": "CLARE: Verify CI (fail-fast)",
+      "type": "shell",
+      "command": "./clare/verify-ci.sh --fail-fast",
+      "group": "test",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Run CI checks but stop at the first failure and print a concise summary."
+    },
+    {
+      "label": "CLARE: Show Autonomy Boundaries",
+      "type": "shell",
+      "command": "cat clare/autonomy.yml",
+      "group": "none",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Display the current autonomy.yml boundaries."
+    }
+  ]
+}

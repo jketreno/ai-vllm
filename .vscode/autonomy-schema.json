@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CLARE autonomy.yml schema",
+  "description": "Schema for CLARE framework autonomy boundary definitions",
+  "type": "object",
+  "required": ["project", "modules"],
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "Name of the project this autonomy file governs"
+    },
+    "modules": {
+      "type": "array",
+      "description": "List of path-level autonomy boundary rules (most specific match wins)",
+      "items": {
+        "type": "object",
+        "required": ["path", "level", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative path or glob pattern (e.g. 'src/api', '*')"
+          },
+          "level": {
+            "type": "string",
+            "enum": ["full-autonomy", "supervised", "humans-only"],
+            "description": "full-autonomy: AI proceeds freely | supervised: AI generates, human reviews | humans-only: AI must not generate code"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Human-readable justification for the autonomy level"
+          }
+        }
+      }
+    },
+    "sources_of_truth": {
+      "type": "array",
+      "description": "Canonical sources for domain concepts — AI derives from these, never invents",
+      "items": {
+        "type": "object",
+        "required": ["concept", "source_of_truth", "defined_in"],
+        "additionalProperties": false,
+        "properties": {
+          "concept": {
+            "type": "string",
+            "description": "Name of the domain concept"
+          },
+          "source_of_truth": {
+            "type": "string",
+            "description": "Primary authoritative source for this concept"
+          },
+          "defined_in": {
+            "type": "string",
+            "description": "File(s) where this concept is formally defined"
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional clarifying note about how conflicts are resolved"
+          }
+        }
+      }
+    }
+  }
+}

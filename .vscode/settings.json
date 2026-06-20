@@ -1,0 +1,23 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "github.copilot.enable": {
+    "*": true,
+    "plaintext": false,
+    "markdown": true,
+    "yaml": true
+  },
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true,
+  "files.associations": {
+    "*.mdc": "markdown"
+  },
+  "yaml.schemas": {
+    "./.vscode/autonomy-schema.json": ["clare/autonomy.yml"]
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  }
+}
