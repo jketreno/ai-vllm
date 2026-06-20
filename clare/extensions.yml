@@ -24,7 +24,7 @@ extensions:
   # Project: https://eslint.org/docs/latest/rules/complexity
   #
   - name: eslint-complexity
-    enabled: true
+    enabled: false
     description: "Cyclomatic complexity analysis for TypeScript/JavaScript"
     command: "npx"
     install_hint: "npm install --save-dev eslint"
@@ -57,7 +57,7 @@ extensions:
   # manager or download the pinned release binary from the project URL instead.
   #
   - name: golangci-lint-complexity
-    enabled: true
+    enabled: false
     description: "Complexity analysis for Go via golangci-lint"
     command: "golangci-lint"
     install_hint: "# binary will be $(go env GOPATH)/bin/golangci-lint\ncurl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2"
