@@ -80,6 +80,41 @@ def start_training() -> None:
             raise
 
 
+def _apply_evaluation(
+    adapter_id: str,
+    run_id: str,
+    mlflow_run_id: str | None,
+    report: dict[str, Any],
+) -> None:
+    if not report["approved"]:
+        registry.transition(adapter_id, "rejected")
+        metrics.lifecycle_outcomes.labels(outcome="rejected").inc()
+        _set_state(
+            "idle",
+            run_id=run_id,
+            candidate_id=adapter_id,
+            completed_adapter_id=adapter_id,
+            mlflow_run_id=mlflow_run_id,
+            outcome="rejected",
+            evaluation=report,
+        )
+        return
+
+    _set_state("promoting", run_id=run_id, candidate_id=adapter_id)
+    registry.promote(adapter_id, report)
+    controller.reconcile()
+    metrics.lifecycle_outcomes.labels(outcome="promoted").inc()
+    _set_state(
+        "idle",
+        run_id=run_id,
+        candidate_id=adapter_id,
+        completed_adapter_id=adapter_id,
+        mlflow_run_id=mlflow_run_id,
+        outcome="promoted",
+        evaluation=report,
+    )
+
+
 def complete_training(
     adapter_id: str,
     run_id: str,
@@ -96,12 +131,7 @@ def complete_training(
             candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
             if adapter_id not in registry.read()["adapters"]:
                 registry.add_adapter(candidate)
-            _set_state(
-                "restarting",
-                run_id=run_id,
-                candidate_id=adapter_id,
-                mlflow_run_id=mlflow_run_id,
-            )
+            _set_state("restarting", run_id=run_id, candidate_id=adapter_id, mlflow_run_id=mlflow_run_id)
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
@@ -116,34 +146,7 @@ def complete_training(
 
             _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
             report = evaluator.compare(adapter_id, baseline_id, _invoke_probe)
-            if not report["approved"]:
-                registry.transition(adapter_id, "rejected")
-                metrics.lifecycle_outcomes.labels(outcome="rejected").inc()
-                _set_state(
-                    "idle",
-                    run_id=run_id,
-                    candidate_id=adapter_id,
-                    completed_adapter_id=adapter_id,
-                    mlflow_run_id=mlflow_run_id,
-                    outcome="rejected",
-                    evaluation=report,
-                )
-                maintenance.exit()
-                return status()
-
-            _set_state("promoting", run_id=run_id, candidate_id=adapter_id)
-            registry.promote(adapter_id, report)
-            controller.reconcile()
-            metrics.lifecycle_outcomes.labels(outcome="promoted").inc()
-            _set_state(
-                "idle",
-                run_id=run_id,
-                candidate_id=adapter_id,
-                completed_adapter_id=adapter_id,
-                mlflow_run_id=mlflow_run_id,
-                outcome="promoted",
-                evaluation=report,
-            )
+            _apply_evaluation(adapter_id, run_id, mlflow_run_id, report)
             maintenance.exit()
             return status()
         except Exception as exc:

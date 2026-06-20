@@ -88,6 +88,80 @@ def apply_thinking_defaults(payload: dict) -> None:
         payload["thinking_token_budget"] = min(default_budget, max_budget)
 
 
+def _resolve_route(resolved_route_id: str | None) -> tuple[str | None, str, str | None]:
+    if not resolved_route_id:
+        return None, "base_without_route", None
+    try:
+        route = router.get(resolved_route_id)
+    except RouteError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return route.adapter_id, route.policy_rule, route.project_id
+
+
+async def _prepare_body(
+    request: Request,
+    endpoint: str,
+    adapter_id: str | None,
+) -> tuple[bytes, bool]:
+    body = await request.body()
+    stream_requested = False
+    if not (body and endpoint.startswith("/v1/") and endpoint != "/v1/models"):
+        return body, stream_requested
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON request") from exc
+    payload["model"] = adapter_id or BASE_MODEL_ID
+    if endpoint == "/v1/chat/completions":
+        apply_thinking_defaults(payload)
+    stream_requested = payload.get("stream") is True
+    return json.dumps(payload).encode(), stream_requested
+
+
+async def _dispatch(
+    request: Request,
+    endpoint: str,
+    body: bytes,
+    stream_requested: bool,
+    upstream_url: str,
+    upstream_headers: dict,
+    started: float,
+    resolved_route_id: str | None,
+    project_id: str | None,
+    policy_rule: str,
+    adapter_id: str | None,
+    request_guard,
+) -> tuple[Response, bool]:
+    if stream_requested:
+        client = httpx.AsyncClient(timeout=300)
+        try:
+            upstream_request = client.build_request(
+                request.method, upstream_url, content=body, headers=upstream_headers,
+            )
+            upstream = await client.send(upstream_request, stream=True)
+        except Exception:
+            await client.aclose()
+            raise
+        return (
+            streaming_response(upstream, client, request_guard, started,
+                               resolved_route_id, project_id, policy_rule, adapter_id),
+            True,
+        )
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        upstream = await client.request(
+            request.method, upstream_url, content=body, headers=upstream_headers,
+        )
+    record_outcome(started, resolved_route_id, project_id, policy_rule, adapter_id, upstream.status_code)
+    excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
+    return (
+        Response(content=upstream.content, status_code=upstream.status_code,
+                 headers=headers, media_type=upstream.headers.get("content-type")),
+        False,
+    )
+
+
 @router_api.api_route(
     "/{path:path}",
     methods=["GET", "POST"],
@@ -104,7 +178,7 @@ async def forward(
     if endpoint == "/health":
         return Response(content='{"status":"ok"}', media_type="application/json")
     require_bearer(secret_value("CLARE2_PROXY_TOKEN"), authorization)
-    if maintenance.enabled and endpoint not in {"/health"}:
+    if maintenance.enabled:
         return Response(
             content='{"detail":"inference maintenance"}',
             status_code=503,
@@ -112,17 +186,7 @@ async def forward(
             headers={"Retry-After": os.environ.get("CLARE2_RETRY_AFTER", "300")},
         )
 
-    adapter_id = None
-    policy_rule = "base_without_route"
-    project_id = None
-    if resolved_route_id:
-        try:
-            route = router.get(resolved_route_id)
-        except RouteError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-        adapter_id = route.adapter_id
-        policy_rule = route.policy_rule
-        project_id = route.project_id
+    adapter_id, policy_rule, project_id = _resolve_route(resolved_route_id)
 
     request_guard = maintenance.request()
     try:
@@ -131,75 +195,20 @@ async def forward(
         if str(exc) == "maintenance":
             raise HTTPException(status_code=503, detail="inference maintenance") from exc
         raise
+
     guard_owned_by_stream = False
     try:
         if adapter_id:
             controller.ensure_loaded(adapter_id)
-        body = await request.body()
-        stream_requested = False
-        if body and endpoint.startswith("/v1/") and endpoint != "/v1/models":
-            try:
-                payload = json.loads(body)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail="invalid JSON request") from exc
-            payload["model"] = adapter_id or BASE_MODEL_ID
-            if endpoint == "/v1/chat/completions":
-                apply_thinking_defaults(payload)
-            stream_requested = payload.get("stream") is True
-            body = json.dumps(payload).encode()
+        body, stream_requested = await _prepare_body(request, endpoint, adapter_id)
         started = time.monotonic()
         upstream_url = f"{VLLM_URL}{endpoint}"
-        upstream_headers = {
-            "content-type": request.headers.get("content-type", "application/json")
-        }
-        if stream_requested:
-            client = httpx.AsyncClient(timeout=300)
-            try:
-                upstream_request = client.build_request(
-                    request.method,
-                    upstream_url,
-                    content=body,
-                    headers=upstream_headers,
-                )
-                upstream = await client.send(upstream_request, stream=True)
-            except Exception:
-                await client.aclose()
-                raise
-            guard_owned_by_stream = True
-            return streaming_response(
-                upstream,
-                client,
-                request_guard,
-                started,
-                resolved_route_id,
-                project_id,
-                policy_rule,
-                adapter_id,
-            )
-
-        async with httpx.AsyncClient(timeout=300) as client:
-            upstream = await client.request(
-                request.method,
-                upstream_url,
-                content=body,
-                headers=upstream_headers,
-            )
-        record_outcome(
-            started,
-            resolved_route_id,
-            project_id,
-            policy_rule,
-            adapter_id,
-            upstream.status_code,
+        upstream_headers = {"content-type": request.headers.get("content-type", "application/json")}
+        response, guard_owned_by_stream = await _dispatch(
+            request, endpoint, body, stream_requested, upstream_url, upstream_headers,
+            started, resolved_route_id, project_id, policy_rule, adapter_id, request_guard,
         )
-        excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
-        headers = {key: value for key, value in upstream.headers.items() if key.lower() not in excluded}
-        return Response(
-            content=upstream.content,
-            status_code=upstream.status_code,
-            headers=headers,
-            media_type=upstream.headers.get("content-type"),
-        )
+        return response
     finally:
         if not guard_owned_by_stream:
             request_guard.__exit__(None, None, None)

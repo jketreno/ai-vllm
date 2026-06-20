@@ -116,6 +116,7 @@ secret clare2_mcp_token
 secret clare2_operator_token
 secret clare2_callback_secret
 secret spam_api_token
+secret grafana_admin_password
 [[ -e "${SECRETS_DIR}/ldap_app_password" ]] ||
   printf '%s' "disabled" >"${SECRETS_DIR}/ldap_app_password"
 chmod 600 "${SECRETS_DIR}/ldap_app_password"

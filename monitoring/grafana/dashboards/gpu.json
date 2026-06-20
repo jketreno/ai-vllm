@@ -1,0 +1,80 @@
+{
+  "title": "GB10 GPU Hardware",
+  "uid": "gpu-hardware",
+  "tags": ["gpu", "nvidia", "gb10"],
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "GPU Temperature (°C)",
+      "type": "gauge",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "nvidia_temperature_celsius", "legendFormat": "GPU temp"}],
+      "fieldConfig": {"defaults": {"unit": "celsius", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 70}, {"color": "red", "value": 85}]}}}
+    },
+    {
+      "id": 2,
+      "title": "Power Draw (W)",
+      "type": "gauge",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "nvidia_power_draw_watts", "legendFormat": "power"}],
+      "fieldConfig": {"defaults": {"unit": "watt", "min": 0, "max": 400, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 250}, {"color": "red", "value": 350}]}}}
+    },
+    {
+      "id": 3,
+      "title": "GPU Utilization %",
+      "type": "gauge",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "nvidia_gpu_utilization_percent", "legendFormat": "GPU util"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "blue", "value": 0}, {"color": "green", "value": 20}, {"color": "yellow", "value": 80}]}}}
+    },
+    {
+      "id": 4,
+      "title": "Memory Bandwidth Utilization %",
+      "type": "gauge",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "nvidia_memory_utilization_percent", "legendFormat": "mem util"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "blue", "value": 0}, {"color": "green", "value": 20}, {"color": "yellow", "value": 80}]}}}
+    },
+    {
+      "id": 5,
+      "title": "SM Clock vs Max (MHz)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "nvidia_sm_clock_mhz", "legendFormat": "current clock"},
+        {"datasource": {"uid": "prometheus"}, "expr": "nvidia_sm_clock_max_mhz", "legendFormat": "max clock"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "MHz"}}
+    },
+    {
+      "id": 6,
+      "title": "Temperature Over Time (°C)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 6, "w": 12, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "nvidia_temperature_celsius", "legendFormat": "temperature"}],
+      "fieldConfig": {"defaults": {"unit": "celsius"}}
+    },
+    {
+      "id": 7,
+      "title": "Power Draw Over Time (W)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "nvidia_power_draw_watts", "legendFormat": "power draw"}],
+      "fieldConfig": {"defaults": {"unit": "watt"}}
+    },
+    {
+      "id": 8,
+      "title": "GPU & Memory Utilization Over Time",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "nvidia_gpu_utilization_percent", "legendFormat": "GPU util %"},
+        {"datasource": {"uid": "prometheus"}, "expr": "nvidia_memory_utilization_percent", "legendFormat": "mem util %"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}
+    }
+  ]
+}

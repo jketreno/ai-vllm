@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: clare2_pipeline
+    static_configs:
+      - targets: ['clare2-policy:9091']
+
+  - job_name: vllm_engine
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['vllm-engine:8001']
+
+  - job_name: node
+    static_configs:
+      - targets: ['192.168.1.163:9100']
+
+  - job_name: nvidia_gpu
+    static_configs:
+      - targets: ['nvidia-exporter:9835']

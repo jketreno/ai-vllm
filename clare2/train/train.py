@@ -57,6 +57,54 @@ def text_hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _tokenize_pair(
+    tokenizer: Any,
+    prompt: str,
+    completion: str,
+) -> str:
+    return tokenizer.apply_chat_template(
+        [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": completion},
+        ],
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+
+
+def _process_line(
+    line: str,
+    tokenizer: Any,
+    max_seq_length: int,
+    skipped: dict[str, int],
+) -> dict[str, Any] | None:
+    if not line.strip():
+        skipped["blank"] = skipped.get("blank", 0) + 1
+        return None
+    try:
+        source = json.loads(line)
+    except json.JSONDecodeError:
+        skipped["malformed_json"] = skipped.get("malformed_json", 0) + 1
+        return None
+    prompt = source.get("prompt")
+    completion = source.get("completion")
+    if not isinstance(prompt, str) or not prompt.strip():
+        skipped["missing_prompt"] = skipped.get("missing_prompt", 0) + 1
+        return None
+    if not isinstance(completion, str) or not completion.strip():
+        skipped["missing_completion"] = skipped.get("missing_completion", 0) + 1
+        return None
+    text = _tokenize_pair(tokenizer, prompt, completion)
+    tokens = tokenizer(text, add_special_tokens=False)["input_ids"]
+    if not tokens:
+        skipped["empty_tokens"] = skipped.get("empty_tokens", 0) + 1
+        return None
+    if len(tokens) > max_seq_length:
+        skipped["over_length"] = skipped.get("over_length", 0) + 1
+        return None
+    return {"text": text, "category": source.get("category", "general")}
+
+
 def load_corpus(
     train_file: pathlib.Path,
     tokenizer: Any,
@@ -64,44 +112,11 @@ def load_corpus(
 ) -> tuple[Dataset, dict[str, int]]:
     records: list[dict[str, Any]] = []
     skipped: dict[str, int] = {}
-
-    def skip(reason: str) -> None:
-        skipped[reason] = skipped.get(reason, 0) + 1
-
     with train_file.open(encoding="utf-8") as handle:
         for line in handle:
-            if not line.strip():
-                skip("blank")
-                continue
-            try:
-                source = json.loads(line)
-            except json.JSONDecodeError:
-                skip("malformed_json")
-                continue
-            prompt = source.get("prompt")
-            completion = source.get("completion")
-            if not isinstance(prompt, str) or not prompt.strip():
-                skip("missing_prompt")
-                continue
-            if not isinstance(completion, str) or not completion.strip():
-                skip("missing_completion")
-                continue
-            text = tokenizer.apply_chat_template(
-                [
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": completion},
-                ],
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            tokens = tokenizer(text, add_special_tokens=False)["input_ids"]
-            if not tokens:
-                skip("empty_tokens")
-                continue
-            if len(tokens) > max_seq_length:
-                skip("over_length")
-                continue
-            records.append({"text": text, "category": source.get("category", "general")})
+            record = _process_line(line, tokenizer, max_seq_length, skipped)
+            if record is not None:
+                records.append(record)
     if not records:
         raise ValueError(f"no valid training records; skipped={skipped}")
     return Dataset.from_list(records), skipped

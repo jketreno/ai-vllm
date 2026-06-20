@@ -60,41 +60,63 @@ def _iso_week(date: datetime) -> str:
     return f"{year}-W{week:02d}"
 
 
+def _load_jsonl(path: pathlib.Path) -> list[dict]:
+    records: list[dict] = []
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return records
+
+
+def _write_jsonl(path: pathlib.Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+
+
 def run_weekly(reference_date: datetime | None = None) -> dict:
     """Compress the 7 daily episode files ending on reference_date (Sunday) into a weekly summary."""
     if reference_date is None:
         reference_date = datetime.now(tz=timezone.utc)
 
-    # Collect the 7 days ending on (and including) reference_date
     day_records: list[dict] = []
     for offset in range(7):
         day = reference_date - timedelta(days=offset)
         ep_path = CORPUS_ROOT / "episodes" / day.strftime("%Y/%m/%d.jsonl")
         if ep_path.exists():
-            with open(ep_path) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        try:
-                            day_records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
+            day_records.extend(_load_jsonl(ep_path))
 
     if not day_records:
         log.info("No daily episodes found for week ending %s", reference_date.date())
         return {"input_records": 0, "output_records": 0}
 
     merged = _call_llm_merge(day_records, "weekly")
-
     week_str = _iso_week(reference_date)
-    out_path = CORPUS_ROOT / "summaries" / "weekly" / f"{week_str}.jsonl"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as fh:
-        for r in merged:
-            fh.write(json.dumps(r) + "\n")
+    _write_jsonl(CORPUS_ROOT / "summaries" / "weekly" / f"{week_str}.jsonl", merged)
 
     log.info("Weekly summary %s: %d → %d records", week_str, len(day_records), len(merged))
     return {"input_records": len(day_records), "output_records": len(merged)}
+
+
+def _weekly_files_for_month(year: int, month: int) -> list[pathlib.Path]:
+    weekly_dir = CORPUS_ROOT / "summaries" / "weekly"
+    result = []
+    for weekly_file in sorted(weekly_dir.glob(f"{year}-W*.jsonl")):
+        try:
+            _, week_num = weekly_file.stem.split("-W")
+            week_start = datetime.strptime(f"{year}-W{int(week_num)}-1", "%Y-W%W-%w")
+            if week_start.month == month:
+                result.append(weekly_file)
+        except (ValueError, AttributeError):
+            continue
+    return result
 
 
 def run_monthly(reference_date: datetime | None = None) -> dict:
@@ -102,46 +124,32 @@ def run_monthly(reference_date: datetime | None = None) -> dict:
     if reference_date is None:
         reference_date = datetime.now(tz=timezone.utc)
 
-    # Target the previous month
     first_of_this_month = reference_date.replace(day=1)
     last_of_prev_month = first_of_this_month - timedelta(days=1)
     year = last_of_prev_month.year
     month = last_of_prev_month.month
 
-    weekly_dir = CORPUS_ROOT / "summaries" / "weekly"
     week_records: list[dict] = []
-    for weekly_file in sorted(weekly_dir.glob(f"{year}-W*.jsonl")):
-        # Parse the week date to check if it falls in target month
-        week_label = weekly_file.stem  # e.g. 2025-W42
-        try:
-            _, week_num = week_label.split("-W")
-            week_start = datetime.strptime(f"{year}-W{int(week_num)}-1", "%Y-W%W-%w")
-            if week_start.month == month:
-                with open(weekly_file) as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if line:
-                            try:
-                                week_records.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                pass
-        except (ValueError, AttributeError):
-            continue
+    for weekly_file in _weekly_files_for_month(year, month):
+        week_records.extend(_load_jsonl(weekly_file))
 
     if not week_records:
         log.info("No weekly summaries found for %d-%02d", year, month)
         return {"input_records": 0, "output_records": 0}
 
     merged = _call_llm_merge(week_records, "monthly")
-
-    out_path = CORPUS_ROOT / "summaries" / "monthly" / f"{year}-{month:02d}.jsonl"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as fh:
-        for r in merged:
-            fh.write(json.dumps(r) + "\n")
+    _write_jsonl(CORPUS_ROOT / "summaries" / "monthly" / f"{year}-{month:02d}.jsonl", merged)
 
     log.info("Monthly summary %d-%02d: %d → %d records", year, month, len(week_records), len(merged))
     return {"input_records": len(week_records), "output_records": len(merged)}
+
+
+def _prev_quarter(reference_date: datetime) -> tuple[int, int]:
+    current_quarter = (reference_date.month - 1) // 3 + 1
+    year = reference_date.year
+    if current_quarter == 1:
+        return year - 1, 4
+    return year, current_quarter - 1
 
 
 def run_quarterly(reference_date: datetime | None = None) -> dict:
@@ -149,43 +157,20 @@ def run_quarterly(reference_date: datetime | None = None) -> dict:
     if reference_date is None:
         reference_date = datetime.now(tz=timezone.utc)
 
-    # Determine the previous quarter
-    current_quarter = (reference_date.month - 1) // 3 + 1
-    year = reference_date.year
-    if current_quarter == 1:
-        target_quarter = 4
-        year -= 1
-    else:
-        target_quarter = current_quarter - 1
-
-    quarter_months = range((target_quarter - 1) * 3 + 1, (target_quarter - 1) * 3 + 4)
+    year, target_quarter = _prev_quarter(reference_date)
     monthly_dir = CORPUS_ROOT / "summaries" / "monthly"
     month_records: list[dict] = []
-    for m in quarter_months:
+    for m in range((target_quarter - 1) * 3 + 1, (target_quarter - 1) * 3 + 4):
         mf = monthly_dir / f"{year}-{m:02d}.jsonl"
         if mf.exists():
-            with open(mf) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        try:
-                            month_records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
+            month_records.extend(_load_jsonl(mf))
 
     if not month_records:
         log.info("No monthly summaries found for Q%d %d", target_quarter, year)
         return {"input_records": 0, "output_records": 0, "themes_promoted": 0}
 
     merged = _call_llm_merge(month_records, "quarterly")
-
-    out_path = CORPUS_ROOT / "summaries" / "quarterly" / f"{year}-Q{target_quarter}.jsonl"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as fh:
-        for r in merged:
-            fh.write(json.dumps(r) + "\n")
-
-    # Theme promotion: scan all quarterly summaries, promote patterns seen in 2+ quarters
+    _write_jsonl(CORPUS_ROOT / "summaries" / "quarterly" / f"{year}-Q{target_quarter}.jsonl", merged)
     themes_promoted = _promote_themes()
 
     log.info(
@@ -195,60 +180,51 @@ def run_quarterly(reference_date: datetime | None = None) -> dict:
     return {"input_records": len(month_records), "output_records": len(merged), "themes_promoted": themes_promoted}
 
 
+def _load_quarterly_records() -> list[dict]:
+    quarterly_dir = CORPUS_ROOT / "summaries" / "quarterly"
+    records: list[dict] = []
+    for qf in sorted(quarterly_dir.glob("*.jsonl")):
+        for r in _load_jsonl(qf):
+            r["_quarter_file"] = qf.stem
+            records.append(r)
+    return records
+
+
+def _archive_theme(theme_path: pathlib.Path, now_str: str) -> None:
+    archive_dir = CORPUS_ROOT / "themes" / "archive" / now_str
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    theme_path.rename(archive_dir / theme_path.name)
+
+
+def _promote_category(cat: str, records: list[dict], now_str: str) -> int:
+    to_promote = [r for r in records if r.get("evidence_count", 0) >= QUARTERLY_GATE]
+    if not to_promote:
+        return 0
+    theme_path = CORPUS_ROOT / "themes" / "active" / f"{cat}.jsonl"
+    theme_path.parent.mkdir(parents=True, exist_ok=True)
+    if theme_path.exists():
+        _archive_theme(theme_path, now_str)
+    for r in to_promote:
+        r.pop("_quarter_file", None)
+    _write_jsonl(theme_path, to_promote)
+    metrics.themes_active.labels(category=cat).set(len(to_promote))
+    return len(to_promote)
+
+
 def _promote_themes() -> int:
     """Scan all quarterly summaries and promote cross-quarter patterns to active themes."""
-    quarterly_dir = CORPUS_ROOT / "summaries" / "quarterly"
-    all_quarterly: list[dict] = []
-    for qf in sorted(quarterly_dir.glob("*.jsonl")):
-        with open(qf) as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    try:
-                        r = json.loads(line)
-                        r["_quarter_file"] = qf.stem
-                        all_quarterly.append(r)
-                    except json.JSONDecodeError:
-                        pass
-
+    all_quarterly = _load_quarterly_records()
     if not all_quarterly:
         return 0
 
-    # Group by category, collect patterns with evidence across multiple quarters
     by_category: dict[str, list[dict]] = {c: [] for c in CATEGORIES}
     for r in all_quarterly:
         cat = r.get("category", "unknown")
         if cat in by_category:
             by_category[cat].append(r)
 
-    promoted = 0
     now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-
-    for cat, records in by_category.items():
-        # Simple promotion: evidence_count >= quarterly gate
-        to_promote = [r for r in records if r.get("evidence_count", 0) >= QUARTERLY_GATE]
-        if not to_promote:
-            continue
-
-        theme_path = CORPUS_ROOT / "themes" / "active" / f"{cat}.jsonl"
-        theme_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Archive existing theme file before overwriting
-        if theme_path.exists():
-            archive_dir = CORPUS_ROOT / "themes" / "archive" / now_str
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            archive_path = archive_dir / f"{cat}.jsonl"
-            theme_path.rename(archive_path)
-
-        with open(theme_path, "w") as fh:
-            for r in to_promote:
-                r.pop("_quarter_file", None)
-                fh.write(json.dumps(r) + "\n")
-
-        metrics.themes_active.labels(category=cat).set(len(to_promote))
-        promoted += len(to_promote)
-
-    return promoted
+    return sum(_promote_category(cat, records, now_str) for cat, records in by_category.items())
 
 
 def run_scheduled(reference_date: datetime | None = None) -> dict:
