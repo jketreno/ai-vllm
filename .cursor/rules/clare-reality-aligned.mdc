@@ -1,0 +1,66 @@
+---
+description: CLARE Reality-Aligned principle — single source of truth for every domain concept
+alwaysApply: true
+---
+
+# [R] Reality-Aligned — Derive From the Source of Truth
+
+Every domain concept has one authoritative source. Everything else derives from it.
+
+## Before Generating Domain Code
+
+1. Open `clare/autonomy.yml`
+2. Find the `sources_of_truth` section
+3. Look up the domain concept you're implementing
+4. Derive from the declared `source_of_truth`
+5. Never invent a representation if one is declared
+
+```yaml
+# Example entry in clare/autonomy.yml
+sources_of_truth:
+  - concept: "User permissions"
+    source_of_truth: "OAuth/IAM provider"
+    defined_in: "idp.users.roles"
+    note: "If local DB disagrees with IAM provider, the IdP is correct"
+```
+
+When implementing anything touching `User permissions`: read the IAM provider source, not the local DB or existing code.
+
+## Writing Reality Tests
+
+For each declared source of truth, propose a reality test that verifies alignment:
+
+```ts
+// Run in staging/nightly — verifies local model matches external source
+it('local user roles match IAM provider', async () => {
+  const idpUser = await iam.users.get(testUserId);
+  const localRoles = await getUserRoles(testUserId);
+
+  expect(normalize(localRoles)).toMatchObject(normalize(idpUser));
+});
+```
+
+Reality tests run in staging or nightly CI — not on every PR. Their job is to catch **drift** before it becomes institutionalized.
+
+## Drift Detection Exercise
+
+When reviewing a domain concept, ask:
+1. Where is it **defined**?
+2. Where is it **validated**?
+3. Where is it **enforced**?
+
+If those answers point to different files/systems → you have drift. Declare a source of truth and add a reality test.
+
+## Declaring a New Source of Truth
+
+When you introduce a new domain concept, propose adding it to `clare/autonomy.yml`:
+
+```yaml
+# Proposed addition to sources_of_truth:
+  - concept: "[ConceptName]"
+    source_of_truth: "[system/file that defines reality]"
+    defined_in: "[specific file, API, or service]"
+    note: "[what to do when systems disagree]"
+```
+
+Then generate a reality test in `tests/reality/` and add it to the nightly CI schedule.

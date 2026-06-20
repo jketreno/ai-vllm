@@ -1,0 +1,56 @@
+# =============================================================================
+# CLARE autonomy.yml — Module Autonomy Boundaries
+# =============================================================================
+# CLARE Principle: [L] Limited — Define where AI works alone vs with humans
+#
+# This is a generic starter template for bootstrapped projects.
+# Update module paths and reasons for your repository.
+#
+# Levels:
+#   full-autonomy  — AI can read, modify, and regenerate freely
+#   supervised     — AI generates code, but human must review before commit
+#   humans-only    — AI must NOT generate code; flag for human attention
+# =============================================================================
+
+project: "ai-vllm"
+
+modules:
+  # Keep high-risk paths humans-only. Typical candidates include authentication,
+  # payment flows, compliance/legal logic, and security-critical infrastructure.
+  - path: "clare"
+    level: humans-only
+    reason: "CLARE-owned infrastructure; all changes require human review"
+
+  - path: "clare/verify-local.sh"
+    level: supervised
+    reason: "Project-specific checks; AI may draft but human should review"
+
+  - path: "clare2"
+    level: supervised
+    reason: "Project-owned CLARE2 service; changes require human review"
+
+  - path: "clare2/templates/hooks"
+    level: humans-only
+    reason: "Authoritative provider hook definitions; CLARE consumes but does not overwrite these assets"
+
+  - path: "clare2/scripts/clare2-install-hooks.sh"
+    level: humans-only
+    reason: "Authoritative hook installer; changes affect every configured agent provider"
+
+  - path: "*"
+    level: supervised
+    reason: "Default: untagged modules require human review"
+
+# =============================================================================
+# Reality Alignment — Sources of Truth
+# =============================================================================
+# Add project-specific concepts after bootstrap.
+#
+# Example:
+# sources_of_truth:
+#   - concept: "Customer identity"
+#     source_of_truth: "Auth provider claims"
+#     defined_in: "infra/auth"
+#     note: "Provider claims win when app model differs"
+
+sources_of_truth: []

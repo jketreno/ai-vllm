@@ -1,0 +1,168 @@
+# =============================================================================
+# CLARE extensions.yml — Optional Tool Extensions
+# =============================================================================
+# CLARE Principle: [C] Constrained — extend enforcement with optional tools
+#
+# Extensions are optional checks that verify-ci.sh runs when enabled.
+# Each extension wraps an external tool (e.g., ESLint, golangci-lint, complexipy).
+#
+# This file is PROJECT-OWNED — CLARE updates will never overwrite it.
+# Enable/disable extensions by setting enabled: true/false below.
+#
+# If an enabled extension's tool is not installed, verify-ci.sh will fail
+# with instructions on how to install it or disable the extension.
+# =============================================================================
+
+extensions:
+
+  # ── ESLint Complexity — TypeScript / JavaScript ───────────────────────────
+  # Uses ESLint's built-in complexity rule to enforce cyclomatic complexity
+  # limits in TS/JS code. This is the preferred TypeScript path because it
+  # matches existing lint workflows and parser semantics.
+  #
+  # Install: npm install --save-dev eslint
+  # Project: https://eslint.org/docs/latest/rules/complexity
+  #
+  - name: eslint-complexity
+    enabled: true
+    description: "Cyclomatic complexity analysis for TypeScript/JavaScript"
+    command: "npx"
+    install_hint: "npm install --save-dev eslint"
+    project_url: "https://eslint.org/docs/latest/rules/complexity"
+    # Customize these for your project:
+    options:
+      # Maximum cyclomatic complexity per function (default: 15)
+      threshold: 15
+      # File extensions to analyze (space-separated)
+      file_types: "js jsx ts tsx"
+      # Paths to analyze (space-separated, relative to project root)
+      paths: "src"
+      # Extra flags passed directly to eslint
+      extra_flags: ""
+
+  # ── golangci-lint Complexity — Go ─────────────────────────────────────────
+  # Uses golangci-lint with complexity-focused linters (cyclop/gocognit).
+  # verify-ci.sh enforces threshold via a generated config for both linters.
+  # Use extra_flags for additional runner options (for example timeout/output).
+  #
+  # Install:
+  #   # binary will be $(go env GOPATH)/bin/golangci-lint
+  #   curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
+  # Project: https://golangci-lint.run/
+  #
+  # Note: this is golangci-lint's official pinned installer. CLARE's own scripts
+  # forbid pipe-to-shell (see run_forbidden_pipeline_check in verify-local.sh),
+  # but this hint is documentation a human runs deliberately, not code CLARE
+  # executes. If you prefer to avoid `curl | sh`, install via your package
+  # manager or download the pinned release binary from the project URL instead.
+  #
+  - name: golangci-lint-complexity
+    enabled: true
+    description: "Complexity analysis for Go via golangci-lint"
+    command: "golangci-lint"
+    install_hint: "# binary will be $(go env GOPATH)/bin/golangci-lint\ncurl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2"
+    project_url: "https://golangci-lint.run/"
+    options:
+      # Enforced threshold for cyclop.max-complexity and gocognit.min-complexity
+      threshold: 15
+      file_types: "go"
+      paths: "."
+      # Extra flags passed directly to golangci-lint
+      extra_flags: ""
+
+  # ── complexipy Complexity — Python ────────────────────────────────────────
+  # Fast Python cognitive complexity analysis.
+  # Configure exact threshold semantics via tool-specific flags in extra_flags.
+  #
+  # Install: pipx install complexipy  (or: pip install complexipy)
+  # Project: https://github.com/rohaquinlop/complexipy
+  #
+  - name: complexipy-complexity
+    enabled: true
+    description: "Cognitive complexity analysis for Python"
+    command: "complexipy"
+    install_hint: "pipx install complexipy (or pip install complexipy)"
+    project_url: "https://github.com/rohaquinlop/complexipy"
+    options:
+      # Enforced threshold via --max-complexity-allowed
+      threshold: 15
+      file_types: "py"
+      paths: "."
+      # Extra flags passed directly to complexipy
+      extra_flags: ""
+
+  # ── shellmetrics Complexity — Bash/Shell ──────────────────────────────────
+  # Cyclomatic complexity analysis for shell scripts.
+  # shellmetrics reports CCN per function; verify-ci.sh fails when max CCN
+  # exceeds threshold.
+  #
+  # Install: curl -fsSL https://git.io/shellmetrics -o ~/bin/shellmetrics && chmod +x ~/bin/shellmetrics
+  # Project: https://github.com/shellspec/shellmetrics
+  #
+  - name: shellmetrics-complexity
+    enabled: true
+    description: "Cyclomatic complexity analysis for Bash/shell scripts"
+    command: "shellmetrics"
+    install_hint: "curl -fsSL https://git.io/shellmetrics -o ~/bin/shellmetrics && chmod +x ~/bin/shellmetrics"
+    project_url: "https://github.com/shellspec/shellmetrics"
+    options:
+      # Enforced max CCN per parsed function
+      threshold: 15
+      # File extensions to analyze (space-separated)
+      file_types: "sh bash"
+      # Paths to analyze (space-separated, relative to project root)
+      paths: "."
+      # Extra flags passed directly to shellmetrics (for example --shell bash)
+      extra_flags: ""
+      # Paths to exclude (space-separated glob patterns)
+      exclude: "node_modules .git"
+
+  # ── File Size — Component / File Length Limits ───────────────────────────
+  # Catches the "one giant file" problem — especially common in React/TSX
+  # where AI piles everything into a single component. No external tool
+  # required; uses built-in line counting.
+  #
+  # When a file exceeds the limit, treat it as a structural refactor trigger,
+  # not a line-shaving exercise. The recovery target is 90% of threshold
+  # (for threshold 300, recover to <= 270) by extracting smaller modules,
+  # reducing branching, and simplifying architecture.
+  #
+  # Do NOT resolve failures by deleting comments, collapsing whitespace, or
+  # compressing readable code into dense one-liners.
+  #
+  # For React projects: pair this with templates/linting/eslint-react.config.js
+  # which adds per-function and nesting-depth limits via ESLint.
+  #
+  - name: file-size
+    enabled: true
+    description: "File length limits — catches oversized components and modules"
+    command: "wc"
+    install_hint: "Built-in (no install needed)"
+    project_url: ""
+    options:
+      # Maximum lines per file (default: 300). Files over this limit fail.
+      # If a file exceeds this threshold, refactor to <= 90% of this value.
+      # Example: threshold 300 -> recovery target <= 270.
+      # Recommended starting points:
+      #   React/TSX components: 250
+      #   TypeScript modules:   400
+      #   General:              300
+      threshold: 300
+      # File extensions to check (space-separated)
+      # Common sets:
+      #   React:   "js jsx tsx"
+      #   Full-stack TS: "js ts tsx jsx"
+      #   Python:  "py"
+      #   Go:      "go"
+      file_types: "js ts tsx jsx"
+      # Paths to scan (space-separated, relative to project root)
+      paths: "src"
+      # Paths to exclude (space-separated glob patterns)
+      exclude: "*.test.* *.spec.* *.stories.* *.d.ts generated"
+      # Whether to count comment-only lines toward the file size limit.
+      # Set to false to exclude pure comment lines (lines where the entire
+      # non-whitespace content is a comment). Lines with both code and a
+      # trailing comment are always counted. Block comments spanning multiple
+      # lines are not stripped. Supported languages: JS/TS, Go, Rust, Python,
+      # Ruby, Shell, Lua, and others — see verify-ci.sh:line_comment_prefix().
+      count_comments: true

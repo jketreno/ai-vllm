@@ -1,0 +1,216 @@
+# CLARE — Claude Code Configuration
+
+This project uses the **CLARE** framework for AI-assisted development.
+
+## The verify-ci.sh Rule
+
+**When to run it:** only in a turn where you created, updated, or deleted a file. If you edited no files this turn — including any plan-mode, research, or read-only turn — do **not** run it.
+
+```bash
+./clare/verify-ci.sh            # Full check (stops at first failure)
+./clare/verify-ci.sh --fast     # Skip slow architecture tests
+./clare/verify-ci.sh --fix      # Auto-fix lint issues
+./clare/verify-ci.sh --fail-slow  # Continue past failures; print summary at end
+```
+
+**How to run it (a terminating sequence, not a loop):**
+
+1. Run `./clare/verify-ci.sh` once.
+2. Exit code 0 → report PASS and stop.
+3. Non-zero → fix the reported failures, then run it once more.
+
+Do not invoke it again for any other reason.
+
+**Reporting:** if you ran verify-ci.sh this turn, report the result (PASS/FAIL), the command, and any `--fast`/`--fix`/`--fail-slow` flag used. If you edited no files this turn, state "no edits this turn — verify-ci.sh not run" and do not invoke it. If running in read-only mode (Ask mode), state: "verify-ci.sh not run because session is read-only."
+
+Rules guide behavior; CI enforces it. `./clare/verify-ci.sh` is the source of truth.
+
+---
+
+## Cross-Agent Sync Rule
+
+When CLARE agent configuration changes, update all supported agent environments in the same change.
+
+Supported environments:
+- Copilot: `.github/copilot-instructions.md` and `install/.github/copilot-instructions.md`
+- Claude: `CLAUDE.md` and `install/root/CLAUDE.md`
+- Codex: `AGENTS.md` and `install/root/AGENTS.md`
+- Cursor: `.cursorrules` and `install/root/.cursorrules`
+
+This includes rule updates, skill/workflow guidance, and CLARE installer-facing agent instructions.
+
+---
+
+## Session Start Checklist
+
+At the start of every session, do all of the following **before responding to anything else**:
+
+1. Read `clare/autonomy.yml` — note which paths are humans-only
+2. Read `clare/principles.md` — the five CLARE principles
+3. Identify the task domain concept → check `sources_of_truth` in `autonomy.yml`
+4. **Output a CLARE status block** as the very first thing in your response:
+
+```
+🔒 CLARE framework active
+
+C · Constrained — verify-ci.sh enforced
+L · Limited — autonomy.yml: [found ✅ | NOT FOUND ⚠]
+A · Assertive — constraint tests required
+R · Reality-Aligned — sources_of_truth: [N concepts | none declared]
+E · Ephemeral — generated files protected
+
+humans-only zones: [list paths, or "none"]
+verify-ci.sh: [found ✅ | NOT FOUND ⚠]
+```
+
+Fill in the actual values by reading the files. Show this block **once per session**, not on every message. If `clare/autonomy.yml` is missing, warn the user to run the CLARE installer.
+
+---
+
+## Autonomy Boundaries [L]
+
+**Before modifying any file**, look up its path in `clare/autonomy.yml`:
+
+| Level | What to do |
+|-------|-----------|
+| `full-autonomy` | Proceed freely |
+| `supervised` | Generate code, append "⚠ Human review required for: [path]" to your reply |
+| `humans-only` | **STOP.** Say: "This path is marked `humans-only` in `clare/autonomy.yml`. I won't generate code here. Please make this change yourself or update the autonomy level if appropriate." |
+
+---
+
+## Verification Workflow [C]
+
+Only after you have edited a file this turn:
+
+```
+1. Run ./clare/verify-ci.sh once.
+2. Exit code 0 → report PASS + command + flags used,
+   summarize files changed, and remind: "Please review the diff and commit."
+3. Non-zero → read the error output, fix the specific failures,
+   then run ./clare/verify-ci.sh once more.
+```
+
+If a turn made no file edits (plan-mode, research, read-only), skip this entirely.
+
+---
+
+## Testing Standards [A]
+
+Write constraint tests (invariants), not confirmation tests (descriptions):
+
+```ts
+// ❌ Confirmation — describes what implementation currently does
+it('creates a user with the given email', () => {
+  expect(createUser('a@b.com').email).toBe('a@b.com');
+});
+
+// ✅ Constraint — enforces what must always be true
+it('never creates two users with the same email', () => {
+  createUser('a@b.com');
+  expect(() => createUser('a@b.com')).toThrow();
+});
+```
+
+See `.github/instructions/tests.instructions.md` for the full testing specification.
+
+---
+
+## Linter Integrity [C]
+
+Fix what the linters and `verify-ci.sh` flag — never circumvent it. When complexity or other checks are enabled:
+
+- Do **not** add per-file or per-line suppressions to silence a finding (e.g. `// eslint-disable complexity`, `# noqa`, `# type: ignore`, `nolint`).
+- Do **not** raise complexity/size thresholds in `clare/extensions.yml` to make a failing check pass.
+- Do **not** exclude a file from a check to avoid fixing it.
+
+Refactor the code to satisfy the check instead. If a limit is genuinely wrong for the project, raise it with the user for review — don't change it silently to get green.
+
+---
+
+## Generated Code [E]
+
+- Files with `// @generated` or `# Generated by` headers must be regenerated from their source, never hand-edited
+- When a source of truth changes (proto, OpenAPI, Pydantic model), regenerate all derived files
+- Skill files in `clare/templates/skills/` define how to regenerate each type
+- If you need to change a generated file's behavior, change the source and regenerate
+
+---
+
+## Source of Truth [R]
+
+Before generating code for any domain concept, check `sources_of_truth` in `clare/autonomy.yml`. The declared source wins when systems conflict. Never invent a representation for a declared concept.
+
+---
+
+## PLAN Mode (for complex work)
+
+For any change that touches more than 3 files or introduces a new pattern, use PLAN mode first:
+
+```
+Show me the plan before implementing:
+1. Which files will be created/modified?
+2. What autonomy levels apply to each?
+3. What tests will enforce the new invariants?
+4. What source of truth does this derive from?
+
+Wait for approval before writing code.
+```
+
+In PLAN mode you make no file edits, so do **not** run `./clare/verify-ci.sh` while planning. It runs only after edits, once the plan is approved and implemented.
+
+---
+
+## Available Custom Commands
+
+- `/project:verify` — Run verify-ci.sh and report results
+- `/project:check-autonomy` — Check the autonomy level for a file path
+- `/project:update-autonomy` — Guide you through updating clare/autonomy.yml
+- `/project:clare2-capture` — Start or stop a CLARE₂ session capture (sets `CLARE2_SESSION_FILE`)
+- `/project:distill` — Trigger an on-demand CLARE₂ distillation pass
+
+---
+
+## Key Files
+
+| Path | Purpose |
+|------|---------|
+| `clare/autonomy.yml` | Autonomy boundaries + sources of truth |
+| `clare/extensions.yml` | Optional tool extensions (ESLint/golangci-lint/complexipy, etc.) — project-owned |
+| `clare/principles.md` | Five CLARE principles quick reference |
+| `clare/verify-ci.sh` | CI enforcement script — run before completing work (CLARE-owned) |
+| `clare/verify-local.sh` | Project-specific checks — add your checks here |
+| `clare/templates/architecture-tests/` | Generic architecture tests (autonomy guard) |
+| `clare/examples/architecture-tests/` | Domain-specific test examples |
+| `clare/templates/skills/` | Generic AI skills (MCP server, code review) |
+| `clare/examples/skills/` | Domain-specific skill illustrations (copy and customize) |
+| `clare/docs/agentic.md` | Multi-agent pipelines + MCP integration guide |
+| `clare/templates/skills/mcp-server.md` | Skill to scaffold a CLARE MCP server |
+
+---
+
+## Bash Commands Reference
+
+```bash
+# Verification
+./clare/verify-ci.sh              # Full CI check (stops at first failure)
+./clare/verify-ci.sh --fast       # Skip architecture tests
+./clare/verify-ci.sh --fix        # Auto-fix lint
+./clare/verify-ci.sh --fail-slow  # Continue past failures; print summary at end
+./clare/verify-ci.sh --list-tests         # List numbered stages and steps
+./clare/verify-ci.sh --run-tests 1,3.1,7  # Run only selected stages/steps
+
+# Autonomy
+cat clare/autonomy.yml             # View all boundaries
+grep -A3 "level: humans-only" clare/autonomy.yml  # List restricted paths
+
+# Architecture tests (if configured)
+npm run test:architecture          # Node.js projects
+pytest tests/architecture/         # Python projects
+```
+
+## CLARE₂ Temper Routing
+
+Use `clare_temper_route(project, task_kind, capabilities)` for an opaque route
+ID and send `X-CLARE-Route-ID` to the policy proxy. Never select/load adapters,
+provide adapter paths, call raw vLLM management endpoints, or access Docker.

@@ -1,0 +1,40 @@
+---
+description: CLARE Limited principle — check autonomy boundaries before every file change
+alwaysApply: true
+---
+
+# [L] Limited — Respect Autonomy Boundaries
+
+Before modifying any file, look up its path in `clare/autonomy.yml`.
+
+## Autonomy Level Actions
+
+### `full-autonomy`
+Proceed normally. No restrictions.
+
+### `supervised`  
+Generate the code normally, but end your response with:
+
+> ⚠ **Human review required**: `[file path]` is marked `supervised` in `clare/autonomy.yml`. Please review before committing.
+
+### `humans-only`
+**Do not generate code.** Instead, respond with:
+
+> This file (`[path]`) is marked `humans-only` in `clare/autonomy.yml`.  
+> I won't generate code here. This is a protected boundary because: `[reason from autonomy.yml]`.  
+> Please make this change yourself, or run `/project:update-autonomy` to reconsider the boundary.
+
+## Path Matching Rules
+
+Use the most specific matching path (longest prefix wins). Examples:
+- File `src/payment/processor.ts` matches `src/payment` before `src` or `*`
+- If no specific rule matches, apply the `*` default (usually `supervised`)
+
+## Common humans-only Patterns
+
+Automatically flag as `humans-only` if a file:
+- Is in a directory named `payment`, `billing`, `auth/core`, `crypto`, or `domain`
+- Contains the comment `// humans-only` or `# humans-only`
+- Has a path listed under `level: humans-only` in autonomy.yml
+
+And the user hasn't explicitly said "I know this is humans-only, proceed anyway with my oversight."

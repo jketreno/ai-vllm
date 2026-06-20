@@ -1,0 +1,44 @@
+---
+description: CLARE Constrained principle — enforce rules via tests and tools
+alwaysApply: true
+---
+
+# [C] Constrained — Make Rules Enforced, Not Suggested
+
+Architecture rules exist in code, not in code review comments.
+
+## Core Requirement
+
+If you're about to generate code that violates a rule, **stop and add the enforcement first**:
+
+1. Is there an ESLint rule / linter config that would catch this? If not, propose one.
+2. Is there an architecture test that would catch this? If not, propose one.
+3. Add the check to `clare/verify-local.sh`.
+
+## When to Add Architecture Tests
+
+If you find yourself thinking "I need to remember to always do X" — that's an architecture test waiting to be written. Common patterns:
+
+```js
+// "All API endpoints need rate limiting"
+test('all endpoints have rate limiting', () => { ... });
+
+// "Never import from humans-only modules"
+test('supervised code does not depend on humans-only code', () => { ... });
+
+// "All events must have a schema"
+test('every event type has a registered Zod schema', () => { ... });
+```
+
+See `clare/templates/architecture-tests/` for copy-paste starting points.
+
+## ESLint Rules to Propose
+
+When generating code, suggest adding ESLint rules for:
+- `no-console` → catches debug logging in production code
+- `no-restricted-imports` → enforces module boundary rules
+- Custom rules for domain-specific patterns
+
+## verify-local.sh Integration
+
+Any new constraint must be wired into `clare/verify-local.sh` (not `verify-ci.sh`, which is CLARE-owned). Use `run_check "Name" "command"` — all helpers are available from the parent script.

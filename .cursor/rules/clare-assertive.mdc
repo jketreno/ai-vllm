@@ -1,0 +1,75 @@
+---
+description: CLARE Assertive principle — write constraint tests, not confirmation tests
+globs: ["**/*.test.ts", "**/*.test.js", "**/*.spec.ts", "**/*.spec.js", "tests/**", "test/**"]
+---
+
+# [A] Assertive — Tests Define Invariants, Not Implementations
+
+Every test you write must enforce something that must **always** be true, not something the implementation currently happens to do.
+
+## The Invariant Test Pattern
+
+Before writing a test, ask: "What must be true even if someone rewrites the implementation from scratch?"
+
+That answer is your test.
+
+```ts
+// ❌ Confirms implementation — useless after regeneration
+it('addTax returns 110 when given 100 and 0.1', () => {
+  expect(addTax(100, 0.1)).toBe(110);
+});
+
+// ✅ Enforces invariant — survives any correct implementation
+it('tax is always added to the original amount, never subtracted', () => {
+  fc.assert(
+    fc.property(
+      fc.float({ min: 0, max: 1_000_000 }),
+      fc.float({ min: 0, max: 1 }),
+      (amount, rate) => {
+        fc.pre(amount > 0 && rate >= 0);
+        expect(addTax(amount, rate)).toBeGreaterThanOrEqual(amount);
+      }
+    )
+  );
+});
+```
+
+## Required Test Types per Module
+
+1. **Unit invariant tests** — at least one property-based test per critical function
+2. **Schema-lock test** — for any public API or event contract
+3. **Architecture test** — in `tests/architecture/` for structural rules
+
+## Test Naming Convention
+
+Use the pattern: `[subject] [never/always/must/cannot] [condition]`
+
+- `'users can never have duplicate emails'`
+- `'API responses always include a request ID'`  
+- `'payment amounts must always be positive'`
+- `'auth tokens cannot be longer than 30 days'`
+
+## Property-Based Test Starters
+
+```ts
+import fc from 'fast-check'; // TypeScript/JavaScript
+
+// Roundtrip (encode/decode, serialize/deserialize)
+fc.assert(fc.property(fc.string(), s => decode(encode(s)) === s));
+
+// Monotonicity (more input → more/equal output)
+fc.assert(fc.property(fc.integer({ min: 0 }), n => process(n + 1) >= process(n)));
+
+// Idempotency (doing it twice = doing it once)
+fc.assert(fc.property(fc.anything(), x => normalize(normalize(x)) === normalize(x)));
+```
+
+## The Test-the-Test Exercise
+
+After writing tests:
+1. Delete the implementation
+2. Ask AI to regenerate it
+3. Run the tests
+
+- Tests **fail** → they are enforcing real invariants ✅
+- Tests **pass** → either the constraints are strong enough that AI reproduced the correct behavior (great!), or the tests are too weak (validate which)

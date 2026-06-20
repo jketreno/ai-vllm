@@ -1,0 +1,208 @@
+---
+description: CLARE skill mirror for autonomy-bootstrap
+alwaysApply: false
+---
+
+---
+name: autonomy-bootstrap
+description: "Draft or refine clare/autonomy.yml boundaries and sources_of_truth via guided interview"
+mode: agent
+---
+
+# Bootstrap CLARE Autonomy Configuration
+
+> What this skill does: Guides the user through creating or refining clare/autonomy.yml so AI boundaries and sources of truth match the real project architecture.
+> When to use: Use when adopting CLARE in a new repository, reworking module boundaries, or tightening AI safety zones.
+> Output: A proposed or updated clare/autonomy.yml plus a short checklist of follow-up setup actions.
+
+---
+
+## Context
+
+CLARE's Limited principle requires explicit autonomy boundaries per path.
+CLARE's Reality-Aligned principle requires sources_of_truth for important domain concepts.
+
+The canonical source for both in a CLARE project is clare/autonomy.yml.
+
+---
+
+## Instructions
+
+When invoked, run this process.
+
+### Step 1: Gather project structure and risk profile
+
+1. Read the repository tree and identify major modules.
+1. Ask the user which areas are high-risk or compliance-sensitive.
+1. Ask which areas are safe for AI iteration and regeneration.
+
+Classify candidate paths into:
+- full-autonomy: low-risk utilities, generated code, repetitive glue code
+- supervised: most application code requiring review
+- humans-only: auth/payment/compliance/safety-critical logic
+
+Decision matrix:
+
+| Path characteristics | Suggested level | Why |
+|---|---|---|
+| Authentication, payments, legal/compliance workflows, production access controls | humans-only | High impact mistakes require intentional manual authorship |
+| Core business logic, API handlers, shared domain models | supervised | AI can draft quickly, but behavior needs human review |
+| Generated code, boilerplate wiring, test fixtures, low-risk utilities | full-autonomy | Fast regeneration and iteration are low risk |
+
+### Step 2: Draft module boundaries
+
+Draft a modules section with specific path patterns and reasons.
+
+Requirements:
+- Use specific paths first, then end with a wildcard default.
+- Include a human-readable reason for every entry.
+- Keep ambiguous paths out of humans-only until confirmed.
+
+Template:
+
+```yaml
+modules:
+  - path: "src/generated"
+    level: full-autonomy
+    reason: "Generated artifacts are safe to regenerate"
+
+  - path: "src/payments"
+    level: humans-only
+    reason: "Financial controls require manual authorship"
+
+  - path: "src"
+    level: supervised
+    reason: "General product logic requires review"
+
+  - path: "*"
+    level: supervised
+    reason: "Default: require human review"
+```
+
+### Step 3: Define sources of truth
+
+Ask for 3-8 domain concepts that often cause drift.
+If the team is unsure which concepts to pick, start with these prompts:
+- "What data appears in more than one system and occasionally disagrees?"
+- "What contract breaks downstream services if changed unexpectedly?"
+- "Which domain terms require exact definitions across teams?"
+- "What is the canonical source for identity, pricing, permissions, and lifecycle state?"
+
+Common starting concepts by project type:
+- Backend API: identity, billing state, API schema, event contracts, RBAC policy
+- Frontend SPA: route map, API contract, design tokens, feature flags, auth session model
+- Monorepo: package boundaries, shared types/schema, build graph ownership, deployment metadata
+
+For each concept, capture:
+- concept
+- source_of_truth
+- defined_in
+- optional note
+
+Example:
+
+```yaml
+sources_of_truth:
+  - concept: "User identity"
+    source_of_truth: "Auth provider schema"
+    defined_in: "infra/auth"
+    note: "Provider claims win when app model differs"
+```
+
+Concrete module examples:
+
+```yaml
+# Backend API example
+modules:
+  - path: "src/auth"
+    level: humans-only
+    reason: "Authentication and token policy are security critical"
+  - path: "src/generated"
+    level: full-autonomy
+    reason: "Generated clients are safe to regenerate"
+  - path: "src"
+    level: supervised
+    reason: "Application logic requires review"
+  - path: "*"
+    level: supervised
+    reason: "Default review boundary"
+```
+
+```yaml
+# Frontend SPA example
+modules:
+  - path: "src/payments"
+    level: humans-only
+    reason: "Payment UX and flows require strict human control"
+  - path: "src/components/generated"
+    level: full-autonomy
+    reason: "Generated component wrappers can be regenerated"
+  - path: "src"
+    level: supervised
+    reason: "Feature code requires review"
+  - path: "*"
+    level: supervised
+    reason: "Default review boundary"
+```
+
+```yaml
+# Monorepo example
+modules:
+  - path: "packages/security"
+    level: humans-only
+    reason: "Security controls and policies are high risk"
+  - path: "packages/*/generated"
+    level: full-autonomy
+    reason: "Generated artifacts are safe to refresh"
+  - path: "packages"
+    level: supervised
+    reason: "Most package logic needs review"
+  - path: "*"
+    level: supervised
+    reason: "Default review boundary"
+```
+
+### Step 4: Validate the configuration
+
+Validate the draft before writing:
+- Ensure wildcard path exists exactly once.
+- Ensure levels are only full-autonomy, supervised, humans-only.
+- Ensure no empty reasons.
+- Ensure no duplicate concept names in sources_of_truth.
+
+If constraints fail, fix and revalidate.
+
+### Step 5: Write or propose updates
+
+If user requests direct edits, write clare/autonomy.yml with:
+- project name
+- modules
+- sources_of_truth
+
+If user requests plan-only output, return a complete patch preview instead.
+
+### Step 6: Provide setup follow-through checklist
+
+Adoption recommendation:
+- Start conservative: keep broad paths as supervised first.
+- Promote specific low-risk paths to full-autonomy only after an audit of recent changes and failures.
+
+After autonomy.yml is ready, recommend these CLARE setup actions:
+1. Confirm clare/verify-local.sh contains project-specific checks.
+1. Run ./clare/verify-ci.sh and resolve failures.
+1. Review humans-only boundaries with maintainers.
+1. Optionally configure clare/extensions.yml for extra checks.
+1. Install any needed prompt skills into .github/prompts/.
+
+---
+
+## Verification
+
+Before marking complete:
+
+1. Confirm clare/autonomy.yml parses as valid YAML.
+1. Confirm every modules entry has path, level, and reason.
+1. Confirm sources_of_truth entries are non-empty and actionable.
+1. Run ./clare/verify-ci.sh.
+
+Do not report completion if verify-ci.sh fails.

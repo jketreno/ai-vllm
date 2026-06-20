@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# CLARE pre-commit hook — runs verify-ci.sh before every commit.
+#
+# Install:
+#   cp clare/templates/git-hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# Or with git config (works across clones):
+#   git config core.hooksPath clare/templates/git-hooks
+#
+# This ensures no commit is created unless all CLARE checks pass,
+# whether the commit comes from a human or an AI tool.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Locate verify-ci.sh relative to the repo root
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VERIFY_SCRIPT="$REPO_ROOT/clare/verify-ci.sh"
+
+if [[ ! -x "$VERIFY_SCRIPT" ]]; then
+  echo "CLARE pre-commit: clare/verify-ci.sh not found or not executable."
+  echo "  Run: chmod +x clare/verify-ci.sh"
+  exit 1
+fi
+
+if [[ "${CLARE_SKIP_PRECOMMIT:-0}" == "1" ]]; then
+  echo "CLARE pre-commit: skipped via CLARE_SKIP_PRECOMMIT=1"
+  exit 0
+fi
+
+# --fast keeps commit feedback quick; full architecture checks run in CI.
+echo "CLARE pre-commit: running verify-ci.sh --fast ..."
+"$VERIFY_SCRIPT" --fast
+
+# Exit code from verify-ci.sh propagates — non-zero blocks the commit.

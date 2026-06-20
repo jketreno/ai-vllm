@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+# ── Permissions ───────────────────────────────────────────────────────────────
+# Minimal permissions by default — add as needed
+permissions:
+  contents: read
+
+jobs:
+  # ── REQUIRED ───────────────────────────────────────────────────────────────
+  verify:
+    name: CLARE Verification
+    runs-on: ubuntu-latest
+
+    # ── Customize: Set your runtime version ───────────────────────────────────
+    strategy:
+      matrix:
+        node-version: [20.x]  # ADD: python-version, go-version, etc. if needed
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── REQUIRED: Language Setup (customize for your project) ──────────────
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'   # or 'yarn', 'pnpm'
+
+      # - name: Setup Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.12'
+      #     cache: 'pip'
+
+      # - name: Setup Go
+      #   uses: actions/setup-go@v5
+      #   with:
+      #     go-version: '1.22'
+
+      # ── REQUIRED: Install Dependencies ─────────────────────────────────────
+
+      - name: Install dependencies
+        run: |
+          # Choose one package manager command:
+          npm ci
+          # pip install -r requirements.txt
+          # go mod download
+
+      # ── Run CLARE Verification ─────────────────────────────────────────────
+      # This runs the same script your AI runs locally.
+      # If it fails locally, it will fail here — and vice versa.
+
+      - name: CLARE — Verify CI
+        run: |
+          chmod +x clare/verify-ci.sh
+          ./clare/verify-ci.sh
+
+      # ── OPTIONAL: Upload test coverage ─────────────────────────────────────
+
+      # - name: Upload coverage
+      #   uses: codecov/codecov-action@v4
+      #   with:
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── OPTIONAL: Architecture Tests (separate job for visibility) ─────────────
+  architecture:
+    name: Architecture Tests
+    runs-on: ubuntu-latest
+    needs: verify   # Run after main verify
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Run architecture tests
+        run: |
+          # These are the tests that enforce structural rules
+          # See install/clare/examples/architecture-tests/ for starter examples
+          npx jest tests/architecture/ --passWithNoTests  # UPDATE: your arch test command
+
+      - name: Check autonomy boundaries
+        run: |
+          npx jest tests/architecture/autonomy-guard.test.js --passWithNoTests
+
+  # ── OPTIONAL: Security dependency scanning ─────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run dependency audit
+        run: npm audit --audit-level=high   # UPDATE: use your package manager's audit
+
+      # Optional: SAST with CodeQL
+      # - name: Initialize CodeQL
+      #   uses: github/codeql-action/init@v3
+      #   with:
+      #     languages: javascript  # or python, go, etc.
+      # - name: Perform CodeQL Analysis
+      #   uses: github/codeql-action/analyze@v3
+
+    # After adding this workflow, configure required status checks in:
+    # GitHub Settings -> Branches -> Branch protection rules.

@@ -1,0 +1,284 @@
+---
+name: review
+description: "Code review for correctness, KISS/DRY/YAGNI/SOLID, security, language BKMs, tests, and docs"
+mode: agent
+---
+
+# Review Diff vs. Base Ref
+
+## Scope and Baseline
+
+Review all changes on the current branch against an appropriate base ref — as if performing a thorough pull-request code review. Do not guess at correctness; read the actual diff and the relevant file context.
+
+---
+
+## Step 1 — Determine the Base Ref
+
+Resolve the base ref in priority order. Use the first one that succeeds:
+
+1. **User-specified** — if the user says "review vs main", "against origin/staging", etc., use that ref.
+2. **Upstream tracking branch** — `git rev-parse --verify "upstream/$(git symbolic-ref --short HEAD 2>/dev/null)" 2>/dev/null`
+3. **Origin tracking branch (same name)** — `git rev-parse --verify "origin/$(git symbolic-ref --short HEAD 2>/dev/null)" 2>/dev/null`
+4. **`origin/main`** — `git rev-parse --verify origin/main 2>/dev/null`
+5. **`origin/master`** — `git rev-parse --verify origin/master 2>/dev/null`
+6. **Local `main`** — `git rev-parse --verify main 2>/dev/null`
+7. **Ask** — if none resolve, say: "I couldn't determine a base branch. What should I diff against?"
+
+---
+
+## Step 2 — Gather the Diff
+
+```bash
+# Unified diff from merge base (PR semantics — use triple-dot)
+git diff <BASE_REF>...HEAD
+
+# File summary (what changed at a glance)
+git diff --stat <BASE_REF>...HEAD
+
+# Untracked new files not yet committed
+git status --short
+```
+
+Read the **complete diff** before beginning the review. Do not review hunks in isolation.
+
+---
+
+## Step 3 — Load File Context
+
+For every file that appears in the diff, read the **full file** — not just the changed hunks. This is required to:
+
+- Detect misuse of a new or changed API by its callers
+- Verify that error handling is consistent with the rest of the file
+- Identify invariants that the changed code may break
+- Confirm that imports, exports, and type signatures are consistent
+
+---
+
+## Review Checklist
+
+Apply every category below to every changed file. Do not skip a category because the change looks small — subtle bugs hide in small diffs.
+
+---
+
+### 1. Correctness & Logic
+
+- [ ] **Off-by-one** — loop bounds, slice/array indices, fence-post counting
+- [ ] **Null / undefined / nil dereference** — accessing a field or calling a method before verifying the value is non-null
+- [ ] **Integer overflow / underflow** — unguarded arithmetic on values that could exceed type bounds
+- [ ] **Incorrect boolean logic** — misplaced negation, wrong operator precedence, short-circuit evaluation that skips side effects unintentionally
+- [ ] **Swallowed errors** — errors caught and dropped, converted to empty/zero returns, or logged but not propagated when propagation is required
+- [ ] **Wrong error type returned** — creating a different error subtype or error code than the caller expects
+- [ ] **API contract violation** — calling a function with arguments in the wrong order, the wrong units (ms vs s, bytes vs kB), or the wrong type
+- [ ] **Algorithm correctness** — does the implementation match the stated intent? Trace through at least one boundary case mentally.
+- [ ] **Missing return / fallthrough** — missing `return` in a branch; `switch`/`match` case that falls through when it should not
+- [ ] **Reference vs. value equality** — `==` vs `.equals()` (Java), `is` vs `==` (Python), `===` vs `==` (JS), pointer vs. struct comparison (Go/C)
+- [ ] **Unintended mutation** — function modifies the caller's data structure without that being declared in its contract
+- [ ] **Incorrect assumptions about external state** — assuming a file always exists, a DB always responds within a timeout, a network resource is always reachable
+
+---
+
+### 2. Security (OWASP Top 10 + Common Patterns)
+
+- [ ] **Injection** — SQL, shell command, LDAP, XPath, template injection, or path traversal via unsanitized user input; ensure parameterized queries or allow-list validation
+- [ ] **Broken access control / IDOR** — operating on a resource by user-supplied ID without verifying the caller owns or is authorized to access that ID
+- [ ] **Hardcoded credentials** — API keys, passwords, tokens, private keys, or symmetric secrets committed in source or in default config
+- [ ] **Sensitive data exposure** — PII or secrets logged, returned in error messages, stored in plaintext, or included in URLs (which end up in logs)
+- [ ] **Broken cryptography** — MD5/SHA-1 for integrity, ECB mode, hardcoded IVs, key reuse, non-constant-time comparison of secrets or MACs
+- [ ] **XSS** — user-supplied content rendered into HTML or JavaScript without escaping; React `dangerouslySetInnerHTML`, server-side templates with unescaped interpolation
+- [ ] **CSRF** — state-mutating endpoints (POST, PUT, PATCH, DELETE) without CSRF token validation for browser-facing APIs
+- [ ] **SSRF** — server fetching a URL supplied by the user without an allow-list of permitted hosts/schemes
+- [ ] **XXE** — XML parser with external entity processing enabled when parsing untrusted input
+- [ ] **Security misconfiguration** — debug modes left on, verbose stack traces in production responses, permissive CORS (`*`), missing security headers (`Content-Security-Policy`, `X-Frame-Options`)
+- [ ] **Timing attacks** — secrets, tokens, or HMACs compared with `==` (not constant-time); use `crypto.timingSafeEqual` (Node), `hmac.compare_digest` (Python), `subtle.ConstantTimeCompare` (Go)
+- [ ] **New dependencies** — for each newly added package: check for known CVEs, review license compatibility, and consider whether a lighter or in-tree alternative exists
+- [ ] **Dependency confusion / typosquatting** — verify that newly added packages use the correct registry scope and exact expected package name; check for private package names that could be shadowed by public registries
+- [ ] **Overly broad permissions / scopes** — IAM roles, OAuth scopes, file permissions, or container capabilities granted wider than the code actually requires (principle of least privilege)
+- [ ] **Secrets in structured logs / telemetry** — fields like `request_body`, `headers`, or `user_data` serialized into logs or tracing spans without redaction of sensitive fields
+- [ ] **Unsafe deserialization** — deserializing untrusted input (pickle, Java ObjectInputStream, YAML `load`, `eval`-based JSON parsing) without safe loader or schema validation
+
+---
+
+### 3. Concurrency & Race Conditions
+
+- [ ] **Unsynchronized shared mutable state** — multiple goroutines, threads, or async handlers reading and writing the same variable without a mutex, atomic, or channel
+- [ ] **TOCTOU (time-of-check / time-of-use)** — checking a condition (file exists, record exists, balance is sufficient) and then acting on it in a separate step, without holding a lock or using a transaction
+- [ ] **Deadlock potential** — locks acquired in inconsistent order across code paths; locks held across I/O or external calls; nested locks that are never released on error
+- [ ] **Missing atomic operations** — compound read-modify-write (`counter++`, `map[key] = map[key] + 1`) without atomics or a mutex
+- [ ] **Missing `await` / unhandled promise rejections** — async functions called without `await`; `.catch()` missing on a `Promise` chain; top-level `await` without try/catch
+- [ ] **Event-loop blocking** — synchronous heavy computation, `fs.readFileSync`, or blocking network calls on the main thread in Node.js or a browser context
+- [ ] **Goroutine leaks** — goroutine started that has no guaranteed exit path when the parent context is cancelled or the channel it reads is never closed (Go)
+- [ ] **Missing database transaction** — multi-step operations (read-then-write, debit-then-credit) that must be atomic executed without a transaction, leaving the DB in an inconsistent state on partial failure
+- [ ] **Stale closure** — a goroutine or callback closes over a loop variable by reference; the variable has changed by the time the closure executes (Go loop variable capture, JS `var` in `for`)
+
+---
+
+### 4. Design Principles (KISS / DRY / YAGNI / SOLID)
+
+**KISS — Keep It Simple**
+- [ ] **Over-engineered solution** — the implementation is more complex than the problem warrants; a simpler approach (fewer layers, fewer abstractions, less indirection) would achieve the same result
+- [ ] **Unnecessary abstraction layers** — wrapper classes, factory methods, strategy patterns, or middleware introduced when the code has only one concrete implementation and no stated need for extensibility
+- [ ] **Clever code over clear code** — one-liners, ternary chains, or bitwise tricks that sacrifice readability for brevity without a measurable performance justification
+- [ ] **Excessive cyclomatic complexity** — deeply nested conditionals or loops; consider early returns, guard clauses, or decomposition into smaller functions
+
+**DRY — Don't Repeat Yourself**
+- [ ] **Duplicated logic** — identical or near-identical blocks in two or more locations that should be extracted into a shared function or module
+- [ ] **Duplicated knowledge** — the same business rule, constant, or configuration value defined in multiple places where a single source of truth should be referenced
+- [ ] **Copy-paste with minor variations** — blocks that differ only in variable names or literals, indicating a missing parameterized abstraction
+
+**YAGNI — You Ain't Gonna Need It**
+- [ ] **Speculative generality** — interfaces, parameters, extension points, or configuration options added "in case we need them later" with no current consumer
+- [ ] **Unused parameters or options** — function signatures that accept arguments no caller currently provides, or configuration knobs that are always set to their default
+- [ ] **Premature optimization** — caching, pooling, lazy initialization, or custom data structures introduced without evidence of a performance problem in the current workload
+- [ ] **Gold-plating** — features, error handling branches, or edge-case coverage beyond what the requirements or ticket specify
+
+**SOLID Principles**
+- [ ] **Single Responsibility (SRP)** — a function, module, or class doing multiple unrelated things; if you need two different reasons to change it, split it
+- [ ] **Open/Closed (OCP)** — extending behavior requires modifying existing code instead of adding new code; look for growing `switch`/`match`/`if-else` chains that should be polymorphism, a registry, or a strategy map
+- [ ] **Liskov Substitution (LSP)** — a subtype, interface implementation, or duck-typed replacement that violates the contract of the type it substitutes (throws unexpected errors, ignores required parameters, changes return semantics)
+- [ ] **Interface Segregation (ISP)** — a consumer forced to depend on methods or fields it does not use; an interface or struct with members relevant to only some of its implementors should be split
+- [ ] **Dependency Inversion (DIP)** — high-level logic directly instantiating or importing low-level infrastructure (database clients, HTTP clients, file system) instead of depending on an abstraction passed via constructor, parameter, or module boundary
+
+**Code Hygiene**
+- [ ] **Magic numbers / strings** — hardcoded literals with no named constant or comment explaining their meaning or origin
+- [ ] **Dead code** — unreachable branches, variables assigned but never read, functions defined but never called, imports never used
+- [ ] **Abstraction leakage** — internal implementation details (concrete types, storage mechanisms, internal error codes) exposed through a public interface
+- [ ] **Naming inconsistency** — mixed conventions (`camelCase` vs `snake_case`), misleading names (a function named `get*` that has side effects), inconsistent verb tense
+- [ ] **Inappropriate global state** — module-level mutable singletons that make parallelism or isolated testing difficult
+- [ ] **Tell, Don't Ask (TDA) violation** — code that queries an object's internal state, makes a decision, then calls back into the object; the decision logic should live inside the object
+
+---
+
+### 5. Language-Specific Best Practices
+
+Apply the checks for the language(s) present in the diff.
+
+**JavaScript / TypeScript**
+- [ ] `==` instead of `===` (type coercion bugs)
+- [ ] `any` on new interfaces; unchecked type assertions (`as Foo` without a preceding `instanceof` or type guard)
+- [ ] Floating-point equality `===` instead of an epsilon / `Number.EPSILON` check
+- [ ] `var` declarations (prefer `let`/`const` for block scoping)
+- [ ] Multi-level callback nesting (prefer `async`/`await`)
+- [ ] Prototype pollution risk — merging untrusted objects via `Object.assign({}, userInput)` or spread
+- [ ] `Promise` chains missing `.catch()` or a `try/catch` around top-level `await`
+- [ ] Non-null assertions (`!`) on values that could genuinely be `null` or `undefined` at runtime
+- [ ] Barrel file re-exports that defeat tree-shaking or create circular dependency chains
+- [ ] Missing `AbortController` / signal propagation on `fetch` or long-lived async operations that should be cancellable
+
+**Python**
+- [ ] Mutable default arguments — `def f(items=[])` or `def f(cfg={}):`
+- [ ] Bare `except:` — catches `SystemExit` and `KeyboardInterrupt`; use `except Exception:` or a specific type
+- [ ] `is` for value comparison — correct only for singletons (`None`, `True`, `False`); use `==` for all other values
+- [ ] Float equality with `==` — use `math.isclose()`
+- [ ] Missing `if __name__ == "__main__":` guard on executable scripts
+- [ ] Unrestricted `eval()` or `exec()` on user input
+- [ ] Missing type hints on public function signatures (for projects using mypy/pyright)
+- [ ] `os.path` string manipulation instead of `pathlib.Path` for filesystem operations (Python 3.4+)
+
+**Go**
+- [ ] Ignored error returns — `_ , err` discarded or `_` used where the error must be handled
+- [ ] Goroutine started without a clear exit path tied to a `context.Context` cancellation
+- [ ] Functions performing I/O that accept no `context.Context` argument
+- [ ] Inconsistent value vs. pointer receivers on the same type's method set
+- [ ] `init()` functions with side effects that make packages hard to test in isolation
+- [ ] Exported types/functions that should be unexported — overly broad public API surface within internal packages
+- [ ] `sync.Mutex` embedded in a struct that is copied by value, silently breaking the mutex
+
+**Rust**
+- [ ] `unwrap()` or `expect()` in non-test, non-prototype code without a `// Safety:` or `// Invariant:` comment justifying why the panic cannot occur
+- [ ] `unsafe` blocks without a `// SAFETY:` comment explaining which invariants hold
+- [ ] Unchecked integer arithmetic in non-performance-critical paths (prefer `checked_*`, `saturating_*`, or `wrapping_*`)
+- [ ] `clone()` where a borrow would suffice, especially in hot paths
+- [ ] `.to_string()` / `.to_owned()` in function signatures where `&str` / `AsRef<str>` would avoid allocation
+
+**General / Any Language**
+- [ ] Allocations inside tight inner loops that could be hoisted or pooled
+- [ ] N+1 query patterns — fetching related records one-by-one inside a loop instead of a batch fetch or JOIN
+- [ ] Blocking I/O called from within an async or reactive context
+- [ ] Logging that could produce unbounded output under load (e.g. logging every request body without size limits)
+- [ ] Unbounded collections — maps, lists, or caches that grow without eviction, leading to memory exhaustion under sustained load
+- [ ] Missing timeouts — HTTP clients, database connections, or external calls with no timeout or deadline, risking thread/goroutine starvation
+
+---
+
+### 6. Tests & Coverage
+
+- [ ] **Untested code paths** — new branches, functions, or error cases with no corresponding test
+- [ ] **Stale tests** — behavior changed but existing tests still pass because they test the old behavior; tests are now confirmation tests rather than constraint tests
+- [ ] **Weak assertions** — `toBeTruthy()`, `assert(result)`, or checking implementation details instead of observable, user-facing behavior
+- [ ] **Missing edge cases** — no tests for: `null`/`undefined`/`nil` inputs, empty collections, zero/negative numbers, maximum-size inputs, concurrent callers, or injected errors
+- [ ] **Test isolation violations** — tests that share mutable module-level state or depend on execution order within the suite
+- [ ] **Flaky patterns** — `sleep()` for timing synchronization, real network calls in unit tests without mocking, non-deterministic data ordering, reliance on wall-clock time
+- [ ] **Confirmation tests (CLARE [A])** — tests that describe "what the code currently does" rather than "what must always be true regardless of implementation"; these should be constraint tests
+- [ ] **Uninformative test names** — `"works correctly"`, `"handles the case"` vs. `"never creates duplicate users for the same email"` or `"returns 403 when caller does not own the resource"`
+- [ ] **Missing contract / schema-lock tests** — new public API surface with no test that will fail if the shape changes unintentionally
+
+---
+
+### 7. Documentation & Contracts
+
+- [ ] **What-comments** — comments that describe what the code does when it is readable from the code itself; replace with why-comments explaining intent, constraints, or non-obvious tradeoffs
+- [ ] **Stale comments** — comments that contradict or no longer match the current implementation
+- [ ] **Public API changes without doc updates** — new or removed parameters, changed return types, changed error conditions, or changed side effects without updating JSDoc / docstrings / OpenAPI / README
+- [ ] **Missing rationale for non-obvious decisions** — performance tradeoffs, known third-party bugs worked around, intentional relaxation of a constraint
+- [ ] **Breaking changes without changelog** — removal or rename of a public symbol, change of wire format, or change to a persisted data schema without a CHANGELOG entry or migration guide
+- [ ] **Broken examples** — code examples in doc comments or README that no longer compile, run, or reflect the current API
+- [ ] **README drift** — setup or usage steps that diverge from the actual process after this change
+
+---
+
+## Output Format
+
+Structure your response exactly as follows. Omit a section only if it truly has no content; always include the header.
+
+```
+## Code Review — <branch-name> vs <base-ref>
+(<N> files changed, +<additions> / -<deletions>)
+
+### Issues
+
+**[SEVERITY] `path/to/file.ext:42`** — Short descriptive title
+> Explanation of the problem and why it matters.
+> Suggested fix or the approach to take.
+
+... (one block per issue) ...
+
+_No issues found._   ← use only when Issues is genuinely empty
+
+### Observations
+
+- `path/to/file.ext:17` — Context-only note (no action required).
+
+_None._   ← use only when there are no observations
+
+### Execution Plan
+
+> Only include this section when Issues is non-empty.
+
+Ordered list of fixes. Mark items that can be done in parallel.
+
+1. Fix [issue] in `path/file.ext:42`
+2. Fix [issue] in `other.ext:88` — can parallelize with item 4
+3. Fix [issue] in `third.ext:12`
+4. Fix [issue] in `fourth.ext:55` — can parallelize with item 2
+```
+
+**Severity scale:**
+
+| Severity   | Meaning |
+|------------|---------|
+| `CRITICAL` | Data loss, security breach, or crash in production — must fix before merge |
+| `HIGH`     | Logic error or exploitable vulnerability that will cause real bugs under normal use |
+| `MEDIUM`   | Suboptimal pattern, missing test, or risky assumption that increases the chance of a future bug |
+| `LOW`      | Style issue, minor DRY violation, or weak assertion with limited blast radius |
+
+---
+
+## Constraints
+
+- **Never fabricate line numbers.** Every `file:line` reference must come from the actual diff or file contents you read.
+- **Read the full file** for every changed file before reporting issues — do not rely on diff context alone.
+- **Large diffs (>500 lines changed):** Summarize by directory or logical concern first, then drill into individual issues.
+- **Prioritize by severity.** Report `CRITICAL` and `HIGH` issues before `MEDIUM` and `LOW`.
+- **Be specific.** A vague note ("this could be null") is not actionable. Include the exact location, the condition under which it fails, and a concrete fix.
+- **Separate issues from observations.** Never mix "you must fix this" with "I noticed this interesting thing."
+- **Do not report style preferences** (indentation, naming) as issues unless they violate an explicitly configured linter rule or the project's stated conventions.

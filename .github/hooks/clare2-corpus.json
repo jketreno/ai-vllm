@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "./clare/scripts/clare2-capture-event.sh copilot session_start",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "./clare/scripts/clare2-capture-event.sh copilot user_prompt",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "./clare/scripts/clare2-capture-event.sh copilot tool_result",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "./clare/scripts/clare2-capture-event.sh copilot assistant_stop",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
