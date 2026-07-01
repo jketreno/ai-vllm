@@ -4,7 +4,7 @@ description: Detect project file types, recommend tools and VS Code extensions, 
 
 ---
 
-This skill provides an `env-scan` helper that inspects a repository, reports which languages and common config files are present, extracts tooling requirements from `clare/verify-ci.sh` and `clare/verify-local.sh`, and recommends VS Code extensions and install instructions.
+This skill provides an `env-scan` helper that inspects a repository, reports which languages and common config files are present, extracts tooling requirements from `clare/verify-ci.sh` and `clare/verify-local.sh`, recommends VS Code extensions, and identifies likely deployment/build/test surfaces that still need CLARE coverage.
 
 Purpose
 - Help contributors quickly configure their environment for CLARE verification.
@@ -44,6 +44,6 @@ Installer usage
 
 Outputs
 - Plain text report (default `--report`).
-- JSON (`--json`) with `fileCounts`, `configsFound`, `verifyTools`, and `recommendedExtensions` sections.
+- JSON (`--json`) with `fileCounts`, `configsFound`, `verifyTools`, `recommendedExtensions`, `detectedSurfaces`, `verifiedSurfaces`, `coverageGaps`, and `agentPrompts` sections.
 
 See `install/clare/README.md` for additional details and examples.

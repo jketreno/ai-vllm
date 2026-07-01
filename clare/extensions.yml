@@ -36,6 +36,8 @@ extensions:
       # File extensions to analyze (space-separated)
       file_types: "js jsx ts tsx"
       # Paths to analyze (space-separated, relative to project root)
+      # For subdirectory projects, point this at the owned source path
+      # (for example: "frontend/src"). ESLint runs from the nearest package.json.
       paths: "src"
       # Extra flags passed directly to eslint
       extra_flags: ""

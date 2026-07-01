@@ -22,7 +22,7 @@ The answer: **make enforcement stateless**.
 ### Orchestration Pseudocode
 
 ```text
-function runClearAgentPipeline(tasks):
+function runClareAgentPipeline(tasks):
   restricted = clare_list_humans_only()
 
   for task in tasks:

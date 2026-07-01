@@ -12,3 +12,6 @@ corpus/meta/lifecycle.json
 corpus/meta/lifecycle.lock
 corpus
 .vscode/extensions.json
+
+# CLARE generated onboarding checklist (local/ephemeral)
+CLARE-NEXT.md

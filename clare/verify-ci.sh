@@ -306,6 +306,28 @@ run_selected_tests() {
   done
 }
 
+selected_requests_include_stage() {
+  local wanted_stage="$1"
+  local request stage
+  for request in "${SELECTED_TEST_REQUESTS[@]}"; do
+    stage="${request%%.*}"
+    [[ "$stage" == "$wanted_stage" && "$request" != *.* ]] && return 0
+  done
+  return 1
+}
+
+warn_if_selected_run_is_partial() {
+  if ! $RUN_SELECTED_STAGES; then
+    return 0
+  fi
+
+  warn "Selected stages are a partial verification run; this does not prove deployment parity."
+  if ! selected_requests_include_stage 7; then
+    warn "Stage 7 (Project-Specific Checks) is not included. Deployment/build gates commonly live there."
+  fi
+  warn "Run ./clare/verify-ci.sh with no --run-tests before treating work as complete."
+}
+
 run_check() {
   local name="$1"
   local cmd="$2"
@@ -414,6 +436,24 @@ matches_any_file_type() {
   return 1
 }
 
+relpath_from_dir() {
+  local abs_path="$1"
+  local base_dir="$2"
+
+  if command -v realpath >/dev/null 2>&1; then
+    realpath --relative-to="$base_dir" "$abs_path" 2>/dev/null && return 0
+  fi
+
+  case "$abs_path" in
+    "$base_dir"/*)
+      printf '%s\n' "${abs_path#"$base_dir/"}"
+      ;;
+    *)
+      printf '%s\n' "$abs_path"
+      ;;
+  esac
+}
+
 is_extension_excluded() {
   local rel_path="$1"
   local exclude_patterns="$2"
@@ -466,6 +506,44 @@ collect_extension_files() {
   return 0
 }
 
+eslint_config_exists_in_or_above() {
+  local dir="$1"
+
+  while [[ "$dir" == "$PROJECT_ROOT" || "$dir" == "$PROJECT_ROOT/"* ]]; do
+    if [[ -f "$dir/.eslintrc.js" ||
+      -f "$dir/.eslintrc.cjs" ||
+      -f "$dir/.eslintrc.json" ||
+      -f "$dir/eslint.config.js" ||
+      -f "$dir/eslint.config.mjs" ||
+      -f "$dir/eslint.config.cjs" ]]; then
+      return 0
+    fi
+
+    [[ "$dir" == "$PROJECT_ROOT" ]] && break
+    dir="$(dirname "$dir")"
+  done
+
+  return 1
+}
+
+node_project_dir_for_file() {
+  local file_path="$1"
+  local dir
+  dir="$(dirname "$file_path")"
+
+  while [[ "$dir" == "$PROJECT_ROOT" || "$dir" == "$PROJECT_ROOT/"* ]]; do
+    if [[ -f "$dir/package.json" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+
+    [[ "$dir" == "$PROJECT_ROOT" ]] && break
+    dir="$(dirname "$dir")"
+  done
+
+  printf '%s\n' "$PROJECT_ROOT"
+}
+
 run_eslint_complexity_check() {
   local command="$1"
   local threshold="$2"
@@ -474,70 +552,91 @@ run_eslint_complexity_check() {
   local file_types="${5:-js jsx ts tsx}"
   local exclude_patterns="$6"
 
-  eslint_config_exists() {
-    local config_name
-    for config_name in eslint.config.js eslint.config.mjs eslint.config.cjs; do
-      [[ -f "$PROJECT_ROOT/$config_name" ]] && return 0
-    done
-    return 1
-  }
-
   local files=()
   mapfile -t files < <(collect_extension_files "ESLint complexity" "$scan_paths" "$file_types" "$exclude_patterns" || true)
   [[ ${#files[@]} -eq 0 ]] && return 0
 
-  local eslint_cmd=()
-  if [[ "$command" == "npx" ]]; then
-    if ! node_tool_command eslint_cmd "eslint" "eslint"; then
-      eslint_cmd=("npx" "--no-install" "eslint")
+  local -A project_files=()
+  local file project_dir
+  for file in "${files[@]}"; do
+    project_dir="$(node_project_dir_for_file "$file")"
+    project_files["$project_dir"]+="${file}"$'\n'
+  done
+
+  for project_dir in "${!project_files[@]}"; do
+    local eslint_cmd=()
+    if [[ "$command" == "npx" ]]; then
+      if ! node_tool_command_for_root eslint_cmd "$project_dir" "eslint" "eslint"; then
+        if ! node_tool_command eslint_cmd "eslint" "eslint"; then
+          eslint_cmd=("npx" "--no-install" "eslint")
+        fi
+      fi
+    else
+      eslint_cmd=("$command")
     fi
-  else
-    eslint_cmd=("$command")
-  fi
 
-  if [[ -n "$threshold" ]]; then
-    eslint_cmd+=("--rule" "complexity: [\"error\", $threshold]")
-  fi
+    if [[ -n "$threshold" ]]; then
+      eslint_cmd+=("--rule" "complexity: [\"error\", $threshold]")
+    fi
 
-  if [[ -n "$extra_flags" ]]; then
-    # Intentional word splitting for a user-specified flag string.
-    # shellcheck disable=SC2206
-    local extra_parts=($extra_flags)
-    eslint_cmd+=("${extra_parts[@]}")
-  fi
+    if [[ -n "$extra_flags" ]]; then
+      # Intentional word splitting for a user-specified flag string.
+      # shellcheck disable=SC2206
+      local extra_parts=($extra_flags)
+      eslint_cmd+=("${extra_parts[@]}")
+    fi
 
-  local has_eslint_config=true
-  if ! eslint_config_exists; then
-    has_eslint_config=false
-  fi
+    local project_label
+    project_label="$(relpath_from_dir "$project_dir" "$PROJECT_ROOT")"
+    [[ "$project_label" == "." ]] || info "ESLint complexity scoped to Node project: $project_label"
 
-  if [[ "$has_eslint_config" == "false" ]]; then
-    eslint_cmd+=("--no-config-lookup")
+    local has_eslint_config=true
+    if ! eslint_config_exists_in_or_above "$project_dir"; then
+      has_eslint_config=false
+    fi
 
-    # In no-config mode ESLint cannot parse TS/TSX without a configured parser.
-    local filtered_files=()
+    local group_files=()
+    while IFS= read -r file; do
+      [[ -n "$file" ]] || continue
+      group_files+=("$file")
+    done <<<"${project_files[$project_dir]}"
+
+    if [[ "$has_eslint_config" == "false" ]]; then
+      eslint_cmd+=("--no-config-lookup")
+
+      # In no-config mode ESLint cannot parse TS/TSX without a configured parser.
+      local filtered_files=()
+      local file_path
+      for file_path in "${group_files[@]}"; do
+        case "$file_path" in
+          *.ts | *.tsx) ;;
+          *) filtered_files+=("$file_path") ;;
+        esac
+      done
+
+      if [[ ${#filtered_files[@]} -eq 0 ]]; then
+        warn "ESLint complexity: no eslint.config.* found for $project_label and only TS/TSX files matched; skipping" >&2
+        continue
+      fi
+
+      group_files=("${filtered_files[@]}")
+      warn "ESLint complexity: no eslint.config.* found for $project_label; using --no-config-lookup and JS/JSX files only" >&2
+    fi
+
+    local rel_files=()
     local file_path
-    for file_path in "${files[@]}"; do
-      case "$file_path" in
-        *.ts | *.tsx) ;;
-        *) filtered_files+=("$file_path") ;;
-      esac
+    for file_path in "${group_files[@]}"; do
+      rel_files+=("$(relpath_from_dir "$file_path" "$project_dir")")
     done
 
-    if [[ ${#filtered_files[@]} -eq 0 ]]; then
-      warn "ESLint complexity: no eslint.config.* found and only TS/TSX files matched; skipping" >&2
-      return 0
-    fi
+    eslint_cmd+=("${rel_files[@]}")
 
-    files=("${filtered_files[@]}")
-    warn "ESLint complexity: no eslint.config.* found; using --no-config-lookup and JS/JSX files only" >&2
-  fi
-
-  eslint_cmd+=("${files[@]}")
-
-  local cmd_string
-  printf -v cmd_string '%q ' "${eslint_cmd[@]}"
-  run_check "ESLint complexity (TypeScript/JavaScript)" "$cmd_string 2>&1" || true
+    local cmd_string
+    local project_dir_q
+    printf -v cmd_string '%q ' "${eslint_cmd[@]}"
+    printf -v project_dir_q '%q' "$project_dir"
+    run_check "ESLint complexity (TypeScript/JavaScript: $project_label)" "cd $project_dir_q && $cmd_string 2>&1" || true
+  done
 }
 
 run_golangci_lint_complexity_check() {
@@ -777,10 +876,11 @@ node_tool_flags() {
 }
 
 resolve_node_package_bin() {
-  local package_name="$1"
-  local bin_name="$2"
+  local project_root="$1"
+  local package_name="$2"
+  local bin_name="$3"
 
-  node - "$PROJECT_ROOT" "$package_name" "$bin_name" <<'NODE'
+  node - "$project_root" "$package_name" "$bin_name" <<'NODE'
 const path = require('node:path');
 
 const [projectRoot, packageName, binName] = process.argv.slice(2);
@@ -805,15 +905,16 @@ console.log(path.resolve(path.dirname(packageJsonPath), binPath));
 NODE
 }
 
-node_tool_command() {
+node_tool_command_for_root() {
   local out_ref="$1"
-  local package_name="$2"
-  local bin_name="$3"
+  local project_root="$2"
+  local package_name="$3"
+  local bin_name="$4"
   local -n out_cmd="$out_ref"
   local bin_path flags
 
   out_cmd=()
-  bin_path="$(resolve_node_package_bin "$package_name" "$bin_name")" || return 1
+  bin_path="$(resolve_node_package_bin "$project_root" "$package_name" "$bin_name")" || return 1
   flags="$(node_tool_flags)"
 
   out_cmd=("node")
@@ -824,6 +925,14 @@ node_tool_command() {
     out_cmd+=("${flag_parts[@]}")
   fi
   out_cmd+=("$bin_path")
+}
+
+node_tool_command() {
+  local out_ref="$1"
+  local package_name="$2"
+  local bin_name="$3"
+
+  node_tool_command_for_root "$out_ref" "$PROJECT_ROOT" "$package_name" "$bin_name"
 }
 
 run_node_lint_checks() {
@@ -913,17 +1022,38 @@ run_node_lint_checks() {
   fi
 }
 
-run_python_lint_checks() {
-  if command -v ruff &>/dev/null; then
-    local fix_flag=""
-    $FIX_MODE && fix_flag="--fix"
-    run_check "Ruff" "cd '$PROJECT_ROOT' && ruff check $fix_flag . 2>&1" || true
-  elif command -v flake8 &>/dev/null; then
-    run_check "Flake8" "cd '$PROJECT_ROOT' && flake8 . 2>&1" || true
+# python_cmd_prefix returns a shell prefix that prepends the detected venv bin
+# directory to PATH, so commands like ruff/pytest resolve from the venv first.
+# Falls back to the identity (no prefix) when no venv is detected.
+python_cmd_prefix() {
+  if [[ -n "$PYTHON_VENV_BIN" ]]; then
+    printf 'PATH=%q ' "$PYTHON_VENV_BIN:$PATH"
+  fi
+}
+
+python_tool_available() {
+  local tool="$1"
+
+  if [[ -n "$PYTHON_VENV_BIN" && -x "$PYTHON_VENV_BIN/$tool" ]]; then
+    return 0
   fi
 
-  if command -v mypy &>/dev/null; then
-    run_check "Mypy" "cd '$PROJECT_ROOT' && mypy . 2>&1" || true
+  command -v "$tool" &>/dev/null
+}
+
+run_python_lint_checks() {
+  local prefix
+  prefix="$(python_cmd_prefix)"
+  if python_tool_available ruff; then
+    local fix_flag=""
+    $FIX_MODE && fix_flag="--fix"
+    run_check "Ruff" "cd '$PROJECT_ROOT' && ${prefix}ruff check $fix_flag . 2>&1" || true
+  elif python_tool_available flake8; then
+    run_check "Flake8" "cd '$PROJECT_ROOT' && ${prefix}flake8 . 2>&1" || true
+  fi
+
+  if python_tool_available mypy; then
+    run_check "Mypy" "cd '$PROJECT_ROOT' && ${prefix}mypy . 2>&1" || true
   fi
 }
 
@@ -943,6 +1073,7 @@ detect_project() {
   HAS_NODE_RUNTIME=false
   HAS_PYTHON=false
   PYTHON_CMD=""
+  PYTHON_VENV_BIN=""
   HAS_GO=false
   GO_MOD_DIRS=()
   HAS_RUST=false
@@ -957,6 +1088,13 @@ detect_project() {
     PYTHON_CMD="python3"
   elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
+  fi
+  # Auto-detect Python virtual environment for projects using one.
+  # This allows run_check commands to activate the venv before running Python tools.
+  if [[ -d "$PROJECT_ROOT/.venv/bin" ]]; then
+    PYTHON_VENV_BIN="$PROJECT_ROOT/.venv/bin"
+  elif [[ -d "$PROJECT_ROOT/venv/bin" ]]; then
+    PYTHON_VENV_BIN="$PROJECT_ROOT/venv/bin"
   fi
   # Collect every go.mod in the tree (git-aware; falls back to find).
   local go_mod_files=()
@@ -994,8 +1132,10 @@ check_build_node() {
 
 check_build_python() {
   if $HAS_PYTHON; then
+    local prefix
+    prefix="$(python_cmd_prefix)"
     if [[ -n "$PYTHON_CMD" ]]; then
-      run_check "Python syntax check" "$PYTHON_CMD -m compileall '$PROJECT_ROOT' -q 2>&1 | head -20" || true
+      run_check "Python syntax check" "${prefix}$PYTHON_CMD -m compileall '$PROJECT_ROOT' -q 2>&1 | head -20" || true
     else
       warn "Python project detected but no Python interpreter found; skipping syntax check"
     fi
@@ -1074,8 +1214,10 @@ check_tests_node() {
 
 check_tests_python() {
   if $HAS_PYTHON; then
-    if command -v pytest &>/dev/null; then
-      run_check "pytest" "cd '$PROJECT_ROOT' && pytest --tb=short -q 2>&1" || true
+    local prefix
+    prefix="$(python_cmd_prefix)"
+    if python_tool_available pytest; then
+      run_check "pytest" "cd '$PROJECT_ROOT' && ${prefix}pytest --tb=short -q 2>&1" || true
     fi
   fi
 }
@@ -1121,8 +1263,10 @@ check_architecture_python() {
   fi
 
   if $HAS_PYTHON; then
+    local prefix
+    prefix="$(python_cmd_prefix)"
     if [[ -d "$PROJECT_ROOT/tests/architecture" ]]; then
-      run_check "Architecture tests (pytest)" "cd '$PROJECT_ROOT' && pytest tests/architecture/ --tb=short -q 2>&1" || true
+      run_check "Architecture tests (pytest)" "cd '$PROJECT_ROOT' && ${prefix}pytest tests/architecture/ --tb=short -q 2>&1" || true
     fi
   fi
 }
@@ -1810,6 +1954,7 @@ main() {
   else
     info "File scanning excludes untracked files"
   fi
+  warn_if_selected_run_is_partial
 
   if $RUN_SELECTED_STAGES; then
     run_selected_tests
