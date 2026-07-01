@@ -29,6 +29,12 @@ session_id=$(printf '%s' "$PAYLOAD" | jq -r \
 safe_session_id=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9._-' | cut -c1-128)
 [[ -n "$safe_session_id" ]] || safe_session_id="manual-$$"
 
+timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+project="${CLARE2_PROJECT_ID:-}"
+if [[ -z "$project" ]]; then
+  project=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+fi
+
 if [[ -n "${CLARE2_SESSION_FILE:-}" ]]; then
   session_file="$CLARE2_SESSION_FILE"
 else
@@ -36,12 +42,6 @@ else
   [[ -n "$root" ]] || exit 0
   day=$(date -u +%Y/%m/%d)
   session_file="${root}/sessions/${project}/${day}/${SOURCE}-${safe_session_id}.jsonl"
-fi
-
-timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-project="${CLARE2_PROJECT_ID:-}"
-if [[ -z "$project" ]]; then
-  project=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 fi
 
 record=$(printf '%s' "$PAYLOAD" | jq -c \
