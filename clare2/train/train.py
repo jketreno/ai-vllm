@@ -12,11 +12,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from unsloth import FastModel
 from datasets import Dataset
 from peft import PeftConfig
+import torch
 from transformers import TrainerCallback
 from trl import SFTConfig, SFTTrainer
-from unsloth import FastModel
 
 from mlflow_tracking import TrainingTracker
 
@@ -26,6 +27,7 @@ TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", required=True)
+    parser.add_argument("--base_model_id", required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--train_file", required=True)
     parser.add_argument("--output_dir", required=True)
@@ -154,6 +156,7 @@ def main() -> None:
     mlflow_run_id = tracker.start(
         {
             "base_model": args.model_name,
+            "base_model_id": args.base_model_id,
             "base_revision": args.revision,
             "corpus_hash": corpus_hash,
             "dependency_lock_hash": file_hash(lock_path),
@@ -183,9 +186,12 @@ def main() -> None:
             revision=args.revision,
             max_seq_length=args.max_seq_length,
             load_in_4bit=True,
-            dtype="bfloat16",
+            dtype=torch.bfloat16,
             trust_remote_code=True,
         )
+        text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+        config_hash = text_hash(model.config.to_json_string())
+        tokenizer_hash = text_hash(json.dumps(text_tokenizer.init_kwargs, sort_keys=True, default=str))
         model = FastModel.get_peft_model(
             model,
             r=args.lora_r,
@@ -196,7 +202,7 @@ def main() -> None:
             use_gradient_checkpointing="unsloth",
             random_state=args.seed,
         )
-        dataset, skipped = load_corpus(train_file, tokenizer, args.max_seq_length)
+        dataset, skipped = load_corpus(train_file, text_tokenizer, args.max_seq_length)
         tracker.log_metric("corpus.training_records", float(len(dataset)))
         for reason, count in skipped.items():
             tracker.log_metric(f"corpus.skipped.{reason}", float(count))
@@ -220,7 +226,7 @@ def main() -> None:
         )
         trainer = SFTTrainer(
             model=model,
-            processing_class=tokenizer,
+            processing_class=text_tokenizer,
             train_dataset=dataset,
             args=training_args,
             callbacks=[callback],
@@ -230,11 +236,9 @@ def main() -> None:
             raise FloatingPointError("final training loss is not finite")
 
         model.save_pretrained(str(output_dir), safe_serialization=True)
-        tokenizer.save_pretrained(str(output_dir))
+        text_tokenizer.save_pretrained(str(output_dir))
         PeftConfig.from_pretrained(str(output_dir))
 
-        config_hash = text_hash(model.config.to_json_string())
-        tokenizer_hash = text_hash(json.dumps(tokenizer.init_kwargs, sort_keys=True, default=str))
         tracker.log_params(
             {
                 "base_config_hash": config_hash,
@@ -248,7 +252,7 @@ def main() -> None:
             "created_at": datetime.now(tz=timezone.utc).isoformat(),
             "corpus_hash": corpus_hash,
             "base": {
-                "model_id": args.model_name,
+                "model_id": args.base_model_id,
                 "revision": args.revision,
                 "config_hash": config_hash,
                 "tokenizer_hash": tokenizer_hash,

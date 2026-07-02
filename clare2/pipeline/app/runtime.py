@@ -66,7 +66,7 @@ class MaintenanceState:
 
 MODELS_ROOT = pathlib.Path(os.environ.get("MODELS_ROOT", "/models"))
 VLLM_URL = os.environ.get("CLARE2_VLLM_URL", "http://vllm-engine:8001")
-BASE_MODEL_ID = os.environ.get("CLARE2_INFERENCE_MODEL", "Qwen/Qwen3.5-35B-A3B-FP8")
+BASE_MODEL_ID = os.environ.get("CLARE2_INFERENCE_MODEL", "Qwen/Qwen3.6-27B-FP8")
 PROJECTS = json.loads(os.environ.get("CLARE2_PROJECT_MAP", '{"clare":"github:jketreno/clare"}'))
 
 registry = AdapterRegistry(MODELS_ROOT)
@@ -84,7 +84,7 @@ controller = AdapterController(
 def initialize_registry() -> None:
     registry.initialize(
         {
-            "model_id": os.environ.get("CLARE2_TRAIN_MODEL", "Qwen/Qwen3.5-35B-A3B"),
+            "model_id": os.environ.get("CLARE2_TRAIN_MODEL", "Qwen/Qwen3.6-27B-FP8"),
             "inference_model_id": BASE_MODEL_ID,
             "revision": os.environ.get("CLARE2_TRAIN_REVISION", "REPLACE_WITH_TRAIN_REVISION"),
             "inference_revision": os.environ.get(

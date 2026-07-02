@@ -1,10 +1,17 @@
 unsloth @ git+https://github.com/unslothai/unsloth.git@ec46a5556836de2ee3e4daaf4c54c422b6c6b188
-transformers==5.11.0
-trl==1.5.1
+unsloth_zoo==2026.6.7
+transformers==5.5.0
+trl==0.24.0
 peft==0.19.1
-datasets==5.0.0
+datasets==3.6.0
 accelerate==1.12.0
 bitsandbytes==0.49.2
 safetensors==0.7.0
 httpx==0.28.1
 mlflow-skinny==3.13.0
+databricks-sdk==0.120.0
+opentelemetry-api==1.43.0
+opentelemetry-proto==1.43.0
+opentelemetry-sdk==1.43.0
+opentelemetry-semantic-conventions==0.64b0
+protobuf==6.33.6

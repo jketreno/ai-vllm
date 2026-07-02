@@ -34,10 +34,13 @@
     },
     {
       "id": 4,
-      "title": "Corpus Tokens",
+      "title": "Corpus Training Signal",
       "type": "stat",
       "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
-      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_tokens_total", "legendFormat": "tokens"}],
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_tokens_total", "legendFormat": "tokens"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_sft_pairs", "legendFormat": "SFT pairs"}
+      ],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
     {
@@ -86,7 +89,7 @@
       "type": "timeseries",
       "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_extracted[5m]) * 60", "legendFormat": "{{category}}"}
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_extracted_total[5m]) * 60", "legendFormat": "{{category}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "rpm"}}
     },
@@ -96,35 +99,61 @@
       "type": "timeseries",
       "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_gated_out[5m]) * 60", "legendFormat": "gated out"}
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_gated_out_total[5m]) * 60", "legendFormat": "gated out"}
       ],
       "fieldConfig": {"defaults": {"unit": "rpm"}}
     },
     {
       "id": 11,
-      "title": "Adapter Operations",
+      "title": "Distillation Sessions / min",
       "type": "timeseries",
       "gridPos": {"x": 0, "y": 22, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_sessions_total[5m]) * 60", "legendFormat": "{{project}} / {{outcome}}"},
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_raw_total[5m]) * 60", "legendFormat": "raw patterns / {{project}}"},
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_parse_errors_total[5m]) * 60", "legendFormat": "parse errors"},
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_structured_output_attempts_total{stage=\"distillation\"}[5m]) * 60", "legendFormat": "schema {{outcome}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "rpm"}}
+    },
+    {
+      "id": 12,
+      "title": "Summary Records",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 22, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_summary_records_input", "legendFormat": "{{project}} {{level}} input"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_summary_records_output", "legendFormat": "{{project}} {{level}} output"},
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_summary_parse_errors_total[1h])", "legendFormat": "{{level}} parse errors"},
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_structured_output_attempts_total{stage=~\"summary_.*\"}[1h])", "legendFormat": "{{stage}} {{outcome}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 13,
+      "title": "Adapter Operations",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 28, "w": 12, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_adapter_operations_total[2m]) * 60", "legendFormat": "{{operation}} / {{outcome}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "rpm"}}
     },
     {
-      "id": 12,
+      "id": 14,
       "title": "Lifecycle Outcomes",
       "type": "timeseries",
-      "gridPos": {"x": 12, "y": 22, "w": 12, "h": 6},
+      "gridPos": {"x": 12, "y": 28, "w": 12, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_lifecycle_outcomes_total[1h])", "legendFormat": "{{outcome}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
     {
-      "id": 13,
+      "id": 15,
       "title": "Policy Proxy Latency (p50 / p95 / p99)",
       "type": "timeseries",
-      "gridPos": {"x": 0, "y": 28, "w": 24, "h": 6},
+      "gridPos": {"x": 0, "y": 34, "w": 24, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.50, rate(clare2_proxy_duration_seconds_bucket[2m]))", "legendFormat": "p50"},
         {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(clare2_proxy_duration_seconds_bucket[2m]))", "legendFormat": "p95"},

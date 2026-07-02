@@ -22,6 +22,7 @@ Environment:
   SPAM_MODEL               Spam classification model repository
   CLARE2_PROJECT_MAP       Canonical repository map JSON
   CLARE2_PROJECT_ID        Adapter project scope
+  CLARE2_DOCKER_GID        Docker socket group id (default: stat /var/run/docker.sock)
 EOF
 }
 
@@ -125,14 +126,18 @@ for project in "${CAPTURE_PROJECTS[@]}"; do
   "${ROOT}/clare2/scripts/clare2-install-hooks.sh" "$project"
 done
 
-INFERENCE_MODEL="${CLARE2_INFERENCE_MODEL:-$(read_env CLARE2_INFERENCE_MODEL Qwen/Qwen3.5-35B-A3B-FP8)}"
-TRAIN_MODEL="${CLARE2_TRAIN_MODEL:-$(read_env CLARE2_TRAIN_MODEL Qwen/Qwen3.5-35B-A3B)}"
+INFERENCE_MODEL="${CLARE2_INFERENCE_MODEL:-$(read_env CLARE2_INFERENCE_MODEL Qwen/Qwen3.6-27B-FP8)}"
+TRAIN_MODEL="${CLARE2_TRAIN_MODEL:-$(read_env CLARE2_TRAIN_MODEL Qwen/Qwen3.6-27B-FP8)}"
 SPAM_MODEL="${SPAM_MODEL:-$(read_env SPAM_MODEL Qwen/Qwen3.5-4B)}"
 INFERENCE_REVISION="${CLARE2_INFERENCE_REVISION:-$(read_env CLARE2_INFERENCE_REVISION "")}"
 TRAIN_REVISION="${CLARE2_TRAIN_REVISION:-$(read_env CLARE2_TRAIN_REVISION "")}"
 SPAM_REVISION="${SPAM_MODEL_REVISION:-$(read_env SPAM_MODEL_REVISION "")}"
 MLFLOW_PORT="${CLARE2_MLFLOW_PORT:-$(read_env CLARE2_MLFLOW_PORT 5000)}"
 BIND_ADDRESS="${CLARE2_BIND_ADDRESS:-$(read_env CLARE2_BIND_ADDRESS 127.0.0.1)}"
+DOCKER_GID="${CLARE2_DOCKER_GID:-$(read_env CLARE2_DOCKER_GID "")}"
+if [[ -z "$DOCKER_GID" || "$DOCKER_GID" == "REPLACE_WITH_DOCKER_SOCKET_GROUP_ID" ]]; then
+  DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+fi
 
 write_env CLARE2_INFERENCE_MODEL "$INFERENCE_MODEL"
 write_env CLARE2_DISTILL_MODEL "$INFERENCE_MODEL"
@@ -141,6 +146,7 @@ write_env SPAM_MODEL "$SPAM_MODEL"
 write_env CLARE2_MODEL_CACHE "$MODEL_CACHE"
 write_env CLARE2_MLFLOW_PORT "$MLFLOW_PORT"
 write_env CLARE2_BIND_ADDRESS "$BIND_ADDRESS"
+write_env CLARE2_DOCKER_GID "$DOCKER_GID"
 [[ -z "${CLARE2_PROJECT_MAP:-}" ]] || write_env CLARE2_PROJECT_MAP "$CLARE2_PROJECT_MAP"
 [[ -z "${CLARE2_PROJECT_ID:-}" ]] || write_env CLARE2_PROJECT_ID "$CLARE2_PROJECT_ID"
 

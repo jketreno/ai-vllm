@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,8 +18,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import app.mcp_server as mcp_server
+import app.summarizer as summarizer
 from app.controller import AdapterController
 from app.evaluator import compare
+from app.json_output import parse_json_output
 from app.local_llm import generate
 from app.mcp_server import mcp
 from app.proxy import router_api
@@ -26,15 +29,107 @@ from app.registry import AdapterRegistry, RegistryError
 from app.routing import RouteError, Router
 from app.runtime import maintenance
 from app.security import BearerASGIMiddleware, require_bearer, verify_callback
+from app.structured_output import parse_pattern_records_with_repair
 
 BASE = {
-    "model_id": "Qwen/Qwen3.5-35B-A3B-FP8",
+    "model_id": "Qwen/Qwen3.6-27B-FP8",
     "revision": "abc123",
     "architecture": "Qwen3_5MoeForConditionalGeneration",
     "config_hash": "config",
     "tokenizer_hash": "tokenizer",
     "inference_quantization": "fp8",
 }
+
+
+class JsonOutputTests(unittest.TestCase):
+    def test_parses_fenced_and_embedded_json(self):
+        self.assertEqual(parse_json_output('```json\n[{"ok": true}]\n```'), [{"ok": True}])
+        self.assertEqual(
+            parse_json_output('Here is the result:\n[{"category": "domain"}]\nDone.'),
+            [{"category": "domain"}],
+        )
+
+    def test_rejects_missing_json(self):
+        with self.assertRaises(json.JSONDecodeError):
+            parse_json_output("no structured payload")
+
+    def test_pattern_schema_repairs_invalid_output_once(self):
+        repaired = json.dumps([
+            {
+                "category": "domain",
+                "pattern": "Use CLARE2_CORPUS_ROOT for shared corpus mounts.",
+                "evidence_count": 2,
+                "canonical_example": "Mount ${CLARE2_CORPUS_ROOT}:/corpus.",
+                "first_seen": "2026-07-02T18:01:27Z",
+                "last_seen": "2026-07-02T18:14:07Z",
+            }
+        ])
+        records, outcome = parse_pattern_records_with_repair(
+            "[{\"category\":\"domain\"}]",
+            lambda error: repaired,
+        )
+        self.assertEqual(outcome, "repaired")
+        self.assertEqual(records[0]["pattern"], "Use CLARE2_CORPUS_ROOT for shared corpus mounts.")
+
+    def test_pattern_schema_fails_after_repair_attempt(self):
+        records, outcome = parse_pattern_records_with_repair("not json", lambda error: "still not json")
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(records, [])
+
+    def test_pattern_schema_handles_null_model_content(self):
+        records, outcome = parse_pattern_records_with_repair(None, lambda error: "[]")
+        self.assertEqual(outcome, "repaired")
+        self.assertEqual(records, [])
+
+
+class SummarizerPathTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _write_jsonl(self, path: pathlib.Path, records: list[dict]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    def test_weekly_summaries_are_project_scoped(self):
+        record = {
+            "category": "domain",
+            "pattern": "Use project-scoped corpus paths.",
+            "evidence_count": 2,
+            "canonical_example": "episodes/ai-vllm/2026/07/05.jsonl",
+            "first_seen": "2026-07-05T00:00:00Z",
+            "last_seen": "2026-07-05T00:01:00Z",
+        }
+        self._write_jsonl(self.root / "episodes" / "ai-vllm" / "2026/07/05.jsonl", [record])
+        with patch.object(summarizer, "CORPUS_ROOT", self.root), patch.object(
+            summarizer, "_call_llm_merge", return_value=[record]
+        ):
+            result = summarizer.run_weekly(datetime(2026, 7, 5, tzinfo=timezone.utc))
+        self.assertEqual(result["input_records"], 1)
+        self.assertTrue((self.root / "summaries" / "weekly" / "ai-vllm" / "2026-W27.jsonl").exists())
+        self.assertFalse((self.root / "summaries" / "weekly" / "2026-W27.jsonl").exists())
+
+    def test_quarterly_themes_are_project_scoped(self):
+        record = {
+            "category": "domain",
+            "pattern": "Use project-scoped active themes.",
+            "evidence_count": 2,
+            "canonical_example": "themes/active/ai-vllm/domain.jsonl",
+            "first_seen": "2026-01-01T00:00:00Z",
+            "last_seen": "2026-01-02T00:00:00Z",
+        }
+        self._write_jsonl(self.root / "summaries" / "monthly" / "ai-vllm" / "2026-01.jsonl", [record])
+        with patch.object(summarizer, "CORPUS_ROOT", self.root), patch.object(
+            summarizer, "_call_llm_merge", return_value=[record]
+        ):
+            result = summarizer.run_quarterly(datetime(2026, 4, 1, tzinfo=timezone.utc))
+        self.assertEqual(result["themes_promoted"], 1)
+        self.assertTrue((self.root / "summaries" / "quarterly" / "ai-vllm" / "2026-Q1.jsonl").exists())
+        self.assertTrue((self.root / "themes" / "active" / "ai-vllm" / "domain.jsonl").exists())
+        self.assertFalse((self.root / "themes" / "active" / "domain.jsonl").exists())
 
 
 def safetensors(path: pathlib.Path) -> None:
@@ -86,6 +181,18 @@ class RegistryTests(unittest.TestCase):
         self.registry.add_adapter(item)
         self.assertEqual(self.registry.read()["adapters"][item["id"]]["id"], item["id"])
         self.assertEqual(list((self.models / "adapters").glob(".registry.*")), [])
+
+    def test_initialize_refreshes_empty_registry_base(self):
+        new_base = {**BASE, "model_id": "Qwen/Qwen3.6-27B-FP8", "revision": "def456"}
+        self.registry.initialize(new_base)
+        self.assertEqual(self.registry.read()["base"], new_base)
+
+    def test_initialize_preserves_non_empty_registry_base(self):
+        item = adapter(self.models, "clare-project-20260611T000000Z-12345678")
+        self.registry.add_adapter(item)
+        new_base = {**BASE, "model_id": "Qwen/Qwen3.6-27B-FP8", "revision": "def456"}
+        self.registry.initialize(new_base)
+        self.assertEqual(self.registry.read()["base"], BASE)
 
     def test_rejects_duplicate_and_wrong_base(self):
         item = adapter(self.models, "clare-project-20260611T000000Z-12345678")
@@ -325,9 +432,16 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             self.assertEqual(generate("distill this"), "[]")
         response.raise_for_status.assert_called_once()
         payload = post.call_args.kwargs["json"]
-        self.assertEqual(payload["model"], "Qwen/Qwen3.5-35B-A3B-FP8")
+        self.assertEqual(payload["model"], "Qwen/Qwen3.6-27B-FP8")
         self.assertEqual(payload["temperature"], 0)
         self.assertEqual(payload["seed"], 42)
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_local_generation_converts_null_content_to_empty_string(self):
+        response = unittest.mock.Mock()
+        response.json.return_value = {"choices": [{"message": {"content": None}}]}
+        with patch("app.local_llm.httpx.post", return_value=response):
+            self.assertEqual(generate("distill this"), "")
 
 
 class ProxyIntegrationTests(unittest.TestCase):
@@ -421,7 +535,7 @@ class ProxyIntegrationTests(unittest.TestCase):
                 json={"lora_path": "/tmp/escape"},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["model"], "Qwen/Qwen3.5-35B-A3B-FP8")
+        self.assertEqual(captured["model"], "Qwen/Qwen3.6-27B-FP8")
         self.assertEqual(captured["thinking_token_budget"], 1024)
         self.assertEqual(captured["chat_template_kwargs"], {"enable_thinking": True})
         self.assertEqual(blocked.status_code, 404)

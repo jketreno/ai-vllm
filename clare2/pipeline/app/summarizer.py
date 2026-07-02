@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import metrics
 from .local_llm import generate
+from .structured_output import repair_prompt, parse_pattern_records_with_repair
 
 log = logging.getLogger(__name__)
 
@@ -38,20 +39,17 @@ def _call_llm_merge(records: list[dict], level: str) -> list[dict]:
         f"Input records:\n{json.dumps(records, indent=2)}"
     )
 
-    text = generate(prompt)
+    text = generate(prompt, max_tokens=2048)
 
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-    try:
-        result = json.loads(text)
-        if isinstance(result, dict) and "patterns" in result:
-            result = result["patterns"]
-        return result if isinstance(result, list) else []
-    except json.JSONDecodeError:
+    result, outcome = parse_pattern_records_with_repair(
+        text,
+        lambda error: generate(repair_prompt(text, error), max_tokens=2048),
+    )
+    metrics.structured_output_attempts.labels(stage=f"summary_{level}", outcome=outcome).inc()
+    if outcome == "failed":
+        metrics.summary_parse_errors.labels(level=level).inc()
         log.error("Summarizer LLM output not valid JSON")
-        return []
+    return result
 
 
 def _iso_week(date: datetime) -> str:
@@ -81,32 +79,74 @@ def _write_jsonl(path: pathlib.Path, records: list[dict]) -> None:
             fh.write(json.dumps(r) + "\n")
 
 
-def run_weekly(reference_date: datetime | None = None) -> dict:
-    """Compress the 7 daily episode files ending on reference_date (Sunday) into a weekly summary."""
-    if reference_date is None:
-        reference_date = datetime.now(tz=timezone.utc)
+def _record_summary_metrics(
+    project: str,
+    level: str,
+    input_records: int,
+    output_records: int,
+    outcome: str,
+) -> None:
+    metrics.summary_records_input.labels(project=project, level=level).set(input_records)
+    metrics.summary_records_output.labels(project=project, level=level).set(output_records)
+    metrics.summary_runs.labels(project=project, level=level, outcome=outcome).inc()
+    metrics.summary_last_run_timestamp.labels(project=project, level=level).set(
+        datetime.now(tz=timezone.utc).timestamp()
+    )
 
+
+def _episode_projects() -> list[str]:
+    episodes_dir = CORPUS_ROOT / "episodes"
+    if not episodes_dir.exists():
+        return []
+    return sorted(p.name for p in episodes_dir.iterdir() if p.is_dir())
+
+
+def _summary_projects(level: str) -> list[str]:
+    summary_dir = CORPUS_ROOT / "summaries" / level
+    if not summary_dir.exists():
+        return []
+    return sorted(p.name for p in summary_dir.iterdir() if p.is_dir())
+
+
+def _run_weekly_project(project: str, reference_date: datetime) -> dict:
     day_records: list[dict] = []
     for offset in range(7):
         day = reference_date - timedelta(days=offset)
-        ep_path = CORPUS_ROOT / "episodes" / day.strftime("%Y/%m/%d.jsonl")
+        ep_path = CORPUS_ROOT / "episodes" / project / day.strftime("%Y/%m/%d.jsonl")
         if ep_path.exists():
             day_records.extend(_load_jsonl(ep_path))
 
     if not day_records:
-        log.info("No daily episodes found for week ending %s", reference_date.date())
+        log.info("No daily episodes found for project %s week ending %s", project, reference_date.date())
+        _record_summary_metrics(project, "weekly", 0, 0, "no_input")
         return {"input_records": 0, "output_records": 0}
 
     merged = _call_llm_merge(day_records, "weekly")
     week_str = _iso_week(reference_date)
-    _write_jsonl(CORPUS_ROOT / "summaries" / "weekly" / f"{week_str}.jsonl", merged)
+    _write_jsonl(CORPUS_ROOT / "summaries" / "weekly" / project / f"{week_str}.jsonl", merged)
+    _record_summary_metrics(project, "weekly", len(day_records), len(merged), "success")
 
-    log.info("Weekly summary %s: %d → %d records", week_str, len(day_records), len(merged))
+    log.info("Weekly summary %s for %s: %d → %d records", week_str, project, len(day_records), len(merged))
     return {"input_records": len(day_records), "output_records": len(merged)}
 
 
-def _weekly_files_for_month(year: int, month: int) -> list[pathlib.Path]:
-    weekly_dir = CORPUS_ROOT / "summaries" / "weekly"
+def run_weekly(reference_date: datetime | None = None) -> dict:
+    """Compress the 7 daily episode files ending on reference_date into project summaries."""
+    if reference_date is None:
+        reference_date = datetime.now(tz=timezone.utc)
+
+    totals = {"input_records": 0, "output_records": 0}
+    for project in _episode_projects():
+        result = _run_weekly_project(project, reference_date)
+        for key in totals:
+            totals[key] += result[key]
+    if totals["input_records"] == 0:
+        log.info("No project daily episodes found for week ending %s", reference_date.date())
+    return totals
+
+
+def _weekly_files_for_month(project: str, year: int, month: int) -> list[pathlib.Path]:
+    weekly_dir = CORPUS_ROOT / "summaries" / "weekly" / project
     result = []
     for weekly_file in sorted(weekly_dir.glob(f"{year}-W*.jsonl")):
         try:
@@ -119,29 +159,42 @@ def _weekly_files_for_month(year: int, month: int) -> list[pathlib.Path]:
     return result
 
 
-def run_monthly(reference_date: datetime | None = None) -> dict:
-    """Compress 4–5 weekly summaries for the prior month into a monthly summary."""
-    if reference_date is None:
-        reference_date = datetime.now(tz=timezone.utc)
-
+def _run_monthly_project(project: str, reference_date: datetime) -> dict:
     first_of_this_month = reference_date.replace(day=1)
     last_of_prev_month = first_of_this_month - timedelta(days=1)
     year = last_of_prev_month.year
     month = last_of_prev_month.month
 
     week_records: list[dict] = []
-    for weekly_file in _weekly_files_for_month(year, month):
+    for weekly_file in _weekly_files_for_month(project, year, month):
         week_records.extend(_load_jsonl(weekly_file))
 
     if not week_records:
-        log.info("No weekly summaries found for %d-%02d", year, month)
+        log.info("No weekly summaries found for project %s %d-%02d", project, year, month)
+        _record_summary_metrics(project, "monthly", 0, 0, "no_input")
         return {"input_records": 0, "output_records": 0}
 
     merged = _call_llm_merge(week_records, "monthly")
-    _write_jsonl(CORPUS_ROOT / "summaries" / "monthly" / f"{year}-{month:02d}.jsonl", merged)
+    _write_jsonl(CORPUS_ROOT / "summaries" / "monthly" / project / f"{year}-{month:02d}.jsonl", merged)
+    _record_summary_metrics(project, "monthly", len(week_records), len(merged), "success")
 
-    log.info("Monthly summary %d-%02d: %d → %d records", year, month, len(week_records), len(merged))
+    log.info("Monthly summary %d-%02d for %s: %d → %d records", year, month, project, len(week_records), len(merged))
     return {"input_records": len(week_records), "output_records": len(merged)}
+
+
+def run_monthly(reference_date: datetime | None = None) -> dict:
+    """Compress weekly summaries for the prior month into project monthly summaries."""
+    if reference_date is None:
+        reference_date = datetime.now(tz=timezone.utc)
+
+    totals = {"input_records": 0, "output_records": 0}
+    for project in _summary_projects("weekly"):
+        result = _run_monthly_project(project, reference_date)
+        for key in totals:
+            totals[key] += result[key]
+    if totals["input_records"] == 0:
+        log.info("No project weekly summaries found for monthly summarization")
+    return totals
 
 
 def _prev_quarter(reference_date: datetime) -> tuple[int, int]:
@@ -152,13 +205,9 @@ def _prev_quarter(reference_date: datetime) -> tuple[int, int]:
     return year, current_quarter - 1
 
 
-def run_quarterly(reference_date: datetime | None = None) -> dict:
-    """Compress monthly summaries for the prior quarter + promote themes."""
-    if reference_date is None:
-        reference_date = datetime.now(tz=timezone.utc)
-
+def _run_quarterly_project(project: str, reference_date: datetime) -> dict:
     year, target_quarter = _prev_quarter(reference_date)
-    monthly_dir = CORPUS_ROOT / "summaries" / "monthly"
+    monthly_dir = CORPUS_ROOT / "summaries" / "monthly" / project
     month_records: list[dict] = []
     for m in range((target_quarter - 1) * 3 + 1, (target_quarter - 1) * 3 + 4):
         mf = monthly_dir / f"{year}-{m:02d}.jsonl"
@@ -166,22 +215,39 @@ def run_quarterly(reference_date: datetime | None = None) -> dict:
             month_records.extend(_load_jsonl(mf))
 
     if not month_records:
-        log.info("No monthly summaries found for Q%d %d", target_quarter, year)
+        log.info("No monthly summaries found for project %s Q%d %d", project, target_quarter, year)
+        _record_summary_metrics(project, "quarterly", 0, 0, "no_input")
         return {"input_records": 0, "output_records": 0, "themes_promoted": 0}
 
     merged = _call_llm_merge(month_records, "quarterly")
-    _write_jsonl(CORPUS_ROOT / "summaries" / "quarterly" / f"{year}-Q{target_quarter}.jsonl", merged)
-    themes_promoted = _promote_themes()
+    _write_jsonl(CORPUS_ROOT / "summaries" / "quarterly" / project / f"{year}-Q{target_quarter}.jsonl", merged)
+    themes_promoted = _promote_themes(project)
+    _record_summary_metrics(project, "quarterly", len(month_records), len(merged), "success")
 
     log.info(
-        "Quarterly summary Q%d %d: %d → %d records, %d themes promoted",
-        target_quarter, year, len(month_records), len(merged), themes_promoted,
+        "Quarterly summary Q%d %d for %s: %d → %d records, %d themes promoted",
+        target_quarter, year, project, len(month_records), len(merged), themes_promoted,
     )
     return {"input_records": len(month_records), "output_records": len(merged), "themes_promoted": themes_promoted}
 
 
-def _load_quarterly_records() -> list[dict]:
-    quarterly_dir = CORPUS_ROOT / "summaries" / "quarterly"
+def run_quarterly(reference_date: datetime | None = None) -> dict:
+    """Compress monthly summaries for the prior quarter and promote project themes."""
+    if reference_date is None:
+        reference_date = datetime.now(tz=timezone.utc)
+
+    totals = {"input_records": 0, "output_records": 0, "themes_promoted": 0}
+    for project in _summary_projects("monthly"):
+        result = _run_quarterly_project(project, reference_date)
+        for key in totals:
+            totals[key] += result[key]
+    if totals["input_records"] == 0:
+        log.info("No project monthly summaries found for quarterly summarization")
+    return totals
+
+
+def _load_quarterly_records(project: str) -> list[dict]:
+    quarterly_dir = CORPUS_ROOT / "summaries" / "quarterly" / project
     records: list[dict] = []
     for qf in sorted(quarterly_dir.glob("*.jsonl")):
         for r in _load_jsonl(qf):
@@ -190,30 +256,30 @@ def _load_quarterly_records() -> list[dict]:
     return records
 
 
-def _archive_theme(theme_path: pathlib.Path, now_str: str) -> None:
-    archive_dir = CORPUS_ROOT / "themes" / "archive" / now_str
+def _archive_theme(project: str, theme_path: pathlib.Path, now_str: str) -> None:
+    archive_dir = CORPUS_ROOT / "themes" / "archive" / project / now_str
     archive_dir.mkdir(parents=True, exist_ok=True)
     theme_path.rename(archive_dir / theme_path.name)
 
 
-def _promote_category(cat: str, records: list[dict], now_str: str) -> int:
+def _promote_category(project: str, cat: str, records: list[dict], now_str: str) -> int:
     to_promote = [r for r in records if r.get("evidence_count", 0) >= QUARTERLY_GATE]
     if not to_promote:
         return 0
-    theme_path = CORPUS_ROOT / "themes" / "active" / f"{cat}.jsonl"
+    theme_path = CORPUS_ROOT / "themes" / "active" / project / f"{cat}.jsonl"
     theme_path.parent.mkdir(parents=True, exist_ok=True)
     if theme_path.exists():
-        _archive_theme(theme_path, now_str)
+        _archive_theme(project, theme_path, now_str)
     for r in to_promote:
         r.pop("_quarter_file", None)
     _write_jsonl(theme_path, to_promote)
-    metrics.themes_active.labels(category=cat).set(len(to_promote))
+    metrics.themes_active.labels(project=project, category=cat).set(len(to_promote))
     return len(to_promote)
 
 
-def _promote_themes() -> int:
-    """Scan all quarterly summaries and promote cross-quarter patterns to active themes."""
-    all_quarterly = _load_quarterly_records()
+def _promote_themes(project: str) -> int:
+    """Scan project quarterly summaries and promote cross-quarter patterns to active themes."""
+    all_quarterly = _load_quarterly_records(project)
     if not all_quarterly:
         return 0
 
@@ -224,7 +290,7 @@ def _promote_themes() -> int:
             by_category[cat].append(r)
 
     now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    return sum(_promote_category(cat, records, now_str) for cat, records in by_category.items())
+    return sum(_promote_category(project, cat, records, now_str) for cat, records in by_category.items())
 
 
 def run_scheduled(reference_date: datetime | None = None) -> dict:

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from . import metrics
 from .local_llm import generate
+from .structured_output import repair_prompt, parse_pattern_records_with_repair
 
 log = logging.getLogger(__name__)
 
@@ -51,24 +52,20 @@ def _read_session(path: pathlib.Path) -> list[dict]:
 def _call_distill_llm(session_text: str, prompt_template: str) -> str:
     """Call local Qwen3.5 with the session content."""
     prompt = prompt_template.replace("{{SESSION_CONTENT}}", session_text)
-    return generate(prompt)
+    return generate(prompt, max_tokens=1536)
 
 
 def _parse_patterns(llm_output: str) -> list[dict]:
     """Extract JSON pattern list from LLM output."""
-    # The LLM is prompted to return a JSON array; strip any markdown fencing
-    text = llm_output.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-    try:
-        patterns = json.loads(text)
-        if isinstance(patterns, dict) and "patterns" in patterns:
-            patterns = patterns["patterns"]
-        return patterns if isinstance(patterns, list) else []
-    except json.JSONDecodeError:
+    patterns, outcome = parse_pattern_records_with_repair(
+        llm_output,
+        lambda error: generate(repair_prompt(llm_output, error), max_tokens=1536),
+    )
+    metrics.structured_output_attempts.labels(stage="distillation", outcome=outcome).inc()
+    if outcome == "failed":
+        metrics.distillation_parse_errors.inc()
         log.error("LLM distillation output was not valid JSON:\n%s", llm_output[:500])
-        return []
+    return patterns
 
 
 def _distill_project(project: str, date: datetime, prompt_template: str) -> dict:
@@ -76,6 +73,7 @@ def _distill_project(project: str, date: datetime, prompt_template: str) -> dict
     session_files = _session_files_for_date(date, project)
     processed_ids = _processed_session_ids(project)
     session_files = [p for p in session_files if p.stem not in processed_ids]
+    metrics.distillation_sessions_pending.labels(project=project).set(len(session_files))
     if not session_files:
         log.info("No new sessions for project %s on %s", project, date.date())
         return {"sessions": 0, "patterns_extracted": 0, "patterns_gated": 0}
@@ -86,16 +84,20 @@ def _distill_project(project: str, date: datetime, prompt_template: str) -> dict
     for session_path in session_files:
         records = _read_session(session_path)
         if not records:
+            metrics.distillation_sessions.labels(project=project, outcome="empty").inc()
             continue
 
         session_text = "\n".join(json.dumps(r) for r in records)
         try:
             llm_output = _call_distill_llm(session_text, prompt_template)
         except Exception:
+            metrics.distillation_sessions.labels(project=project, outcome="llm_error").inc()
             log.exception("LLM call failed for session %s", session_path.name)
             continue
 
+        metrics.distillation_sessions.labels(project=project, outcome="processed").inc()
         raw_patterns = _parse_patterns(llm_output)
+        metrics.distillation_patterns_raw.labels(project=project).inc(len(raw_patterns))
 
         for p in raw_patterns:
             evidence = p.get("evidence_count", 1)
@@ -149,6 +151,8 @@ def run_daily(date: datetime | None = None) -> dict:
     projects = _session_projects()
     if not projects:
         log.info("No project session directories found — skipping distillation")
+        metrics.distillation_runs.labels(outcome="no_projects").inc()
+        metrics.distillation_last_run_timestamp.set(datetime.now(tz=timezone.utc).timestamp())
         return {"sessions": 0, "patterns_extracted": 0, "patterns_gated": 0}
 
     prompt_template = _load_distill_prompt()
@@ -159,6 +163,9 @@ def run_daily(date: datetime | None = None) -> dict:
         for key in totals:
             totals[key] += result[key]
 
+    outcome = "patterns_extracted" if totals["patterns_extracted"] else "no_patterns"
+    metrics.distillation_runs.labels(outcome=outcome).inc()
+    metrics.distillation_last_run_timestamp.set(datetime.now(tz=timezone.utc).timestamp())
     return totals
 
 

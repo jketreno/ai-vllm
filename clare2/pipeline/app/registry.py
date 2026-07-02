@@ -75,7 +75,13 @@ class AdapterRegistry:
     def initialize(self, base: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             if self.path.exists():
-                return self.read()
+                document = self.read()
+                if self._can_refresh_empty_base(document, base):
+                    document["base"] = base
+                    document["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+                    self.validate_document(document)
+                    self._atomic_write(document)
+                return document
             document = empty_registry(base)
             self.validate_document(document)
             self._atomic_write(document)
@@ -222,6 +228,15 @@ class AdapterRegistry:
             return document["adapters"][adapter_id]
         except KeyError as exc:
             raise RegistryError(f"unknown adapter: {adapter_id}") from exc
+
+    @staticmethod
+    def _can_refresh_empty_base(document: dict[str, Any], base: dict[str, Any]) -> bool:
+        return (
+            document.get("base") != base
+            and not document.get("adapters")
+            and document.get("aliases", {}).get("current") is None
+            and document.get("aliases", {}).get("rollback") is None
+        )
 
     @staticmethod
     def _validate_base_compatibility(base: dict[str, Any], adapter: dict[str, Any]) -> None:

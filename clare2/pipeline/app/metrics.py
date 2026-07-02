@@ -16,17 +16,54 @@ def start_metrics_server(port: int | None = None) -> None:
 
 
 episodes_total = Counter("clare2_episodes_total", "Episode count", ["category"])
-themes_active = Gauge("clare2_themes_active", "Active themes", ["category"])
+themes_active = Gauge("clare2_themes_active", "Active themes", ["project", "category"])
 corpus_tokens_total = Gauge("clare2_corpus_tokens_total", "SFT token count")
+corpus_sft_pairs = Gauge("clare2_corpus_sft_pairs", "SFT pair count")
 training_duration_seconds = Gauge("clare2_training_duration_seconds", "Last training duration")
 training_loss_final = Gauge("clare2_training_loss_final", "Last final loss")
 training_loss_by_epoch = Gauge("clare2_training_loss_by_epoch", "Epoch loss", ["epoch"])
 adapter_size_bytes = Gauge("clare2_adapter_size_bytes", "Adapter size")
+distillation_runs = Counter("clare2_distillation_runs_total", "Distillation runs", ["outcome"])
+distillation_sessions_pending = Gauge(
+    "clare2_distillation_sessions_pending", "Session files pending distillation", ["project"]
+)
+distillation_sessions = Counter(
+    "clare2_distillation_sessions_total", "Distillation session outcomes", ["project", "outcome"]
+)
+distillation_patterns_raw = Counter(
+    "clare2_distillation_patterns_raw_total", "Raw patterns returned by distillation", ["project"]
+)
+distillation_parse_errors = Counter(
+    "clare2_distillation_parse_errors_total", "Distillation LLM JSON parse errors"
+)
 distillation_patterns_extracted = Counter(
     "clare2_distillation_patterns_extracted", "Distilled patterns", ["category"]
 )
 distillation_patterns_gated_out = Counter(
     "clare2_distillation_patterns_gated_out", "Patterns rejected by recurrence gate"
+)
+distillation_last_run_timestamp = Gauge(
+    "clare2_distillation_last_run_timestamp_seconds", "Last distillation run timestamp"
+)
+summary_runs = Counter(
+    "clare2_summary_runs_total", "Summarization runs", ["project", "level", "outcome"]
+)
+summary_parse_errors = Counter(
+    "clare2_summary_parse_errors_total", "Summary LLM JSON parse errors", ["level"]
+)
+summary_records_input = Gauge(
+    "clare2_summary_records_input", "Input records for the last summary run", ["project", "level"]
+)
+summary_records_output = Gauge(
+    "clare2_summary_records_output", "Output records from the last summary run", ["project", "level"]
+)
+summary_last_run_timestamp = Gauge(
+    "clare2_summary_last_run_timestamp_seconds", "Last summary run timestamp", ["project", "level"]
+)
+structured_output_attempts = Counter(
+    "clare2_structured_output_attempts_total",
+    "Structured output validation outcomes",
+    ["stage", "outcome"],
 )
 theme_drift_events = Counter("clare2_theme_drift_events", "Theme drift events")
 

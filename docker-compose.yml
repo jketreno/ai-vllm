@@ -5,11 +5,11 @@ x-clare2-env: &clare2-env
   CORPUS_ROOT: /corpus
   CLARE2_VLLM_URL: http://vllm-engine:8001
   CLARE2_DOCKER_PROXY_URL: http://docker-socket-proxy:2375
-  CLARE2_INFERENCE_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.5-35B-A3B-FP8}
-  CLARE2_DISTILL_MODEL: ${CLARE2_DISTILL_MODEL:-Qwen/Qwen3.5-35B-A3B-FP8}
-  CLARE2_TRAIN_MODEL: ${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.5-35B-A3B}
+  CLARE2_INFERENCE_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
+  CLARE2_DISTILL_MODEL: ${CLARE2_DISTILL_MODEL:-Qwen/Qwen3.6-27B-FP8}
+  CLARE2_TRAIN_MODEL: ${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
   CLARE2_INFERENCE_REVISION: ${CLARE2_INFERENCE_REVISION:?pin the FP8 Hugging Face revision}
-  CLARE2_TRAIN_REVISION: ${CLARE2_TRAIN_REVISION:?pin the matching non-FP8 Hugging Face revision}
+  CLARE2_TRAIN_REVISION: ${CLARE2_TRAIN_REVISION:?pin the training Hugging Face revision}
   CLARE2_BASE_CONFIG_HASH: ${CLARE2_BASE_CONFIG_HASH:?set the base config SHA256}
   CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
   CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare"}}
@@ -70,6 +70,8 @@ services:
     build:
       context: clare2/socket-proxy
     restart: unless-stopped
+    group_add:
+      - "${CLARE2_DOCKER_GID:?set CLARE2_DOCKER_GID to the group id owning /var/run/docker.sock}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [control]
@@ -89,7 +91,7 @@ services:
       - clare2_operator_token
       - clare2_callback_secret
     volumes:
-      - ./corpus:/corpus
+      - ${CLARE2_CORPUS_ROOT:?set CLARE2_CORPUS_ROOT to the shared CLARE2 corpus directory}:/corpus
       - ./models:/models
       - ./logs/clare2:/logs
     depends_on:
@@ -283,11 +285,14 @@ services:
       CLARE2_PIPELINE_URL: http://clare2-policy:8000
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_EXPERIMENT_NAME: ${CLARE2_MLFLOW_EXPERIMENT:-clare2-qlora}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      BNB_CUDA_VERSION: "${CLARE2_BNB_CUDA_VERSION:-130}"
     secrets:
       - clare2_callback_secret
     volumes:
       - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface/hub
-      - ./corpus:/corpus:ro
+      - ${CLARE2_CORPUS_ROOT:?set CLARE2_CORPUS_ROOT to the shared CLARE2 corpus directory}:/corpus:ro
       - ./models:/models
     networks: [control]
     depends_on:

@@ -3,8 +3,9 @@ set -euo pipefail
 
 TRAINING_ROOT=/corpus/training
 STATE=/corpus/meta/lifecycle.json
-MODEL=${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.5-35B-A3B}
-REVISION=${CLARE2_TRAIN_REVISION:?CLARE2_TRAIN_REVISION must pin the non-FP8 revision}
+MODEL=${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
+REVISION=${CLARE2_TRAIN_REVISION:?CLARE2_TRAIN_REVISION must pin the training base revision}
+MODEL_CACHE=${HF_HUB_CACHE:-${HF_HOME:-/root/.cache/huggingface}/hub}
 
 [[ -s "$STATE" ]] || { echo "lifecycle state is missing" >&2; exit 1; }
 RUN_ID=$(python3 -c 'import json; print(json.load(open("'"$STATE"'"))["run_id"])')
@@ -53,11 +54,17 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   adapter_id="clare-${safe_project}-${stamp}-${corpus_hash}"
   adapter_out="/models/adapters/${adapter_id}"
+  model_path="$MODEL"
+  model_cache_dir="${MODEL_CACHE}/models--${MODEL//\//--}/snapshots/${REVISION}"
+  if [[ -d "$model_cache_dir" ]]; then
+    model_path="$model_cache_dir"
+  fi
 
-  echo "Training adapter for project: $project (corpus: $corpus_file)" >&2
+  echo "Training adapter for project: $project (corpus: $corpus_file, model: $model_path)" >&2
 
   python /app/train.py \
-    --model_name "$MODEL" \
+    --model_name "$model_path" \
+    --base_model_id "$MODEL" \
     --revision "$REVISION" \
     --train_file "$corpus_file" \
     --output_dir "$adapter_out" \
