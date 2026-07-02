@@ -3,6 +3,7 @@ set -uo pipefail
 
 SOURCE="${1:-generic}"
 EVENT="${2:-event}"
+
 MAX_CONTENT_CHARS="${CLARE2_CAPTURE_MAX_CHARS:-12000}"
 
 if [[ ! "$MAX_CONTENT_CHARS" =~ ^[0-9]+$ ]]; then
@@ -12,8 +13,22 @@ fi
 command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat 2>/dev/null || true)
 [[ -n "$INPUT" ]] || INPUT="{}"
+
 PAYLOAD=$(printf '%s' "$INPUT" | jq -c 'if type == "object" then . else {} end' 2>/dev/null) \
   || PAYLOAD="{}"
+
+# Copilot provides transcript_path but no assistant message in the hook payload.
+# Extract the last assistant.message from the transcript and inject it.
+if [[ "$EVENT" == "assistant_stop" && "$SOURCE" == "copilot" ]]; then
+  transcript_path=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)
+  if [[ -n "$transcript_path" && -r "$transcript_path" ]]; then
+    last_message=$(jq -sr '[.[] | select(.type == "assistant.message")] | last | .data.content // empty' \
+      "$transcript_path" 2>/dev/null)
+    if [[ -n "$last_message" ]]; then
+      PAYLOAD=$(printf '%s' "$PAYLOAD" | jq -c --arg msg "$last_message" '. + {lastAssistantMessage: $msg}' 2>/dev/null) || true
+    fi
+  fi
+fi
 
 corpus_root() {
   if [[ -n "${CLARE2_CORPUS_ROOT:-}" ]]; then
