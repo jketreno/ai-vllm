@@ -1,7 +1,7 @@
-# ai-vllm with CLARE₂
+# ai-vllm with [CLARE₂](https://github.com/jketreno/clare)
 
-This stack serves `Qwen/Qwen3.5-35B-A3B-FP8` through an authenticated CLARE₂
-policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
+This stack serves `Qwen/Qwen3.5-35B-A3B-FP8` through an authenticated
+[CLARE₂](https://github.com/jketreno/clare) policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
 only on the private `inference` Docker network. The same local Qwen3.5 service
 performs distillation, summarization, evaluation, and agent inference.
 
@@ -34,8 +34,9 @@ restrict ports `8000` and `8002` with the host firewall.
 Secrets remain under `secrets/` with mode `0600`; `.env` contains no
 credentials.
 
-Launch Codex through the capture wrapper so its lifecycle hooks and CLARE
-verification events write to the same session:
+Launch Codex through the capture wrapper so its lifecycle hooks and
+[CLARE](https://github.com/jketreno/clare) verification events write to the
+same session:
 
 ```bash
 ./clare2/scripts/clare2-agent.sh codex /path/to/clare
