@@ -64,9 +64,10 @@ def compare(
     }
 
 
-def _score(probe: dict[str, Any], completion: str) -> dict[str, Any]:
+def _score(probe: dict[str, Any], completion: str | None) -> dict[str, Any]:
     expected = probe.get("expected_keyword")
-    passed = True if not expected else expected.casefold() in completion.casefold()
+    content = completion or ""
+    passed = True if not expected else expected.casefold() in content.casefold()
     return {
         "id": probe["id"],
         "category": probe.get("category", "general"),

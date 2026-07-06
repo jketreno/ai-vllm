@@ -425,6 +425,16 @@ class SecurityAndEvaluationTests(unittest.TestCase):
         )
         self.assertFalse(regressed["approved"])
 
+    def test_evaluation_treats_null_completion_as_empty_text(self):
+        report = compare(
+            "candidate",
+            "baseline",
+            lambda model, probe: None if model == "candidate" else "pass",
+            [{"id": "p0", "prompt": "p", "expected_keyword": "pass", "category": "code"}],
+        )
+        self.assertFalse(report["approved"])
+        self.assertFalse(report["results"][0]["passed"])
+
     def test_local_generation_uses_deterministic_qwen_request(self):
         response = unittest.mock.Mock()
         response.json.return_value = {"choices": [{"message": {"content": "[]"}}]}

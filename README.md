@@ -161,6 +161,14 @@ POST /operator/maintenance/{enter|exit}
 
 Training callbacks use a timestamped HMAC and are idempotent.
 
+## Monitoring
+
+Prometheus scrapes `clare2-policy`, `vllm-engine`, and `nvidia-exporter` by
+container name automatically. The `node` job in
+`monitoring/prometheus/prometheus.yml` ships with a placeholder target;
+edit it to point at your own node-exporter host (or remove the job) before
+starting the monitoring stack.
+
 ## MLflow Tracking
 
 The private `mlflow` service stores run metadata in `mlflow/data/mlflow.db` and

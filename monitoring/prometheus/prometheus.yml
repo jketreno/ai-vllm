@@ -12,9 +12,11 @@ scrape_configs:
     static_configs:
       - targets: ['vllm-engine:8001']
 
+  # Edit the target below to point at your own node-exporter host before
+  # deploying the monitoring stack. See README.md "Monitoring" section.
   - job_name: node
     static_configs:
-      - targets: ['192.168.1.163:9100']
+      - targets: ['REPLACE_WITH_NODE_EXPORTER_HOST:9100']
 
   - job_name: nvidia_gpu
     static_configs:

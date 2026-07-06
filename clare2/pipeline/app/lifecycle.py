@@ -212,7 +212,7 @@ def _invoke_probe(model: str, probe: dict[str, Any]) -> str:
         timeout=120,
     )
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    return response.json()["choices"][0]["message"].get("content") or ""
 
 
 def _container(action: str, name: str) -> None:
@@ -241,6 +241,8 @@ def _set_state(phase: str, **fields: Any) -> None:
         raise ValueError(f"unknown lifecycle phase: {phase}")
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     data = status()
+    if "error" not in fields and phase not in {"recovering", "failed"}:
+        data.pop("error", None)
     data.update(fields)
     data["phase"] = phase
     data["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
