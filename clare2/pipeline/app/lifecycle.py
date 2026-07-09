@@ -164,6 +164,36 @@ def complete_training(
             raise
 
 
+def complete_training_skipped(run_id: str) -> dict[str, Any]:
+    """Handle a training run where every project's corpus was unchanged, so
+    clare2-train trained nothing and there is no candidate to evaluate.
+    Restarts vLLM and returns to idle — mirrors complete_training() minus
+    the candidate load/evaluate/promote steps, which don't apply here."""
+    with single_run():
+        state = status()
+        if state.get("completed_adapter_id") == f"skipped:{run_id}":
+            return state
+        if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
+            raise RuntimeError("callback does not match the active training run")
+        try:
+            _set_state("restarting", run_id=run_id)
+            _container("start", VLLM_CONTAINER)
+            _wait_for_vllm()
+            controller.reconcile()
+            metrics.lifecycle_outcomes.labels(outcome="skipped_no_new_content").inc()
+            maintenance.exit()
+            _set_state(
+                "idle",
+                run_id=run_id,
+                completed_adapter_id=f"skipped:{run_id}",
+                outcome="skipped_no_new_content",
+            )
+            return status()
+        except Exception as exc:
+            _recover(run_id, exc)
+            raise
+
+
 def rollback() -> dict[str, Any]:
     with single_run():
         maintenance.enter()

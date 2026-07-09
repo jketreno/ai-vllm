@@ -3,6 +3,7 @@ set -euo pipefail
 
 TRAINING_ROOT=/corpus/training
 STATE=/corpus/meta/lifecycle.json
+REGISTRY=/models/adapters/registry.json
 MODEL=${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
 REVISION=${CLARE2_TRAIN_REVISION:?CLARE2_TRAIN_REVISION must pin the training base revision}
 MODEL_CACHE=${HF_HUB_CACHE:-${HF_HOME:-/root/.cache/huggingface}/hub}
@@ -17,6 +18,34 @@ if [[ ${#PROJECT_DIRS[@]} -eq 0 ]]; then
   echo "No non-empty per-project corpus files found under $TRAINING_ROOT" >&2
   exit 1
 fi
+
+# True if the project's most recent adapter for this exact corpus hash
+# already produced a real training outcome (candidate, approved, loaded,
+# retired, or still training) — not just any hash match. A rejected/failed
+# adapter for the same hash does not block a retry, since hyperparameters
+# or eval probes may have changed since that attempt.
+already_trained_for_hash() {
+  local project="$1" corpus_hash="$2"
+  [[ -s "$REGISTRY" ]] || return 1
+  python3 - "$REGISTRY" "$project" "$corpus_hash" <<'PY'
+import json
+import sys
+
+registry_path, project, corpus_hash = sys.argv[1:4]
+BLOCKING_STATUSES = {"training", "candidate", "approved", "loaded", "retired"}
+
+with open(registry_path, encoding="utf-8") as fh:
+    document = json.load(fh)
+
+matches = [
+    adapter
+    for adapter in document.get("adapters", {}).values()
+    if adapter.get("project_scope") == project and adapter.get("corpus_hash") == corpus_hash
+]
+latest = max(matches, key=lambda a: a.get("created_at", ""), default=None)
+sys.exit(0 if latest and latest.get("status") in BLOCKING_STATUSES else 1)
+PY
+}
 
 _send_callback() {
   local meta_path="$1"
@@ -46,11 +75,35 @@ PY
     "${CLARE2_PIPELINE_URL:-http://clare2-policy:8000}/training/done"
 }
 
+_send_skipped_callback() {
+  local payload timestamp signature
+  payload=$(printf '{"run_id":"%s"}' "$RUN_ID")
+  timestamp=$(date +%s)
+  signature=$(printf '%s.%s' "$timestamp" "$payload" |
+    openssl dgst -sha256 -hmac "$(cat /run/secrets/clare2_callback_secret)" -hex |
+    awk '{print $2}')
+  curl --fail --silent --show-error \
+    -H "Content-Type: application/json" \
+    -H "X-CLARE-Timestamp: ${timestamp}" \
+    -H "X-CLARE-Signature: ${signature}" \
+    --data "$payload" \
+    "${CLARE2_PIPELINE_URL:-http://clare2-policy:8000}/training/skipped"
+}
+
+TRAINED_ANY=0
+
 for corpus_file in "${PROJECT_DIRS[@]}"; do
   # Extract project name from path: training/{project}/current.jsonl
   project=$(basename "$(dirname "$corpus_file")")
   safe_project=$(printf '%s' "$project" | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')
-  corpus_hash=$(sha256sum "$corpus_file" | cut -c1-12)
+  full_corpus_hash=$(sha256sum "$corpus_file" | cut -d' ' -f1)
+  corpus_hash=${full_corpus_hash:0:12}
+
+  if already_trained_for_hash "$project" "$full_corpus_hash"; then
+    echo "No new content for project: $project (corpus unchanged since last trained adapter) — skipping" >&2
+    continue
+  fi
+
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   adapter_id="clare-${safe_project}-${stamp}-${corpus_hash}"
   adapter_out="/models/adapters/${adapter_id}"
@@ -76,9 +129,20 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
     --lora_dropout 0.05 \
     --max_seq_length 2048
 
+  TRAINED_ANY=1
+
   if [[ "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" == "1" ]]; then
     echo "Skipping training callback for dream-mode run: $adapter_id" >&2
   else
     _send_callback "$adapter_out/training_meta.json"
   fi
 done
+
+if [[ "$TRAINED_ANY" -eq 0 ]]; then
+  echo "No project had new corpus content since its last trained adapter — nothing to train" >&2
+  if [[ "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" == "1" ]]; then
+    echo "Skipping training-skipped callback for dream-mode run: $RUN_ID" >&2
+  else
+    _send_skipped_callback
+  fi
+fi
