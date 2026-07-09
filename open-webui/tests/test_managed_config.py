@@ -115,6 +115,61 @@ class ManagedConfigTests(unittest.TestCase):
             )
         )
 
+    def test_removes_only_compose_managed_image_edit_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "webui.db"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "CREATE TABLE config "
+                    "(id INTEGER PRIMARY KEY, data JSON NOT NULL, "
+                    "updated_at DATETIME)"
+                )
+                connection.execute(
+                    "INSERT INTO config (data) VALUES (?)",
+                    (
+                        json.dumps(
+                            {
+                                "images": {
+                                    "edit": {
+                                        "enable": False,
+                                        "engine": "openai",
+                                        "model": "",
+                                        "size": "",
+                                        "comfyui": {
+                                            "api_key": "",
+                                            "base_url": "",
+                                            "workflow": "",
+                                            "nodes": [],
+                                        },
+                                    }
+                                },
+                                "ui": {"enable_signup": False},
+                            }
+                        ),
+                    ),
+                )
+
+            changed = MANAGED_CONFIG.remove_managed_image_edit_settings(database)
+
+            self.assertTrue(changed)
+            with sqlite3.connect(database) as connection:
+                data = json.loads(connection.execute("SELECT data FROM config").fetchone()[0])
+            edit = data["images"]["edit"]
+            self.assertNotIn("engine", edit)
+            self.assertNotIn("model", edit)
+            self.assertNotIn("size", edit)
+            self.assertNotIn("base_url", edit["comfyui"])
+            self.assertNotIn("workflow", edit["comfyui"])
+            self.assertNotIn("nodes", edit["comfyui"])
+            self.assertEqual(edit["comfyui"]["api_key"], "")
+            self.assertFalse(edit["enable"])
+            self.assertEqual(data["ui"], {"enable_signup": False})
+
+    def test_missing_image_edit_database_is_ignored(self) -> None:
+        self.assertFalse(
+            MANAGED_CONFIG.remove_managed_image_edit_settings(Path("/missing/webui.db"))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

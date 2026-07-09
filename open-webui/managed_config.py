@@ -56,6 +56,19 @@ def remove_managed_openai_settings(database: Path) -> bool:
         return changed
 
 
+def _strip_comfyui_section(section, top_level_keys: tuple[str, ...]) -> bool:
+    if not isinstance(section, dict):
+        return False
+
+    changed = _delete_keys(section, top_level_keys)
+
+    comfyui = section.get("comfyui")
+    if isinstance(comfyui, dict):
+        changed = _delete_keys(comfyui, ("base_url", "workflow", "nodes")) or changed
+
+    return changed
+
+
 def remove_managed_image_generation_settings(database: Path) -> bool:
     if not database.is_file():
         return False
@@ -65,15 +78,27 @@ def remove_managed_image_generation_settings(database: Path) -> bool:
         if data is None:
             return False
 
-        image_generation = data.get("image_generation")
-        if not isinstance(image_generation, dict):
+        changed = _strip_comfyui_section(
+            data.get("image_generation"), ("engine", "model", "size", "steps")
+        )
+
+        if changed:
+            _save_config(connection, row_id, data)
+        return changed
+
+
+def remove_managed_image_edit_settings(database: Path) -> bool:
+    if not database.is_file():
+        return False
+
+    with sqlite3.connect(database) as connection:
+        row_id, data = _load_config(connection)
+        if data is None:
             return False
 
-        changed = _delete_keys(image_generation, ("engine", "model", "size", "steps"))
-
-        comfyui = image_generation.get("comfyui")
-        if isinstance(comfyui, dict):
-            changed = _delete_keys(comfyui, ("base_url", "workflow", "nodes")) or changed
+        images = data.get("images")
+        edit = images.get("edit") if isinstance(images, dict) else None
+        changed = _strip_comfyui_section(edit, ("engine", "model", "size"))
 
         if changed:
             _save_config(connection, row_id, data)
@@ -85,3 +110,4 @@ if __name__ == "__main__":
     database = data_dir / "webui.db"
     remove_managed_openai_settings(database)
     remove_managed_image_generation_settings(database)
+    remove_managed_image_edit_settings(database)
