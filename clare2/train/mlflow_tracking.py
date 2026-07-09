@@ -29,9 +29,14 @@ class TrainingTracker:
             "MLFLOW_EXPERIMENT_NAME",
             "clare2-qlora",
         )
+        self.disabled = os.environ.get("CLARE2_TRAIN_SKIP_CALLBACK") == "1" or os.environ.get(
+            "CLARE2_TRAIN_MLFLOW_DISABLED"
+        ) == "1"
         self.mlflow_run_id: str | None = None
 
-    def start(self, params: dict[str, Any], tags: dict[str, Any]) -> str:
+    def start(self, params: dict[str, Any], tags: dict[str, Any]) -> str | None:
+        if self.disabled:
+            return None
         mlflow.set_tracking_uri(self.tracking_uri)
         mlflow.set_experiment(self.experiment_name)
         run = mlflow.start_run(
@@ -48,15 +53,23 @@ class TrainingTracker:
         return self.mlflow_run_id
 
     def log_params(self, params: dict[str, Any]) -> None:
+        if self.disabled:
+            return
         mlflow.log_params({key: self._param(value) for key, value in params.items()})
 
     def log_metric(self, key: str, value: float, *, step: int | None = None) -> None:
+        if self.disabled:
+            return
         mlflow.log_metric(key, value, step=step)
 
     def log_dict(self, value: dict[str, Any], artifact_file: str) -> None:
+        if self.disabled:
+            return
         mlflow.log_dict(value, artifact_file)
 
     def log_adapter_artifacts(self, output_dir: pathlib.Path) -> None:
+        if self.disabled:
+            return
         for artifact in sorted(output_dir.iterdir()):
             if artifact.is_file():
                 mlflow.log_artifact(str(artifact), artifact_path="adapter")

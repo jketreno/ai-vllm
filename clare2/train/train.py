@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import pathlib
 import random
 import time
@@ -22,6 +23,7 @@ from trl import SFTConfig, SFTTrainer
 from mlflow_tracking import TrainingTracker
 
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+REQUESTED_LOAD_IN_4BIT = True
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,6 +59,52 @@ def file_hash(path: pathlib.Path) -> str:
 
 def text_hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def memory_snapshot(stage: str) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {"stage": stage, "timestamp": datetime.now(tz=timezone.utc).isoformat()}
+    try:
+        meminfo = pathlib.Path("/proc/meminfo").read_text(encoding="utf-8")
+        for line in meminfo.splitlines():
+            key, value = line.split(":", 1)
+            if key in {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}:
+                snapshot[key] = value.strip()
+    except OSError:
+        pass
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        snapshot["cuda_free_bytes"] = free
+        snapshot["cuda_total_bytes"] = total
+        snapshot["cuda_allocated_bytes"] = torch.cuda.memory_allocated()
+        snapshot["cuda_reserved_bytes"] = torch.cuda.memory_reserved()
+    return snapshot
+
+
+def effective_training_mode(model: Any, base_model_id: str) -> str:
+    if bool(getattr(model, "is_loaded_in_4bit", False)):
+        return "qlora-4bit"
+    if "fp8" in base_model_id.casefold():
+        return "fp8-16bit-lora"
+    return "other"
+
+
+def inference_base_from_env(
+    *,
+    train_base: dict[str, Any],
+) -> dict[str, Any]:
+    inference_model = os.environ.get("CLARE2_INFERENCE_MODEL", train_base["model_id"])
+    inference_revision = os.environ.get("CLARE2_INFERENCE_REVISION", train_base["revision"])
+    return {
+        "model_id": inference_model,
+        "revision": inference_revision,
+        "architecture": os.environ.get(
+            "CLARE2_BASE_ARCHITECTURE",
+            train_base.get("architecture", "unknown"),
+        ),
+        "config_hash": os.environ.get("CLARE2_BASE_CONFIG_HASH", train_base["config_hash"]),
+        "tokenizer_hash": os.environ.get("CLARE2_TOKENIZER_HASH", train_base["tokenizer_hash"]),
+        "inference_quantization": os.environ.get("CLARE2_INFERENCE_QUANTIZATION", "fp8"),
+    }
 
 
 def _tokenize_pair(
@@ -146,6 +194,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=False)
     train_file = pathlib.Path(args.train_file)
     started = time.monotonic()
+    memory_snapshots = [memory_snapshot("before_model_load")]
     tracker = TrainingTracker(
         lifecycle_run_id=args.run_id,
         adapter_id=args.adapter_id,
@@ -171,12 +220,12 @@ def main() -> None:
             "gradient_accumulation_steps": args.gradient_accumulation_steps,
             "learning_rate": args.learning_rate,
             "bf16": True,
-            "load_in_4bit": True,
+            "requested_load_in_4bit": REQUESTED_LOAD_IN_4BIT,
         },
         {
             "clare2.stage": "training",
             "clare2.framework": "unsloth",
-            "clare2.quantization": "qlora-4bit",
+            "clare2.quantization.requested": "qlora-4bit",
         },
     )
 
@@ -185,13 +234,33 @@ def main() -> None:
             model_name=args.model_name,
             revision=args.revision,
             max_seq_length=args.max_seq_length,
-            load_in_4bit=True,
+            load_in_4bit=REQUESTED_LOAD_IN_4BIT,
             dtype=torch.bfloat16,
             trust_remote_code=True,
         )
+        memory_snapshots.append(memory_snapshot("after_model_load"))
+        training_mode = effective_training_mode(model, args.base_model_id)
         text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         config_hash = text_hash(model.config.to_json_string())
         tokenizer_hash = text_hash(json.dumps(text_tokenizer.init_kwargs, sort_keys=True, default=str))
+        architecture = getattr(model.config, "architectures", None) or [model.config.__class__.__name__]
+        train_base = {
+            "model_id": args.base_model_id,
+            "revision": args.revision,
+            "architecture": architecture[0],
+            "config_hash": config_hash,
+            "tokenizer_hash": tokenizer_hash,
+        }
+        inference_base = inference_base_from_env(train_base=train_base)
+        tracker.log_params(
+            {
+                "effective_training_mode": training_mode,
+                "base_config_hash": config_hash,
+                "tokenizer_hash": tokenizer_hash,
+                "inference_model_id": inference_base["model_id"],
+                "inference_revision": inference_base["revision"],
+            }
+        )
         model = FastModel.get_peft_model(
             model,
             r=args.lora_r,
@@ -234,29 +303,23 @@ def main() -> None:
         result = trainer.train()
         if not math.isfinite(float(result.training_loss)):
             raise FloatingPointError("final training loss is not finite")
+        memory_snapshots.append(memory_snapshot("after_training"))
 
         model.save_pretrained(str(output_dir), safe_serialization=True)
         text_tokenizer.save_pretrained(str(output_dir))
         PeftConfig.from_pretrained(str(output_dir))
 
-        tracker.log_params(
-            {
-                "base_config_hash": config_hash,
-                "tokenizer_hash": tokenizer_hash,
-            }
-        )
         metadata = {
             "adapter_id": args.adapter_id,
             "run_id": args.run_id,
             "mlflow_run_id": mlflow_run_id,
             "created_at": datetime.now(tz=timezone.utc).isoformat(),
             "corpus_hash": corpus_hash,
-            "base": {
-                "model_id": args.base_model_id,
-                "revision": args.revision,
-                "config_hash": config_hash,
-                "tokenizer_hash": tokenizer_hash,
-            },
+            "base": train_base,
+            "train_base": train_base,
+            "inference_base": inference_base,
+            "effective_training_mode": training_mode,
+            "memory_snapshots": memory_snapshots,
             "dependency_lock_hash": file_hash(lock_path),
             "seed": args.seed,
             "hyperparameters": {
@@ -267,7 +330,7 @@ def main() -> None:
                 "epochs": args.num_train_epochs,
                 "learning_rate": args.learning_rate,
                 "bf16": True,
-                "load_in_4bit": True,
+                "requested_load_in_4bit": REQUESTED_LOAD_IN_4BIT,
             },
             "target_modules": TARGET_MODULES,
             "training_records": len(dataset),
@@ -286,6 +349,9 @@ def main() -> None:
             "created_at": metadata["created_at"],
             "corpus_hash": corpus_hash,
             "base": metadata["base"],
+            "train_base": metadata["train_base"],
+            "inference_base": metadata["inference_base"],
+            "effective_training_mode": training_mode,
             "peft": {
                 "rank": args.lora_r,
                 "alpha": args.lora_alpha,

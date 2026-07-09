@@ -194,6 +194,17 @@ class RegistryTests(unittest.TestCase):
         self.registry.initialize(new_base)
         self.assertEqual(self.registry.read()["base"], BASE)
 
+    def test_initialize_refreshes_registry_when_adapters_are_inactive(self):
+        item = adapter(
+            self.models,
+            "clare-project-20260611T000000Z-12345678",
+            status="rejected",
+        )
+        self.registry.add_adapter(item)
+        new_base = {**BASE, "architecture": "Qwen3_5ForConditionalGeneration"}
+        self.registry.initialize(new_base)
+        self.assertEqual(self.registry.read()["base"], new_base)
+
     def test_rejects_duplicate_and_wrong_base(self):
         item = adapter(self.models, "clare-project-20260611T000000Z-12345678")
         self.registry.add_adapter(item)
@@ -203,6 +214,47 @@ class RegistryTests(unittest.TestCase):
         wrong["base"]["revision"] = "different"
         with self.assertRaisesRegex(RegistryError, "fingerprint"):
             self.registry.add_adapter(wrong)
+
+    def test_accepts_distinct_train_base_when_inference_base_matches(self):
+        item = adapter(
+            self.models,
+            "clare-project-20260611T000000Z-12345678",
+            train_base={
+                "model_id": "Qwen/Qwen3.6-27B",
+                "revision": "non-fp8",
+                "architecture": BASE["architecture"],
+                "config_hash": "train-config",
+                "tokenizer_hash": BASE["tokenizer_hash"],
+            },
+            inference_base={
+                "model_id": BASE["model_id"],
+                "revision": BASE["revision"],
+                "architecture": BASE["architecture"],
+                "config_hash": BASE["config_hash"],
+                "tokenizer_hash": BASE["tokenizer_hash"],
+                "inference_quantization": BASE["inference_quantization"],
+            },
+        )
+        self.registry.add_adapter(item)
+        stored = self.registry.read()["adapters"][item["id"]]
+        self.assertEqual(stored["train_base"]["model_id"], "Qwen/Qwen3.6-27B")
+        self.assertEqual(stored["inference_base"]["model_id"], BASE["model_id"])
+
+    def test_rejects_mismatched_inference_tokenizer(self):
+        item = adapter(
+            self.models,
+            "clare-project-20260611T000000Z-12345678",
+            inference_base={
+                "model_id": BASE["model_id"],
+                "revision": BASE["revision"],
+                "architecture": BASE["architecture"],
+                "config_hash": BASE["config_hash"],
+                "tokenizer_hash": "different-tokenizer",
+                "inference_quantization": BASE["inference_quantization"],
+            },
+        )
+        with self.assertRaisesRegex(RegistryError, "tokenizer_hash"):
+            self.registry.add_adapter(item)
 
     def test_rejects_symlink_escape_and_unsupported_module(self):
         outside = self.models / "outside"
@@ -222,6 +274,15 @@ class RegistryTests(unittest.TestCase):
         item["directory"] = item["id"]
         item["target_modules"] = ["gate_proj"]
         with self.assertRaisesRegex(RegistryError, "unsupported"):
+            self.registry.validate_adapter(item)
+
+    def test_rejects_rank_mismatch(self):
+        item = adapter(
+            self.models,
+            "clare-project-20260611T000000Z-12345678",
+            peft={"rank": 16, "alpha": 64, "dropout": 0.05},
+        )
+        with self.assertRaisesRegex(RegistryError, "rank"):
             self.registry.validate_adapter(item)
 
 

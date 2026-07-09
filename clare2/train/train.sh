@@ -76,5 +76,9 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
     --lora_dropout 0.05 \
     --max_seq_length 2048
 
-  _send_callback "$adapter_out/training_meta.json"
+  if [[ "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" == "1" ]]; then
+    echo "Skipping training callback for dream-mode run: $adapter_id" >&2
+  else
+    _send_callback "$adapter_out/training_meta.json"
+  fi
 done

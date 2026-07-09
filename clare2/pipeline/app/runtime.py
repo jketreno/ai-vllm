@@ -84,16 +84,19 @@ controller = AdapterController(
 def initialize_registry() -> None:
     registry.initialize(
         {
-            "model_id": os.environ.get("CLARE2_TRAIN_MODEL", "Qwen/Qwen3.6-27B-FP8"),
+            "model_id": BASE_MODEL_ID,
             "inference_model_id": BASE_MODEL_ID,
-            "revision": os.environ.get("CLARE2_TRAIN_REVISION", "REPLACE_WITH_TRAIN_REVISION"),
+            "revision": os.environ.get(
+                "CLARE2_INFERENCE_REVISION",
+                "REPLACE_WITH_INFERENCE_REVISION",
+            ),
             "inference_revision": os.environ.get(
                 "CLARE2_INFERENCE_REVISION",
                 "REPLACE_WITH_INFERENCE_REVISION",
             ),
             "architecture": os.environ.get(
                 "CLARE2_BASE_ARCHITECTURE",
-                "Qwen3_5MoeForConditionalGeneration",
+                "Qwen3_5ForConditionalGeneration",
             ),
             "config_hash": os.environ.get("CLARE2_BASE_CONFIG_HASH", "REPLACE_WITH_SHA256"),
             "tokenizer_hash": os.environ.get("CLARE2_TOKENIZER_HASH", "REPLACE_WITH_SHA256"),

@@ -80,6 +80,16 @@ def start_training() -> None:
             raise
 
 
+def start_dream_training(run_id: str) -> dict[str, Any]:
+    with single_run():
+        state = status()
+        if state.get("phase") not in {"idle", "failed"}:
+            raise RuntimeError(f"cannot start dream training from {state.get('phase')}")
+        _set_state("training", run_id=run_id, dream_mode=True)
+        maintenance.enter()
+        return status()
+
+
 def _apply_evaluation(
     adapter_id: str,
     run_id: str,
@@ -124,7 +134,7 @@ def complete_training(
         state = status()
         if state.get("completed_adapter_id") == adapter_id:
             return state
-        if state.get("run_id") != run_id or state.get("phase") != "training":
+        if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
             raise RuntimeError("callback does not match the active training run")
         try:
             candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"

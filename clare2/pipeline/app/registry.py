@@ -76,7 +76,7 @@ class AdapterRegistry:
         with self._lock:
             if self.path.exists():
                 document = self.read()
-                if self._can_refresh_empty_base(document, base):
+                if self._can_refresh_base(document, base):
                     document["base"] = base
                     document["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
                     self.validate_document(document)
@@ -230,20 +230,32 @@ class AdapterRegistry:
             raise RegistryError(f"unknown adapter: {adapter_id}") from exc
 
     @staticmethod
-    def _can_refresh_empty_base(document: dict[str, Any], base: dict[str, Any]) -> bool:
+    def _can_refresh_base(document: dict[str, Any], base: dict[str, Any]) -> bool:
+        adapters = document.get("adapters", {})
+        inactive = all(
+            adapter.get("status") in {"rejected", "failed", "retired"}
+            for adapter in adapters.values()
+        )
         return (
             document.get("base") != base
-            and not document.get("adapters")
+            and inactive
             and document.get("aliases", {}).get("current") is None
             and document.get("aliases", {}).get("rollback") is None
         )
 
     @staticmethod
     def _validate_base_compatibility(base: dict[str, Any], adapter: dict[str, Any]) -> None:
-        adapter_base = adapter.get("base", {})
+        adapter_base = adapter.get("inference_base") or adapter.get("base", {})
         for field in ("model_id", "revision", "config_hash", "tokenizer_hash"):
             if adapter_base.get(field) != base.get(field):
-                raise RegistryError(f"adapter base fingerprint mismatch: {field}")
+                raise RegistryError(f"adapter inference fingerprint mismatch: {field}")
+        if adapter_base.get("architecture") and adapter_base.get("architecture") != base.get("architecture"):
+            raise RegistryError("adapter inference fingerprint mismatch: architecture")
+        if (
+            adapter_base.get("inference_quantization")
+            and adapter_base.get("inference_quantization") != base.get("inference_quantization")
+        ):
+            raise RegistryError("adapter inference fingerprint mismatch: inference_quantization")
 
     @staticmethod
     def _basic_safetensors_validation(path: pathlib.Path) -> None:
