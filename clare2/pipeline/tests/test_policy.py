@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import app.mcp_server as mcp_server
+import app.metrics as metrics
 import app.summarizer as summarizer
 from app.controller import AdapterController
 from app.evaluator import compare
@@ -485,6 +486,31 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             probes,
         )
         self.assertFalse(regressed["approved"])
+
+    def test_evaluation_score_is_labeled_by_project(self):
+        compare(
+            "candidate-x",
+            "baseline-x",
+            lambda model, probe: "pass",
+            [{"id": "p0", "prompt": "p", "expected_keyword": "pass", "category": "code"}],
+            project="ai-vllm",
+        )
+        score = metrics.evaluation_score.labels(
+            adapter_id="candidate-x", project="ai-vllm", category="code"
+        )._value.get()
+        self.assertEqual(score, 1.0)
+
+    def test_evaluation_score_defaults_project_to_unknown(self):
+        compare(
+            "candidate-y",
+            "baseline-y",
+            lambda model, probe: "pass",
+            [{"id": "p0", "prompt": "p", "expected_keyword": "pass", "category": "code"}],
+        )
+        score = metrics.evaluation_score.labels(
+            adapter_id="candidate-y", project="unknown", category="code"
+        )._value.get()
+        self.assertEqual(score, 1.0)
 
     def test_evaluation_treats_null_completion_as_empty_text(self):
         report = compare(

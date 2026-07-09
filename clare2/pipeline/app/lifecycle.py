@@ -125,10 +125,37 @@ def _apply_evaluation(
     )
 
 
+def _record_training_metrics(
+    adapter_id: str,
+    project: str,
+    loss: float | None,
+    epoch_losses: list[float],
+) -> None:
+    for epoch, epoch_loss in enumerate(epoch_losses, 1):
+        metrics.training_loss_by_epoch.labels(project=project, epoch=str(epoch)).set(epoch_loss)
+    if loss is not None:
+        metrics.training_loss_final.labels(project=project).set(loss)
+
+    meta_path = registry.adapters_root / adapter_id / "training_meta.json"
+    try:
+        training_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    duration = training_meta.get("duration_seconds")
+    if duration is not None:
+        metrics.training_duration_seconds.labels(project=project).set(duration)
+
+    adapter_dir = registry.adapters_root / adapter_id
+    size = sum(f.stat().st_size for f in adapter_dir.rglob("*") if f.is_file())
+    metrics.adapter_size_bytes.labels(project=project).set(size)
+
+
 def complete_training(
     adapter_id: str,
     run_id: str,
     mlflow_run_id: str | None = None,
+    loss: float | None = None,
+    epoch_losses: list[float] | None = None,
 ) -> dict[str, Any]:
     with single_run():
         state = status()
@@ -139,8 +166,10 @@ def complete_training(
         try:
             candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"
             candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+            project = candidate.get("project_scope", "unknown")
             if adapter_id not in registry.read()["adapters"]:
                 registry.add_adapter(candidate)
+            _record_training_metrics(adapter_id, project, loss, epoch_losses or [])
             _set_state("restarting", run_id=run_id, candidate_id=adapter_id, mlflow_run_id=mlflow_run_id)
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
@@ -155,7 +184,7 @@ def complete_training(
             controller.ensure_loaded(adapter_id)
 
             _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
-            report = evaluator.compare(adapter_id, baseline_id, _invoke_probe)
+            report = evaluator.compare(adapter_id, baseline_id, _invoke_probe, project=project)
             _apply_evaluation(adapter_id, run_id, mlflow_run_id, report)
             maintenance.exit()
             return status()

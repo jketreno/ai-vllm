@@ -38,8 +38,8 @@
       "type": "stat",
       "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_tokens_total", "legendFormat": "tokens"},
-        {"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_sft_pairs", "legendFormat": "SFT pairs"}
+        {"datasource": {"uid": "prometheus"}, "expr": "sum(clare2_corpus_tokens_total)", "legendFormat": "tokens (all projects)"},
+        {"datasource": {"uid": "prometheus"}, "expr": "sum(clare2_corpus_sft_pairs)", "legendFormat": "SFT pairs (all projects)"}
       ],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
@@ -69,7 +69,7 @@
       "type": "timeseries",
       "gridPos": {"x": 0, "y": 10, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_loss_final", "legendFormat": "final loss"}
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_loss_final", "legendFormat": "{{project}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "points"}}}
     },
@@ -79,7 +79,7 @@
       "type": "timeseries",
       "gridPos": {"x": 12, "y": 10, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_loss_by_epoch", "legendFormat": "epoch {{epoch}}"}
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_loss_by_epoch", "legendFormat": "{{project}} epoch {{epoch}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
@@ -89,7 +89,7 @@
       "type": "timeseries",
       "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_extracted_total[5m]) * 60", "legendFormat": "{{category}}"}
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_extracted_total[5m]) * 60", "legendFormat": "{{project}} / {{category}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "rpm"}}
     },
@@ -160,6 +160,28 @@
         {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.99, rate(clare2_proxy_duration_seconds_bucket[2m]))", "legendFormat": "p99"}
       ],
       "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 16,
+      "title": "Corpus Training Signal by Project",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 40, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_tokens_total", "legendFormat": "{{project}} tokens"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_corpus_sft_pairs", "legendFormat": "{{project}} SFT pairs"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 17,
+      "title": "Adapter Size / Training Duration by Project",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 40, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_adapter_size_bytes", "legendFormat": "{{project}} size"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_duration_seconds", "legendFormat": "{{project}} duration"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
     }
   ]
 }

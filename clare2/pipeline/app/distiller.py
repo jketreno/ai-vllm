@@ -112,7 +112,7 @@ def _distill_project(project: str, date: datetime, prompt_template: str) -> dict
             all_patterns.append(p)
 
             cat = p.get("category", "unknown")
-            metrics.distillation_patterns_extracted.labels(category=cat).inc()
+            metrics.distillation_patterns_extracted.labels(project=project, category=cat).inc()
 
     if not all_patterns:
         _update_session_index(session_files, date, project)

@@ -37,6 +37,8 @@ def compare(
     baseline_id: str,
     invoke: Callable[[str, dict[str, Any]], str],
     probes: list[dict[str, Any]] | None = None,
+    *,
+    project: str = "unknown",
 ) -> dict[str, Any]:
     probes = probes or load_probes()
     candidate_results = [_score(probe, invoke(candidate_id, probe)) for probe in probes]
@@ -51,7 +53,9 @@ def compare(
     mandatory_pass = all(item["passed"] for item in candidate_results if item["mandatory"])
     approved = mandatory_pass and candidate["pass_rate"] >= 0.90 and no_regression
     for category, score in candidate["categories"].items():
-        metrics.evaluation_score.labels(adapter_id=candidate_id, category=category).set(score)
+        metrics.evaluation_score.labels(
+            adapter_id=candidate_id, project=project, category=category
+        ).set(score)
     return {
         "candidate_id": candidate_id,
         "baseline_id": baseline_id,

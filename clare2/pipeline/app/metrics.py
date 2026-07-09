@@ -17,12 +17,16 @@ def start_metrics_server(port: int | None = None) -> None:
 
 episodes_total = Counter("clare2_episodes_total", "Episode count", ["category"])
 themes_active = Gauge("clare2_themes_active", "Active themes", ["project", "category"])
-corpus_tokens_total = Gauge("clare2_corpus_tokens_total", "SFT token count")
-corpus_sft_pairs = Gauge("clare2_corpus_sft_pairs", "SFT pair count")
-training_duration_seconds = Gauge("clare2_training_duration_seconds", "Last training duration")
-training_loss_final = Gauge("clare2_training_loss_final", "Last final loss")
-training_loss_by_epoch = Gauge("clare2_training_loss_by_epoch", "Epoch loss", ["epoch"])
-adapter_size_bytes = Gauge("clare2_adapter_size_bytes", "Adapter size")
+corpus_tokens_total = Gauge("clare2_corpus_tokens_total", "SFT token count", ["project"])
+corpus_sft_pairs = Gauge("clare2_corpus_sft_pairs", "SFT pair count", ["project"])
+training_duration_seconds = Gauge(
+    "clare2_training_duration_seconds", "Last training duration", ["project"]
+)
+training_loss_final = Gauge("clare2_training_loss_final", "Last final loss", ["project"])
+training_loss_by_epoch = Gauge(
+    "clare2_training_loss_by_epoch", "Epoch loss", ["project", "epoch"]
+)
+adapter_size_bytes = Gauge("clare2_adapter_size_bytes", "Adapter size", ["project"])
 distillation_runs = Counter("clare2_distillation_runs_total", "Distillation runs", ["outcome"])
 distillation_sessions_pending = Gauge(
     "clare2_distillation_sessions_pending", "Session files pending distillation", ["project"]
@@ -37,7 +41,7 @@ distillation_parse_errors = Counter(
     "clare2_distillation_parse_errors_total", "Distillation LLM JSON parse errors"
 )
 distillation_patterns_extracted = Counter(
-    "clare2_distillation_patterns_extracted", "Distilled patterns", ["category"]
+    "clare2_distillation_patterns_extracted", "Distilled patterns", ["project", "category"]
 )
 distillation_patterns_gated_out = Counter(
     "clare2_distillation_patterns_gated_out", "Patterns rejected by recurrence gate"
@@ -98,6 +102,8 @@ lifecycle_outcomes = Counter(
     "clare2_lifecycle_outcomes_total", "Lifecycle outcomes", ["outcome"]
 )
 evaluation_score = Gauge(
-    "clare2_evaluation_score", "Candidate and baseline evaluation score", ["adapter_id", "category"]
+    "clare2_evaluation_score",
+    "Candidate and baseline evaluation score",
+    ["adapter_id", "project", "category"],
 )
 proxy_latency = Histogram("clare2_proxy_duration_seconds", "Policy proxy upstream latency")

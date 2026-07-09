@@ -192,9 +192,9 @@ def assemble() -> dict:
         result = _assemble_project(project)
         for key in totals:
             totals[key] += result[key]
+        metrics.corpus_sft_pairs.labels(project=project).set(result["sft_pairs"])
+        metrics.corpus_tokens_total.labels(project=project).set(result["estimated_tokens"])
 
-    metrics.corpus_sft_pairs.set(totals["sft_pairs"])
-    metrics.corpus_tokens_total.set(totals["estimated_tokens"])
     log.info(
         "Corpus assembly complete: %d projects, %d total SFT pairs, ~%d total tokens",
         len(projects),
