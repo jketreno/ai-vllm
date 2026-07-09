@@ -31,8 +31,21 @@ distillation_runs = Counter("clare2_distillation_runs_total", "Distillation runs
 distillation_sessions_pending = Gauge(
     "clare2_distillation_sessions_pending", "Session files pending distillation", ["project"]
 )
+distillation_sessions_last = Gauge(
+    "clare2_distillation_sessions_last", "Session files processed by the last distillation run", ["project"]
+)
 distillation_sessions = Counter(
     "clare2_distillation_sessions_total", "Distillation session outcomes", ["project", "outcome"]
+)
+distillation_patterns_extracted_last = Gauge(
+    "clare2_distillation_patterns_extracted_last",
+    "Patterns accepted by the last distillation run",
+    ["project"],
+)
+distillation_patterns_gated_out_last = Gauge(
+    "clare2_distillation_patterns_gated_out_last",
+    "Patterns rejected by recurrence gate during the last distillation run",
+    ["project"],
 )
 distillation_patterns_raw = Counter(
     "clare2_distillation_patterns_raw_total", "Raw patterns returned by distillation", ["project"]

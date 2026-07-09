@@ -23,6 +23,12 @@ class AssembleProjectMetricsTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
+    def _write_episode(self, project: str, date: str, records: list[dict]) -> None:
+        year, month, day = date.split("-")
+        path = self.root / "episodes" / project / year / month / f"{day}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
     def test_each_project_gets_its_own_labeled_metric_value(self):
         self._write_theme(
             "ai-vllm",
@@ -51,6 +57,40 @@ class AssembleProjectMetricsTests(unittest.TestCase):
 
         empty_pairs = metrics.corpus_sft_pairs.labels(project="empty-project")._value.get()
         self.assertEqual(empty_pairs, 0)
+
+    def test_sft_pair_contains_actionable_context_and_source_metadata(self):
+        pair = corpus._pattern_to_sft_pair({
+            "project": "ai-vllm",
+            "category": "antipattern",
+            "pattern": "Do not bypass CLARE verification.",
+            "canonical_example": "Run ./clare/verify-ci.sh before completion.",
+            "evidence_count": 3,
+            "session_id": "codex-session",
+            "session_date": "2026-07-09",
+            "_source_type": "episode",
+        })
+
+        self.assertIsNotNone(pair)
+        self.assertIn("Project: ai-vllm", pair["prompt"])
+        self.assertIn("Anti-pattern", pair["prompt"])
+        self.assertIn("Avoid the anti-pattern", pair["completion"])
+        self.assertEqual(pair["source_session"], "codex-session")
+        self.assertEqual(pair["source_date"], "2026-07-09")
+        self.assertEqual(pair["evidence_count"], 3)
+        self.assertEqual(pair["weight"], 1.5)
+
+    def test_backfilled_episode_is_used_when_it_is_project_latest(self):
+        self._write_episode(
+            "clare",
+            "2026-07-01",
+            [{"project": "clare", "category": "domain", "pattern": "Keep installer copies in sync."}],
+        )
+
+        with patch.object(corpus, "CORPUS_ROOT", self.root):
+            result = corpus.assemble()
+
+        self.assertEqual(result["sft_pairs"], 1)
+        self.assertEqual((self.root / "training" / "clare" / "current.jsonl").read_text().count("\n"), 1)
 
 
 if __name__ == "__main__":

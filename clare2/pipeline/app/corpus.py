@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import pathlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from . import metrics
 
@@ -55,12 +55,24 @@ def _load_active_themes(project: str) -> list[dict]:
     return themes
 
 
+def _episode_date(path: pathlib.Path) -> datetime:
+    relative = path.relative_to(CORPUS_ROOT / "episodes")
+    year, month, filename = relative.parts[1:4]
+    day = pathlib.Path(filename).stem
+    return datetime(int(year), int(month), int(day), tzinfo=timezone.utc)
+
+
+def _recent_episode_paths(project: str, days: int) -> list[pathlib.Path]:
+    project_dir = CORPUS_ROOT / "episodes" / project
+    if not project_dir.exists():
+        return []
+    dated_paths = [(_episode_date(path), path) for path in project_dir.glob("*/*/*.jsonl")]
+    return [path for _date, path in sorted(dated_paths, reverse=True)[:days]]
+
+
 def _load_recent_episodes(project: str, days: int = RECENT_EPISODE_WINDOW_DAYS) -> list[dict]:
     episodes: list[dict] = []
-    now = datetime.now(tz=timezone.utc)
-    for offset in range(days):
-        day = now - timedelta(days=offset)
-        ep_path = CORPUS_ROOT / "episodes" / project / day.strftime("%Y/%m/%d.jsonl")
+    for ep_path in _recent_episode_paths(project, days):
         if ep_path.exists():
             with open(ep_path) as fh:
                 for line in fh:
@@ -86,43 +98,71 @@ def _pattern_to_sft_pair(pattern: dict) -> dict | None:
 
     weight = CATEGORY_WEIGHTS.get(category, 1.0)
     source_theme = pattern.get("source_theme", pattern.get("_source_file", ""))
+    project = pattern.get("project", "this project")
+    evidence_count = pattern.get("evidence_count", 1)
+    session_id = pattern.get("session_id", "")
+    source_type = pattern.get("_source_type", "pattern")
+    reference = f"\nReference example: {canonical}" if canonical else ""
+    context = (
+        f"Project: {project}\n"
+        f"Signal category: {category}\n"
+        f"Evidence count: {evidence_count}\n"
+        f"Source: {source_type}"
+        f"{f' ({session_id})' if session_id else ''}\n"
+    )
 
-    # SFT pair: the prompt is the trigger scenario; the completion is correct behavior
+    # SFT pair: prompt presents a realistic decision point; completion models the desired action.
     if category == "antipattern":
         prompt = (
-            f"The following code or approach has been identified as an anti-pattern in this codebase. "
-            f"Describe what should be done instead.\n\nAnti-pattern: {description}"
+            f"{context}\n"
+            "You are modifying this repository and encounter the following anti-pattern.\n"
+            f"Anti-pattern: {description}\n\n"
+            "Respond with the concrete behavior you should apply instead."
         )
         completion = (
-            f"Avoid this pattern. {description} "
-            f"{'Example of the issue: ' + canonical if canonical else ''}"
+            f"Avoid the anti-pattern: {description}\n"
+            "Instead, verify the behavior through the repository's authoritative path, "
+            "preserve the existing project constraints, and explain the safer implementation choice."
+            f"{reference}"
         )
     elif category == "style":
         prompt = (
-            f"Apply the project's naming and style conventions to the following. "
-            f"Convention: {description}"
+            f"{context}\n"
+            "You are preparing a code or documentation change for this repository.\n"
+            f"Style convention: {description}\n\n"
+            "Respond with how you should apply this convention."
         )
         completion = (
-            f"Follow this style convention: {description}. "
-            f"{'Reference: ' + canonical if canonical else ''}"
+            f"Apply the style convention consistently: {description}\n"
+            "Use the convention where it affects prose or code users will see, while preserving literal "
+            "identifiers, paths, environment variables, and protocol values."
+            f"{reference}"
         )
     elif category == "architecture":
         prompt = (
-            f"The project uses a specific architectural pattern. "
-            f"Apply it correctly. Pattern: {description}"
+            f"{context}\n"
+            "You are designing or changing a component in this repository.\n"
+            f"Architectural pattern: {description}\n\n"
+            "Respond with the implementation approach that respects this architecture."
         )
         completion = (
-            f"Use this architectural pattern: {description}. "
-            f"{'Example: ' + canonical if canonical else ''}"
+            f"Follow the established architecture: {description}\n"
+            "Keep ownership boundaries explicit, derive generated artifacts from their sources, and add "
+            "focused verification for the invariant being protected."
+            f"{reference}"
         )
     else:  # domain
         prompt = (
-            f"Use the correct domain terminology for this project. "
-            f"Convention: {description}"
+            f"{context}\n"
+            "You are answering or implementing a change for this repository.\n"
+            f"Domain rule: {description}\n\n"
+            "Respond with the correct project-specific handling."
         )
         completion = (
-            f"Use this domain term/concept correctly: {description}. "
-            f"{'Reference: ' + canonical if canonical else ''}"
+            f"Use the project-specific rule directly: {description}\n"
+            "Prefer the repository's configured source of truth over assumptions, and make the resulting "
+            "behavior observable through the normal project workflow."
+            f"{reference}"
         )
 
     return {
@@ -131,6 +171,9 @@ def _pattern_to_sft_pair(pattern: dict) -> dict | None:
         "category": category,
         "weight": weight,
         "source_theme": source_theme,
+        "source_session": session_id,
+        "source_date": pattern.get("session_date", ""),
+        "evidence_count": evidence_count,
     }
 
 

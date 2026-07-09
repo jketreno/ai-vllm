@@ -7,6 +7,7 @@ REGISTRY=/models/adapters/registry.json
 MODEL=${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
 REVISION=${CLARE2_TRAIN_REVISION:?CLARE2_TRAIN_REVISION must pin the training base revision}
 MODEL_CACHE=${HF_HUB_CACHE:-${HF_HOME:-/root/.cache/huggingface}/hub}
+MIN_TRAIN_RECORDS=${CLARE2_MIN_TRAIN_RECORDS:-8}
 
 [[ -s "$STATE" ]] || { echo "lifecycle state is missing" >&2; exit 1; }
 RUN_ID=$(python3 -c 'import json; print(json.load(open("'"$STATE"'"))["run_id"])')
@@ -20,10 +21,10 @@ if [[ ${#PROJECT_DIRS[@]} -eq 0 ]]; then
 fi
 
 # True if the project's most recent adapter for this exact corpus hash
-# already produced a real training outcome (candidate, approved, loaded,
-# retired, or still training) — not just any hash match. A rejected/failed
-# adapter for the same hash does not block a retry, since hyperparameters
-# or eval probes may have changed since that attempt.
+# already produced a durable outcome (approved, loaded, retired, or still
+# training) — not just any hash match. A rejected, failed, or unevaluated
+# candidate adapter for the same hash does not block a retry, since an
+# interrupted callback can leave stale candidates behind.
 already_trained_for_hash() {
   local project="$1" corpus_hash="$2"
   [[ -s "$REGISTRY" ]] || return 1
@@ -32,7 +33,7 @@ import json
 import sys
 
 registry_path, project, corpus_hash = sys.argv[1:4]
-BLOCKING_STATUSES = {"training", "candidate", "approved", "loaded", "retired"}
+BLOCKING_STATUSES = {"training", "approved", "loaded", "retired"}
 
 with open(registry_path, encoding="utf-8") as fh:
     document = json.load(fh)
@@ -91,11 +92,17 @@ _send_skipped_callback() {
 }
 
 TRAINED_ANY=0
+TRAINED_META_PATHS=()
 
 for corpus_file in "${PROJECT_DIRS[@]}"; do
   # Extract project name from path: training/{project}/current.jsonl
   project=$(basename "$(dirname "$corpus_file")")
   safe_project=$(printf '%s' "$project" | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')
+  record_count=$(wc -l < "$corpus_file")
+  if (( record_count < MIN_TRAIN_RECORDS )); then
+    echo "Project $project has only $record_count records; need at least $MIN_TRAIN_RECORDS — skipping" >&2
+    continue
+  fi
   full_corpus_hash=$(sha256sum "$corpus_file" | cut -d' ' -f1)
   corpus_hash=${full_corpus_hash:0:12}
 
@@ -130,13 +137,18 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
     --max_seq_length 2048
 
   TRAINED_ANY=1
+  TRAINED_META_PATHS+=("$adapter_out/training_meta.json")
 
   if [[ "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" == "1" ]]; then
     echo "Skipping training callback for dream-mode run: $adapter_id" >&2
-  else
-    _send_callback "$adapter_out/training_meta.json"
   fi
 done
+
+if [[ "$TRAINED_ANY" -eq 1 && "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" != "1" ]]; then
+  for meta_path in "${TRAINED_META_PATHS[@]}"; do
+    _send_callback "$meta_path"
+  done
+fi
 
 if [[ "$TRAINED_ANY" -eq 0 ]]; then
   echo "No project had new corpus content since its last trained adapter — nothing to train" >&2

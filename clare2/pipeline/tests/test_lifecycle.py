@@ -77,6 +77,20 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         state = lifecycle.status()
         self.assertEqual(state["phase"], "failed")
 
+    def test_reconciles_terminal_outcome_with_stale_phase(self):
+        lifecycle._set_state("evaluating", run_id="run-1", outcome="rejected")
+        state = lifecycle.reconcile_terminal_state()
+        self.assertEqual(state["phase"], "idle")
+        self.assertEqual(state["outcome"], "rejected")
+
+    def test_reconciles_rejected_candidate_registry_state(self):
+        adapter_id = "adapter-1"
+        with patch.object(lifecycle, "registry") as registry:
+            registry.read.return_value = {"adapters": {adapter_id: {"status": "candidate"}}}
+            lifecycle._set_state("evaluating", run_id="run-1", candidate_id=adapter_id, outcome="rejected")
+            lifecycle.reconcile_terminal_state()
+            registry.transition.assert_called_once_with(adapter_id, "rejected")
+
 
 class RecordTrainingMetricsTests(unittest.TestCase):
     def setUp(self):

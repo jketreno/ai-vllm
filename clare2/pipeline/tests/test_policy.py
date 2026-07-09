@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 import app.mcp_server as mcp_server
 import app.metrics as metrics
+import app.main as main
 import app.summarizer as summarizer
 from app.controller import AdapterController
 from app.evaluator import compare
@@ -131,6 +132,23 @@ class SummarizerPathTests(unittest.TestCase):
         self.assertTrue((self.root / "summaries" / "quarterly" / "ai-vllm" / "2026-Q1.jsonl").exists())
         self.assertTrue((self.root / "themes" / "active" / "ai-vllm" / "domain.jsonl").exists())
         self.assertFalse((self.root / "themes" / "active" / "domain.jsonl").exists())
+
+
+class IngestFlowTests(unittest.TestCase):
+    def test_sync_distill_and_assemble_runs_in_order(self):
+        calls = []
+        sync = lambda: calls.append("sync") or {"succeeded": 1}
+        distill = lambda: calls.append("distill") or {"sessions": 2}
+        assemble = lambda: calls.append("assemble") or {"sft_pairs": 3}
+        with patch.object(main.corpus_sync, "sync_all", side_effect=sync), patch.object(
+            main.distiller, "run_daily", side_effect=distill
+        ), patch.object(main.corpus, "assemble", side_effect=assemble):
+            result = main.sync_distill_and_assemble()
+
+        self.assertEqual(calls, ["sync", "distill", "assemble"])
+        self.assertEqual(result["sync"]["succeeded"], 1)
+        self.assertEqual(result["distill"]["sessions"], 2)
+        self.assertEqual(result["assemble"]["sft_pairs"], 3)
 
 
 def safetensors(path: pathlib.Path) -> None:

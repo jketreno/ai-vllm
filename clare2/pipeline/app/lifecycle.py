@@ -41,11 +41,36 @@ PHASES = {
     "failed",
 }
 
+TERMINAL_OUTCOMES = {"promoted", "rejected", "skipped_no_new_content"}
+
 
 def status() -> dict[str, Any]:
     if not STATE_PATH.exists():
         return {"phase": "idle", "run_id": None}
     return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+
+
+def reconcile_terminal_state() -> dict[str, Any]:
+    """Recover persisted lifecycle records that reached an outcome but not idle."""
+    state = status()
+    if state.get("outcome") == "rejected":
+        adapter_id = state.get("candidate_id")
+        if adapter_id:
+            _reconcile_rejected_candidate(adapter_id)
+    if state.get("outcome") in TERMINAL_OUTCOMES and state.get("phase") not in {"idle", "failed"}:
+        _set_state("idle")
+        return status()
+    return state
+
+
+def _reconcile_rejected_candidate(adapter_id: str) -> None:
+    """Align registry state after a crash between rejection state and registry transition."""
+    try:
+        adapter = registry.read().get("adapters", {}).get(adapter_id)
+        if adapter and adapter.get("status") in {"training", "candidate", "loaded"}:
+            registry.transition(adapter_id, "rejected")
+    except Exception:
+        log.exception("Failed to reconcile rejected adapter %s", adapter_id)
 
 
 def drain_and_stop_infer() -> None:
@@ -68,7 +93,7 @@ def drain_and_stop_infer() -> None:
 
 def start_training() -> None:
     with single_run():
-        state = status()
+        state = reconcile_terminal_state()
         run_id = state.get("run_id") or _new_run_id()
         if state.get("phase") not in {"training", "idle"}:
             raise RuntimeError(f"cannot start training from {state.get('phase')}")

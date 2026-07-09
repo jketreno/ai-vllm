@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -24,7 +25,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 app = FastAPI(title="CLARE₂ Policy Proxy", version="1.0.0")
-scheduler = BackgroundScheduler(timezone="UTC")
+SCHEDULER_TIMEZONE = os.environ.get("CLARE2_SCHEDULER_TIMEZONE", "America/Los_Angeles")
+scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
 operator_auth = bearer_dependency(secret_value("CLARE2_OPERATOR_TOKEN"))
 internal_route_auth = bearer_dependency(secret_value("CLARE2_CALLBACK_SECRET"))
 
@@ -55,18 +57,30 @@ class DreamTrainingStartPayload(BaseModel):
     run_id: str
 
 
+def sync_distill_and_assemble() -> dict:
+    sync_result = corpus_sync.sync_all()
+    distill_result = distiller.run_daily()
+    assemble_result = corpus.assemble()
+    return {
+        "sync": sync_result,
+        "distill": distill_result,
+        "assemble": assemble_result,
+    }
+
+
 @app.on_event("startup")
 def startup() -> None:
     initialize_registry()
     metrics.start_metrics_server()
     scheduler.add_job(corpus_sync.sync_all, "cron", hour=21, minute=30, id="corpus_sync")
-    scheduler.add_job(distiller.run_daily, "cron", hour=22, minute=0, id="distill_daily")
+    scheduler.add_job(sync_distill_and_assemble, "cron", hour=22, minute=0, id="distill_daily")
     scheduler.add_job(summarizer.run_scheduled, "cron", hour=22, minute=30, id="summarize")
     scheduler.add_job(corpus.assemble, "cron", hour=23, minute=30, id="corpus_assemble")
     scheduler.add_job(lifecycle.drain_and_stop_infer, "cron", hour=23, minute=45, id="drain")
     scheduler.add_job(lifecycle.start_training, "cron", hour=0, minute=0, id="train")
     scheduler.start()
     try:
+        lifecycle.reconcile_terminal_state()
         controller.reconcile()
     except Exception:
         log.exception("Initial vLLM reconciliation failed")
@@ -202,7 +216,7 @@ def trigger_corpus_sync(background_tasks: BackgroundTasks) -> dict:
 
 @app.post("/distill/trigger", dependencies=[Depends(operator_auth)])
 def trigger_distill(background_tasks: BackgroundTasks) -> dict:
-    background_tasks.add_task(distiller.run_daily)
+    background_tasks.add_task(sync_distill_and_assemble)
     return {"status": "started"}
 
 

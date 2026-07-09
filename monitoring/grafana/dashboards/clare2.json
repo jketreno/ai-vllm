@@ -8,17 +8,17 @@
   "panels": [
     {
       "id": 1,
-      "title": "Lifecycle Phase",
+      "title": "Current Lifecycle Phase",
       "type": "stat",
       "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "clare2_lifecycle_phase", "legendFormat": "{{phase}}"}
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_lifecycle_phase == 1", "legendFormat": "{{phase}}"}
       ],
       "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"1": {"text": "active", "color": "green"}, "0": {"text": "inactive", "color": "text"}}}]}}
     },
     {
       "id": 2,
-      "title": "Active Requests",
+      "title": "Active Proxy Requests",
       "type": "stat",
       "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
       "targets": [{"datasource": {"uid": "prometheus"}, "expr": "clare2_active_requests", "legendFormat": "requests"}],
@@ -26,7 +26,7 @@
     },
     {
       "id": 3,
-      "title": "Maintenance Mode",
+      "title": "Lifecycle Maintenance Mode",
       "type": "stat",
       "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
       "targets": [{"datasource": {"uid": "prometheus"}, "expr": "clare2_maintenance_mode", "legendFormat": "maintenance"}],
@@ -34,12 +34,14 @@
     },
     {
       "id": 4,
-      "title": "Corpus Training Signal",
+      "title": "Training Current",
       "type": "stat",
       "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "sum(clare2_corpus_tokens_total)", "legendFormat": "tokens (all projects)"},
-        {"datasource": {"uid": "prometheus"}, "expr": "sum(clare2_corpus_sft_pairs)", "legendFormat": "SFT pairs (all projects)"}
+        {"datasource": {"uid": "prometheus"}, "expr": "sum(clare2_corpus_sft_pairs)", "legendFormat": "SFT pairs (all projects)"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_loss_final", "legendFormat": "{{project}} final loss"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_training_duration_seconds", "legendFormat": "{{project}} train seconds"}
       ],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
@@ -85,36 +87,40 @@
     },
     {
       "id": 9,
-      "title": "Distillation Patterns Extracted / min",
-      "type": "timeseries",
+      "title": "Distillation Last Run",
+      "type": "stat",
       "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_extracted_total[5m]) * 60", "legendFormat": "{{project}} / {{category}}"}
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_distillation_sessions_last", "legendFormat": "{{project}} sessions"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_distillation_patterns_extracted_last", "legendFormat": "{{project}} accepted"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_distillation_patterns_gated_out_last", "legendFormat": "{{project}} gated out"},
+        {"datasource": {"uid": "prometheus"}, "expr": "clare2_distillation_sessions_pending", "legendFormat": "{{project}} pending"}
       ],
-      "fieldConfig": {"defaults": {"unit": "rpm"}}
+      "fieldConfig": {"defaults": {"unit": "short"}}
     },
     {
       "id": 10,
-      "title": "Patterns Gated Out / min",
+      "title": "Distillation Patterns / 24h",
       "type": "timeseries",
       "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_gated_out_total[5m]) * 60", "legendFormat": "gated out"}
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_distillation_patterns_extracted_total[24h])", "legendFormat": "{{project}} / {{category}} accepted"},
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_distillation_patterns_gated_out_total[24h])", "legendFormat": "gated out"}
       ],
-      "fieldConfig": {"defaults": {"unit": "rpm"}}
+      "fieldConfig": {"defaults": {"unit": "short"}}
     },
     {
       "id": 11,
-      "title": "Distillation Sessions / min",
+      "title": "Distillation Sessions / 24h",
       "type": "timeseries",
       "gridPos": {"x": 0, "y": 22, "w": 12, "h": 6},
       "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_sessions_total[5m]) * 60", "legendFormat": "{{project}} / {{outcome}}"},
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_patterns_raw_total[5m]) * 60", "legendFormat": "raw patterns / {{project}}"},
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_distillation_parse_errors_total[5m]) * 60", "legendFormat": "parse errors"},
-        {"datasource": {"uid": "prometheus"}, "expr": "rate(clare2_structured_output_attempts_total{stage=\"distillation\"}[5m]) * 60", "legendFormat": "schema {{outcome}}"}
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_distillation_sessions_total[24h])", "legendFormat": "{{project}} / {{outcome}}"},
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_distillation_patterns_raw_total[24h])", "legendFormat": "raw patterns / {{project}}"},
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_distillation_parse_errors_total[24h])", "legendFormat": "parse errors"},
+        {"datasource": {"uid": "prometheus"}, "expr": "increase(clare2_structured_output_attempts_total{stage=\"distillation\"}[24h])", "legendFormat": "schema {{outcome}}"}
       ],
-      "fieldConfig": {"defaults": {"unit": "rpm"}}
+      "fieldConfig": {"defaults": {"unit": "short"}}
     },
     {
       "id": 12,
