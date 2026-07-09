@@ -10,6 +10,7 @@ x-clare2-env: &clare2-env
   CLARE2_TRAIN_MODEL: ${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
   CLARE2_INFERENCE_REVISION: ${CLARE2_INFERENCE_REVISION:?pin the FP8 Hugging Face revision}
   CLARE2_TRAIN_REVISION: ${CLARE2_TRAIN_REVISION:?pin the training Hugging Face revision}
+  CLARE2_BASE_ARCHITECTURE: ${CLARE2_BASE_ARCHITECTURE:-Qwen3_5ForConditionalGeneration}
   CLARE2_BASE_CONFIG_HASH: ${CLARE2_BASE_CONFIG_HASH:?set the base config SHA256}
   CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
   CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare","ai-vllm":"ai-vllm"}}
@@ -21,6 +22,7 @@ x-clare2-env: &clare2-env
   CLARE2_MCP_TOKEN_FILE: /run/secrets/clare2_mcp_token
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
   CLARE2_CALLBACK_SECRET_FILE: /run/secrets/clare2_callback_secret
+  CLARE2_CORPUS_SYNC_KEY_FILE: /run/secrets/clare2_corpus_sync_key
 
 services:
   mlflow:
@@ -90,10 +92,12 @@ services:
       - clare2_proxy_token
       - clare2_operator_token
       - clare2_callback_secret
+      - clare2_corpus_sync_key
     volumes:
       - ${CLARE2_CORPUS_ROOT:?set CLARE2_CORPUS_ROOT to the shared CLARE2 corpus directory}:/corpus
       - ./models:/models
       - ./logs/clare2:/logs
+      - ./clare2/pipeline/config/corpus_sources.yml:/app/config/corpus_sources.yml:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -283,6 +287,8 @@ services:
       <<: *clare2-env
       CLARE2_PROJECT_ID: ${CLARE2_PROJECT_ID:-global}
       CLARE2_PIPELINE_URL: http://clare2-policy:8000
+      CLARE2_TRAIN_SKIP_CALLBACK: ${CLARE2_TRAIN_SKIP_CALLBACK:-0}
+      CLARE2_TRAIN_MLFLOW_DISABLED: ${CLARE2_TRAIN_MLFLOW_DISABLED:-0}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_EXPERIMENT_NAME: ${CLARE2_MLFLOW_EXPERIMENT:-clare2-qlora}
       HF_HUB_OFFLINE: "1"
@@ -452,6 +458,8 @@ secrets:
     file: ${CLARE2_OPERATOR_TOKEN_FILE:-./secrets/clare2_operator_token}
   clare2_callback_secret:
     file: ${CLARE2_CALLBACK_SECRET_FILE:-./secrets/clare2_callback_secret}
+  clare2_corpus_sync_key:
+    file: ${CLARE2_CORPUS_SYNC_KEY_FILE:-./secrets/clare2_corpus_sync_key}
   spam_api_token:
     file: ${SPAM_API_TOKEN_FILE:-./secrets/spam_api_token}
   grafana_admin_password:

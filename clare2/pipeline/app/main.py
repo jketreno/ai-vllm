@@ -10,7 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import corpus, distiller, lifecycle, metrics, summarizer
+from . import corpus, corpus_sync, distiller, lifecycle, metrics, summarizer
 from .proxy import router_api as proxy_router
 from .registry import RegistryError
 from .routing import RouteError
@@ -47,10 +47,15 @@ class RouteCreatePayload(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
 
 
+class DreamTrainingStartPayload(BaseModel):
+    run_id: str
+
+
 @app.on_event("startup")
 def startup() -> None:
     initialize_registry()
     metrics.start_metrics_server()
+    scheduler.add_job(corpus_sync.sync_all, "cron", hour=21, minute=30, id="corpus_sync")
     scheduler.add_job(distiller.run_daily, "cron", hour=22, minute=0, id="distill_daily")
     scheduler.add_job(summarizer.run_scheduled, "cron", hour=22, minute=30, id="summarize")
     scheduler.add_job(corpus.assemble, "cron", hour=23, minute=30, id="corpus_assemble")
@@ -155,6 +160,20 @@ def set_maintenance(action: str) -> dict:
     else:
         raise HTTPException(status_code=400, detail="action must be enter or exit")
     return {"maintenance": maintenance.enabled}
+
+
+@app.post("/operator/training/dream/start", dependencies=[Depends(operator_auth)])
+def start_dream_training(payload: DreamTrainingStartPayload) -> dict:
+    try:
+        return lifecycle.start_dream_training(payload.run_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/corpus/sync", dependencies=[Depends(operator_auth)])
+def trigger_corpus_sync(background_tasks: BackgroundTasks) -> dict:
+    background_tasks.add_task(corpus_sync.sync_all)
+    return {"status": "started"}
 
 
 @app.post("/distill/trigger", dependencies=[Depends(operator_auth)])

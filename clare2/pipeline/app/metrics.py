@@ -66,6 +66,12 @@ structured_output_attempts = Counter(
     ["stage", "outcome"],
 )
 theme_drift_events = Counter("clare2_theme_drift_events", "Theme drift events")
+corpus_sync_hosts = Counter(
+    "clare2_corpus_sync_hosts_total", "Remote corpus sync outcomes", ["outcome"]
+)
+corpus_sync_last_run_timestamp = Gauge(
+    "clare2_corpus_sync_last_run_timestamp_seconds", "Last remote corpus sync timestamp"
+)
 
 routing_decisions = Counter("clare2_routing_decisions_total", "Routing decisions", ["rule"])
 base_fallbacks = Counter("clare2_base_fallbacks_total", "Base model fallbacks")
