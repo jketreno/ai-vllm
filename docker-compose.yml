@@ -329,6 +329,11 @@ services:
       ENABLE_IMAGE_GENERATION: ${ENABLE_IMAGE_GENERATION:-True}
       IMAGE_GENERATION_ENGINE: comfyui
       COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://battle-linux.ketrenos.com:8188}
+      IMAGE_GENERATION_MODEL: ${IMAGE_GENERATION_MODEL:-flux1-schnell-fp8.safetensors}
+      IMAGE_SIZE: ${IMAGE_SIZE:-1024x1024}
+      IMAGE_STEPS: ${IMAGE_STEPS:-4}
+      COMFYUI_WORKFLOW: '{"1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"flux1-schnell-fp8.safetensors"}},"2":{"class_type":"CLIPTextEncode","inputs":{"text":"","clip":["1",1]}},"3":{"class_type":"CLIPTextEncode","inputs":{"text":"","clip":["1",1]}},"4":{"class_type":"EmptyLatentImage","inputs":{"width":1024,"height":1024,"batch_size":1}},"5":{"class_type":"KSampler","inputs":{"seed":0,"steps":4,"cfg":1.0,"sampler_name":"euler","scheduler":"simple","denoise":1.0,"model":["1",0],"positive":["2",0],"negative":["3",0],"latent_image":["4",0]}},"6":{"class_type":"VAEDecode","inputs":{"samples":["5",0],"vae":["1",2]}},"7":{"class_type":"SaveImage","inputs":{"filename_prefix":"open-webui","images":["6",0]}}}'
+      COMFYUI_WORKFLOW_NODES: '[{"type":"model","node_ids":["1"],"key":"ckpt_name"},{"type":"prompt","node_ids":["2"],"key":"text"},{"type":"negative_prompt","node_ids":["3"],"key":"text"},{"type":"width","node_ids":["4"],"key":"width"},{"type":"height","node_ids":["4"],"key":"height"},{"type":"steps","node_ids":["5"],"key":"steps"},{"type":"seed","node_ids":["5"],"key":"seed"}]'
     secrets:
       - clare2_proxy_token
       - ldap_app_password
