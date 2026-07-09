@@ -326,6 +326,9 @@ services:
       LDAP_SEARCH_FILTER: ${LDAP_SEARCH_FILTER:-(uid=%(user)s)}
       LDAP_ATTRIBUTE_FOR_USERNAME: ${LDAP_ATTRIBUTE_FOR_USERNAME:-uid}
       LDAP_ATTRIBUTE_FOR_MAIL: ${LDAP_ATTRIBUTE_FOR_MAIL:-mail}
+      ENABLE_IMAGE_GENERATION: ${ENABLE_IMAGE_GENERATION:-True}
+      IMAGE_GENERATION_ENGINE: comfyui
+      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://backstory.ketrenos.com:8188}
     secrets:
       - clare2_proxy_token
       - ldap_app_password
