@@ -58,6 +58,63 @@ class ManagedConfigTests(unittest.TestCase):
             MANAGED_CONFIG.remove_managed_openai_settings(Path("/missing/webui.db"))
         )
 
+    def test_removes_only_compose_managed_image_generation_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "webui.db"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "CREATE TABLE config "
+                    "(id INTEGER PRIMARY KEY, data JSON NOT NULL, "
+                    "updated_at DATETIME)"
+                )
+                connection.execute(
+                    "INSERT INTO config (data) VALUES (?)",
+                    (
+                        json.dumps(
+                            {
+                                "image_generation": {
+                                    "enable": True,
+                                    "engine": "comfyui",
+                                    "model": "model.safetensors",
+                                    "size": "512x512",
+                                    "steps": 50,
+                                    "comfyui": {
+                                        "api_key": "",
+                                        "base_url": "http://old:8188",
+                                        "workflow": "{}",
+                                        "nodes": [],
+                                    },
+                                },
+                                "ui": {"enable_signup": False},
+                            }
+                        ),
+                    ),
+                )
+
+            changed = MANAGED_CONFIG.remove_managed_image_generation_settings(database)
+
+            self.assertTrue(changed)
+            with sqlite3.connect(database) as connection:
+                data = json.loads(connection.execute("SELECT data FROM config").fetchone()[0])
+            image_generation = data["image_generation"]
+            self.assertNotIn("engine", image_generation)
+            self.assertNotIn("model", image_generation)
+            self.assertNotIn("size", image_generation)
+            self.assertNotIn("steps", image_generation)
+            self.assertNotIn("base_url", image_generation["comfyui"])
+            self.assertNotIn("workflow", image_generation["comfyui"])
+            self.assertNotIn("nodes", image_generation["comfyui"])
+            self.assertEqual(image_generation["comfyui"]["api_key"], "")
+            self.assertTrue(image_generation["enable"])
+            self.assertEqual(data["ui"], {"enable_signup": False})
+
+    def test_missing_image_generation_database_is_ignored(self) -> None:
+        self.assertFalse(
+            MANAGED_CONFIG.remove_managed_image_generation_settings(
+                Path("/missing/webui.db")
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
