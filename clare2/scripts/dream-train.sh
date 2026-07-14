@@ -2,8 +2,6 @@
 set -euo pipefail
 
 KEEP_SERVICES=(
-  spam-vllm
-  spam-classifier
   prometheus
   grafana
   node-exporter
@@ -21,6 +19,7 @@ STOP_SERVICES=(
   qdrant
   redis
   mlflow
+  spam-classifier
 )
 
 WAKE_SERVICES=(
@@ -32,6 +31,7 @@ WAKE_SERVICES=(
   open-webui
   ollama
   qdrant
+  spam-classifier
 )
 
 DRY_RUN=0

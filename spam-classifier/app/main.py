@@ -13,8 +13,8 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-MODEL = os.environ.get("SPAM_MODEL", "Qwen/Qwen3.5-4B")
-VLLM_URL = os.environ.get("SPAM_VLLM_URL", "http://spam-vllm:8001")
+MODEL = os.environ.get("SPAM_MODEL", "Qwen/Qwen3.6-27B-FP8")
+VLLM_URL = os.environ.get("SPAM_VLLM_URL", "http://vllm-engine:8001")
 SPAM_THRESHOLD = float(os.environ.get("SPAM_THRESHOLD", "0.80"))
 MAX_MESSAGE_CHARS = int(os.environ.get("SPAM_MAX_MESSAGE_CHARS", "60000"))
 TOKEN_FILE = os.environ.get("SPAM_API_TOKEN_FILE", "/run/secrets/spam_api_token")

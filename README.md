@@ -1,13 +1,11 @@
 # ai-vllm with [CLARE₂](https://github.com/jketreno/clare)
 
-This stack serves `Qwen/Qwen3.5-35B-A3B-FP8` through an authenticated
+This stack serves `Qwen/Qwen3.6-27B-FP8` through an authenticated
 [CLARE₂](https://github.com/jketreno/clare) policy proxy. Raw vLLM and its runtime LoRA management endpoints are reachable
-only on the private `inference` Docker network. The same local Qwen3.5 service
-performs distillation, summarization, evaluation, and agent inference.
-
-It also serves the smaller `Qwen/Qwen3.5-4B` through a dedicated authenticated
-spam-classification API. The classifier uses vLLM JSON-schema constrained
-decoding and is isolated from the general-purpose inference endpoint.
+only on the private `inference` Docker network. The same local Qwen3.6 service
+performs distillation, summarization, evaluation, agent inference, and spam
+classification. The authenticated spam-classification API uses vLLM
+JSON-schema constrained decoding without loading a second GPU model.
 
 ## Automated Setup
 
@@ -89,7 +87,7 @@ The response contract is:
   "spam_score": 0.97,
   "threshold": 0.8,
   "reasons": ["Urgent credential-verification request", "SPF and DKIM failed"],
-  "model": "Qwen/Qwen3.5-4B"
+  "model": "Qwen/Qwen3.6-27B-FP8"
 }
 ```
 
