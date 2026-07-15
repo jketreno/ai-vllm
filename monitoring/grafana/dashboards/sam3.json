@@ -1,0 +1,86 @@
+{
+  "title": "SAM3 Annotator",
+  "uid": "sam3-annotator",
+  "tags": ["sam3", "annotation", "gpu"],
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "Service Up", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "up{job=\"sam3\"}", "legendFormat": "SAM3"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "id": 2, "title": "Model Loaded", "type": "stat", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sam3_model_loaded", "legendFormat": "loaded"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "NO", "color": "yellow"}, "1": {"text": "YES", "color": "green"}}}]}}
+    },
+    {
+      "id": 3, "title": "Active Annotations", "type": "stat", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sam3_annotation_active", "legendFormat": "active"}]
+    },
+    {
+      "id": 4, "title": "Annotations (1h)", "type": "stat", "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum(increase(sam3_annotation_requests_total{status=\"success\"}[1h]))", "legendFormat": "successful"}]
+    },
+    {
+      "id": 5, "title": "Errors (1h)", "type": "stat", "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum(increase(sam3_annotation_requests_total{status=\"error\"}[1h])) + sum(increase(sam3_pipeline_operations_total{status=\"error\"}[1h]))", "legendFormat": "errors"}]
+    },
+    {
+      "id": 6, "title": "Active Training", "type": "stat", "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sam3_training_jobs_active", "legendFormat": "jobs"}]
+    },
+    {
+      "id": 7, "title": "Inference Throughput", "type": "timeseries", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "sum by (status) (rate(sam3_annotation_requests_total[5m])) * 60", "legendFormat": "{{status}} / min"},
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(sam3_detections_total[5m]) * 60", "legendFormat": "detections / min"}
+      ]
+    },
+    {
+      "id": 8, "title": "Inference Latency", "type": "timeseries", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.50, rate(sam3_annotation_duration_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(sam3_annotation_duration_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.99, rate(sam3_annotation_duration_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 9, "title": "SAM3 CUDA Memory", "type": "timeseries", "gridPos": {"x": 0, "y": 11, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "sam3_cuda_memory_allocated_bytes", "legendFormat": "allocated"},
+        {"datasource": {"uid": "prometheus"}, "expr": "sam3_cuda_memory_reserved_bytes", "legendFormat": "reserved"},
+        {"datasource": {"uid": "prometheus"}, "expr": "sam3_cuda_memory_free_bytes", "legendFormat": "device free"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 10, "title": "Process Resources", "type": "timeseries", "gridPos": {"x": 12, "y": 11, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "process_resident_memory_bytes{job=\"sam3\"}", "legendFormat": "resident memory"},
+        {"datasource": {"uid": "prometheus"}, "expr": "rate(process_cpu_seconds_total{job=\"sam3\"}[5m])", "legendFormat": "CPU cores"}
+      ]
+    },
+    {
+      "id": 11, "title": "Pipeline Operations", "type": "timeseries", "gridPos": {"x": 0, "y": 18, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (operation, status) (increase(sam3_pipeline_operations_total[15m]))", "legendFormat": "{{operation}} / {{status}}"}]
+    },
+    {
+      "id": 12, "title": "Pipeline Latency p95", "type": "timeseries", "gridPos": {"x": 12, "y": 18, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(sam3_pipeline_operation_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 13, "title": "Training Jobs", "type": "timeseries", "gridPos": {"x": 0, "y": 25, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (status) (increase(sam3_training_jobs_total[1h]))", "legendFormat": "{{status}}"}]
+    },
+    {
+      "id": 14, "title": "Model Load Duration", "type": "timeseries", "gridPos": {"x": 12, "y": 25, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(sam3_model_load_seconds_bucket[1h]))", "legendFormat": "p95"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    }
+  ]
+}

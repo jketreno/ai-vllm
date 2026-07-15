@@ -52,8 +52,48 @@ Public bindings:
 - `127.0.0.1:9091`: Prometheus metrics
 - `127.0.0.1:8003`: authenticated spam-classification API
 - `0.0.0.0:8080`: Open WebUI
+- `127.0.0.1:8501`: SAM3 Auto Annotator (optional `sam3` profile)
 
 There is no host binding for raw vLLM.
+
+## SAM3 Annotation
+
+The optional `sam3` profile runs the pinned
+[SAM3 Auto Annotator](https://github.com/data-with-shobhit/sam3-auto-annotator)
+Streamlit frontend and GPU-backed SAM3 inference in one container. Model weights
+share the existing Hugging Face cache; projects, trained models, and logs use
+named volumes. Keep the UI's annotation worker count at one on the GB10 to avoid
+loading concurrent SAM3 model copies into unified memory.
+
+SAM3 is gated on Hugging Face. Accept Meta's model terms for the account behind
+`secrets/huggingface_token`, then build and start the profile:
+
+```bash
+docker compose --profile sam3 build sam3-annotator
+docker compose --profile sam3 up -d sam3-annotator
+```
+
+Open `https://ai.ketrenos.com/sam3/`. The direct loopback endpoint remains
+available at `http://127.0.0.1:8501/sam3/`. Persistent
+projects, exports, database state, and caches use named volumes. Stop the SAM3
+profile before CLARE2 training because both workloads require substantial
+unified GPU memory.
+
+SAM3 exports Prometheus metrics on its private monitoring-network port `9092`.
+Prometheus scrapes them under the `sam3` job, and Grafana provisions the
+`SAM3 Annotator` dashboard for model, inference, data-pipeline, training, GPU
+memory, and process-health telemetry.
+
+For interactive exploration of text masks, point prompts, and video tracking,
+start the separately pinned SAM3-Demo frontend:
+
+```bash
+docker compose --profile sam3-demo up -d --build sam3-demo
+```
+
+Open `https://ai.ketrenos.com/sam3-demo/`. The demo loads only the model variant
+needed by the active mode and releases the prior variant when switching modes,
+avoiding three simultaneous SAM3 copies on the GPU.
 
 ## Spam Classification
 
