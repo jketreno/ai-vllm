@@ -20,6 +20,10 @@ x-clare2-env: &clare2-env
   CLARE2_DEFAULT_ENABLE_THINKING: ${CLARE2_DEFAULT_ENABLE_THINKING:-true}
   CLARE2_DEFAULT_THINKING_TOKEN_BUDGET: ${CLARE2_DEFAULT_THINKING_TOKEN_BUDGET:-1024}
   CLARE2_MAX_THINKING_TOKEN_BUDGET: ${CLARE2_MAX_THINKING_TOKEN_BUDGET:-2048}
+  CLARE2_SMTP_HOST: ${CLARE2_SMTP_HOST:-192.168.1.78}
+  CLARE2_SMTP_PORT: ${CLARE2_SMTP_PORT:-25}
+  CLARE2_NOTIFY_FROM: ${CLARE2_NOTIFY_FROM:-james_claude@ketrenos.com}
+  CLARE2_NOTIFY_TO: ${CLARE2_NOTIFY_TO:-james_clare2@ketrenos.com}
   CLARE2_PROXY_TOKEN_FILE: /run/secrets/clare2_proxy_token
   CLARE2_MCP_TOKEN_FILE: /run/secrets/clare2_mcp_token
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
@@ -229,6 +233,65 @@ services:
       timeout: 10s
       retries: 3
 
+  sam3-annotator:
+    build:
+      context: .
+      dockerfile: sam3/Dockerfile
+    profiles: [sam3]
+    gpus: all
+    ipc: host
+    restart: unless-stopped
+    environment:
+      HF_TOKEN_FILE: /run/secrets/huggingface_token
+      LOG_LEVEL: ${SAM3_LOG_LEVEL:-INFO}
+      STREAMLIT_SERVER_BASE_URL_PATH: sam3
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "1024"
+    secrets:
+      - huggingface_token
+    volumes:
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
+      - sam3-projects:/app/projects
+      - sam3-base-models:/app/base_models
+      - sam3-logs:/app/logs
+    ports:
+      - "${SAM3_BIND_ADDRESS:-127.0.0.1}:${SAM3_PORT:-8501}:8501"
+    expose:
+      - "9092"
+    networks: [frontend, monitoring]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/sam3/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  sam3-demo:
+    build:
+      context: .
+      dockerfile: sam3-demo/Dockerfile
+    profiles: [sam3-demo]
+    gpus: all
+    ipc: host
+    restart: unless-stopped
+    environment:
+      HF_TOKEN_FILE: /run/secrets/huggingface_token
+      GRADIO_ROOT_PATH: /sam3-demo
+      GRADIO_ANALYTICS_ENABLED: "false"
+    secrets:
+      - huggingface_token
+    volumes:
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
+      - sam3-demo-data:/data
+    ports:
+      - "${SAM3_DEMO_BIND_ADDRESS:-127.0.0.1}:${SAM3_DEMO_PORT:-7860}:7860"
+    networks: [frontend]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/sam3-demo/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
   clare2-train:
     container_name: clare2-train
     build:
@@ -415,8 +478,14 @@ volumes:
   qdrant_storage: {}
   prometheus_data: {}
   grafana_data: {}
+  sam3-projects: {}
+  sam3-base-models: {}
+  sam3-logs: {}
+  sam3-demo-data: {}
 
 secrets:
+  huggingface_token:
+    file: ${HF_TOKEN_FILE:-./secrets/huggingface_token}
   ldap_app_password:
     file: ${LDAP_APP_PASSWORD_FILE:-./secrets/ldap_app_password}
   clare2_proxy_token:

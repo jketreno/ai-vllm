@@ -114,6 +114,9 @@ maintenance_duration = Histogram(
 lifecycle_outcomes = Counter(
     "clare2_lifecycle_outcomes_total", "Lifecycle outcomes", ["outcome"]
 )
+notification_sent = Counter(
+    "clare2_notification_sent_total", "Run notification emails sent", ["outcome", "status"]
+)
 evaluation_score = Gauge(
     "clare2_evaluation_score",
     "Candidate and baseline evaluation score",

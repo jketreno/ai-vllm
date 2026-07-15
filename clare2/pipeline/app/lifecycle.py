@@ -16,7 +16,7 @@ from typing import Any, Iterator
 
 import httpx
 
-from . import evaluator, metrics
+from . import evaluator, metrics, notify
 from .runtime import BASE_MODEL_ID, VLLM_URL, controller, maintenance, registry
 
 log = logging.getLogger(__name__)
@@ -120,6 +120,7 @@ def _apply_evaluation(
     run_id: str,
     mlflow_run_id: str | None,
     report: dict[str, Any],
+    project: str = "unknown",
 ) -> None:
     if not report["approved"]:
         registry.transition(adapter_id, "rejected")
@@ -132,6 +133,14 @@ def _apply_evaluation(
             mlflow_run_id=mlflow_run_id,
             outcome="rejected",
             evaluation=report,
+        )
+        notify.send_run_notification(
+            "rejected",
+            adapter_id=adapter_id,
+            run_id=run_id,
+            mlflow_run_id=mlflow_run_id,
+            report=report,
+            project=project,
         )
         return
 
@@ -147,6 +156,14 @@ def _apply_evaluation(
         mlflow_run_id=mlflow_run_id,
         outcome="promoted",
         evaluation=report,
+    )
+    notify.send_run_notification(
+        "promoted",
+        adapter_id=adapter_id,
+        run_id=run_id,
+        mlflow_run_id=mlflow_run_id,
+        report=report,
+        project=project,
     )
 
 
@@ -210,7 +227,7 @@ def complete_training(
 
             _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
             report = evaluator.compare(adapter_id, baseline_id, _invoke_probe, project=project)
-            _apply_evaluation(adapter_id, run_id, mlflow_run_id, report)
+            _apply_evaluation(adapter_id, run_id, mlflow_run_id, report, project=project)
             maintenance.exit()
             return status()
         except Exception as exc:
@@ -242,6 +259,7 @@ def complete_training_skipped(run_id: str) -> dict[str, Any]:
                 completed_adapter_id=f"skipped:{run_id}",
                 outcome="skipped_no_new_content",
             )
+            notify.send_run_notification("skipped_no_new_content", run_id=run_id)
             return status()
         except Exception as exc:
             _recover(run_id, exc)
@@ -291,6 +309,9 @@ def _recover(run_id: str, error: Exception, adapter_id: str | None = None) -> No
     finally:
         maintenance.exit()
         _set_state("failed", run_id=run_id, candidate_id=adapter_id, error=str(error))
+        notify.send_run_notification(
+            "failed", run_id=run_id, adapter_id=adapter_id, error=str(error)
+        )
 
 
 def _invoke_probe(model: str, probe: dict[str, Any]) -> str:

@@ -26,10 +26,12 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         self.wait_patch = patch.object(lifecycle, "_wait_for_vllm")
         self.controller_patch = patch.object(lifecycle, "controller")
         self.maintenance_patch = patch.object(lifecycle, "maintenance")
+        self.notify_patch = patch.object(lifecycle, "notify")
         self.container_patch.start()
         self.wait_patch.start()
         self.controller_patch.start()
         self.maintenance_patch.start()
+        self.notify_patch.start()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -44,6 +46,13 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         self.assertEqual(result["phase"], "idle")
         self.assertEqual(result["outcome"], "skipped_no_new_content")
         self.assertEqual(result["completed_adapter_id"], "skipped:run-1")
+
+    def test_sends_skipped_notification(self):
+        self._set_training_state("run-1")
+        lifecycle.complete_training_skipped("run-1")
+        lifecycle.notify.send_run_notification.assert_called_once_with(
+            "skipped_no_new_content", run_id="run-1"
+        )
 
     def test_restarts_vllm_and_reconciles(self):
         self._set_training_state("run-1")
@@ -77,6 +86,15 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         state = lifecycle.status()
         self.assertEqual(state["phase"], "failed")
 
+    def test_sends_failed_notification_on_recovery(self):
+        self._set_training_state("run-1")
+        lifecycle.controller.reconcile.side_effect = RuntimeError("boom")
+        with self.assertRaises(RuntimeError):
+            lifecycle.complete_training_skipped("run-1")
+        lifecycle.notify.send_run_notification.assert_called_once_with(
+            "failed", run_id="run-1", adapter_id=None, error="boom"
+        )
+
     def test_reconciles_terminal_outcome_with_stale_phase(self):
         lifecycle._set_state("evaluating", run_id="run-1", outcome="rejected")
         state = lifecycle.reconcile_terminal_state()
@@ -90,6 +108,53 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
             lifecycle._set_state("evaluating", run_id="run-1", candidate_id=adapter_id, outcome="rejected")
             lifecycle.reconcile_terminal_state()
             registry.transition.assert_called_once_with(adapter_id, "rejected")
+
+
+class ApplyEvaluationNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.state_root = pathlib.Path(self.temp.name)
+        self.state_patch = patch.object(lifecycle, "STATE_ROOT", self.state_root)
+        self.state_path_patch = patch.object(lifecycle, "STATE_PATH", self.state_root / "lifecycle.json")
+        self.lock_path_patch = patch.object(lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock")
+        self.state_patch.start()
+        self.state_path_patch.start()
+        self.lock_path_patch.start()
+
+        self.registry_patch = patch.object(lifecycle, "registry")
+        self.controller_patch = patch.object(lifecycle, "controller")
+        self.notify_patch = patch.object(lifecycle, "notify")
+        self.registry_patch.start()
+        self.controller_patch.start()
+        self.notify_patch.start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def test_sends_rejected_notification_with_report_and_project(self):
+        report = {"approved": False, "candidate": {"pass_rate": 0.1}}
+        lifecycle._apply_evaluation("adapter-1", "run-1", "mlflow-1", report, project="ai-vllm")
+        lifecycle.notify.send_run_notification.assert_called_once_with(
+            "rejected",
+            adapter_id="adapter-1",
+            run_id="run-1",
+            mlflow_run_id="mlflow-1",
+            report=report,
+            project="ai-vllm",
+        )
+
+    def test_sends_promoted_notification_with_report_and_project(self):
+        report = {"approved": True, "candidate": {"pass_rate": 1.0}}
+        lifecycle._apply_evaluation("adapter-1", "run-1", "mlflow-1", report, project="ai-vllm")
+        lifecycle.notify.send_run_notification.assert_called_once_with(
+            "promoted",
+            adapter_id="adapter-1",
+            run_id="run-1",
+            mlflow_run_id="mlflow-1",
+            report=report,
+            project="ai-vllm",
+        )
 
 
 class RecordTrainingMetricsTests(unittest.TestCase):

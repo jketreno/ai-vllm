@@ -1,0 +1,6 @@
+[submodule "third_party/sam3-auto-annotator"]
+	path = third_party/sam3-auto-annotator
+	url = https://github.com/data-with-shobhit/sam3-auto-annotator.git
+[submodule "third_party/sam3-demo"]
+	path = third_party/sam3-demo
+	url = https://github.com/PRITHIVSAKTHIUR/SAM3-Demo.git
