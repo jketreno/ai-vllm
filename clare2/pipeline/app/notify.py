@@ -47,6 +47,26 @@ def send_run_notification(outcome: str, **context: Any) -> None:
     metrics.notification_sent.labels(outcome=outcome, status="ok").inc()
 
 
+def send_batch_run_notification(run_id: str, results: list[dict[str, Any]]) -> None:
+    """Best-effort summary email covering every project trained in one nightly run.
+
+    Sent once per run instead of one email per project, so a run that trains
+    several projects produces a single report rather than one email per
+    project outcome.
+    """
+    if not NOTIFY_TO:
+        return
+    outcome = "batch_complete"
+    try:
+        subject, body = _compose_batch(run_id, results)
+        _send(subject, body)
+    except Exception:
+        log.exception("Failed to send batch run notification for run_id=%s", run_id)
+        metrics.notification_sent.labels(outcome=outcome, status="error").inc()
+        return
+    metrics.notification_sent.labels(outcome=outcome, status="ok").inc()
+
+
 def _send(subject: str, body: str) -> None:
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -102,17 +122,52 @@ def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str]:
     return subject, "\n".join(lines) + "\n"
 
 
+def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str]:
+    projects = sorted(r.get("project", "unknown") for r in results)
+    promoted = sum(1 for r in results if r.get("outcome") == "promoted")
+    rejected = sum(1 for r in results if r.get("outcome") == "rejected")
+    subject = (
+        f"CLARE₂ Nightly Run — {len(results)} project(s) trained "
+        f"({promoted} promoted, {rejected} rejected)"
+    )
+
+    lines = [
+        "CLARE2 Nightly Run Summary",
+        f"Run ID: {run_id}",
+        f"Projects trained: {', '.join(projects) if projects else 'none'}",
+        "",
+        "DISTILLATION",
+    ]
+    lines.extend(_distillation_lines())
+    lines.append("")
+
+    for result in sorted(results, key=lambda r: r.get("project", "unknown")):
+        label = OUTCOME_LABELS.get(result.get("outcome"), str(result.get("outcome")).upper())
+        lines.append(f"TRAINING / EVALUATION — {result.get('project', 'unknown')} ({label})")
+        lines.extend(_evaluation_lines(result))
+        lines.append("")
+
+    return subject, "\n".join(lines) + "\n"
+
+
 def _distillation_lines() -> list[str]:
     stats_path = corpus.CORPUS_ROOT / "meta" / "corpus_stats.json"
     try:
         stats = json.loads(stats_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ["  corpus_stats.json unavailable"]
-    episodes = stats.get("episodes", {})
-    lines = [f"  last_distillation: {stats.get('last_distillation', 'unknown')}"]
-    if episodes:
-        counts = ", ".join(f"{category}: {count}" for category, count in episodes.items())
-        lines.append(f"  episode patterns on file: {counts}")
+    projects = stats.get("projects", {})
+    if not projects:
+        return ["  no project distillation stats on file"]
+    lines = []
+    for project in sorted(projects):
+        project_stats = projects[project]
+        lines.append(f"  {project}:")
+        lines.append(f"    last_distillation: {project_stats.get('last_distillation', 'unknown')}")
+        episodes = project_stats.get("episodes", {})
+        if episodes:
+            counts = ", ".join(f"{category}: {count}" for category, count in episodes.items())
+            lines.append(f"    episode patterns on file: {counts}")
     return lines
 
 

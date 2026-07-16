@@ -39,6 +39,18 @@ class TrainingDonePayload(BaseModel):
     epoch_losses: list[float] = Field(default_factory=list)
 
 
+class TrainedAdapterPayload(BaseModel):
+    adapter_id: str
+    mlflow_run_id: str | None = None
+    loss: float | None = None
+    epoch_losses: list[float] = Field(default_factory=list)
+
+
+class TrainingBatchDonePayload(BaseModel):
+    run_id: str
+    adapters: list[TrainedAdapterPayload]
+
+
 class TrainingSkippedPayload(BaseModel):
     run_id: str
 
@@ -124,6 +136,32 @@ async def training_done(
         payload.mlflow_run_id,
         payload.loss,
         payload.epoch_losses,
+    )
+    return {"status": "accepted"}
+
+
+@app.post("/training/batch-done")
+async def training_batch_done(
+    payload: TrainingBatchDonePayload,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_clare_timestamp: str | None = Header(default=None),
+    x_clare_signature: str | None = Header(default=None),
+) -> dict:
+    body = await request.body()
+    verify_callback(
+        secret_value("CLARE2_CALLBACK_SECRET"),
+        body,
+        x_clare_timestamp,
+        x_clare_signature,
+    )
+    state = lifecycle.status()
+    if state.get("completed_run_id") == payload.run_id:
+        return {"status": "already_completed"}
+    background_tasks.add_task(
+        lifecycle.complete_training_batch,
+        payload.run_id,
+        [adapter.model_dump() for adapter in payload.adapters],
     )
     return {"status": "accepted"}
 

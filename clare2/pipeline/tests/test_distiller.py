@@ -68,6 +68,49 @@ class DistillerCatchUpTests(unittest.TestCase):
         self.assertFalse((self.root / "episodes/ai-vllm/2026/07/01.jsonl").exists())
         self.assertTrue((self.root / "episodes/ai-vllm/2026/07/02.jsonl").exists())
 
+    def test_corpus_stats_are_tracked_per_project(self):
+        self._write_session("ai-vllm", "2026-07-01", "session-a")
+        self._write_session("clare", "2026-07-01", "session-b")
+
+        with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
+            distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
+        ), patch.object(distiller, "_call_distill_llm", side_effect=["one", "two"]), patch.object(
+            distiller, "_parse_patterns", side_effect=self._patterns
+        ):
+            distiller.run_daily()
+
+        stats = json.loads((self.root / "meta/corpus_stats.json").read_text())
+        self.assertEqual(set(stats["projects"]), {"ai-vllm", "clare"})
+        self.assertEqual(stats["projects"]["ai-vllm"]["episodes"]["domain"], 1)
+        self.assertEqual(stats["projects"]["clare"]["episodes"]["domain"], 1)
+        self.assertNotEqual(
+            stats["projects"]["ai-vllm"]["last_distillation"],
+            None,
+        )
+
+    def test_corpus_stats_for_one_project_do_not_clobber_another(self):
+        self._write_session("ai-vllm", "2026-07-01", "session-a")
+
+        with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
+            distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
+        ), patch.object(distiller, "_call_distill_llm", return_value="one"), patch.object(
+            distiller, "_parse_patterns", side_effect=self._patterns
+        ):
+            distiller.run_daily()
+
+        self._write_session("clare", "2026-07-02", "session-b")
+        with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
+            distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
+        ), patch.object(distiller, "_call_distill_llm", return_value="two"), patch.object(
+            distiller, "_parse_patterns", side_effect=self._patterns
+        ):
+            distiller.run_daily()
+
+        stats = json.loads((self.root / "meta/corpus_stats.json").read_text())
+        self.assertEqual(set(stats["projects"]), {"ai-vllm", "clare"})
+        self.assertEqual(stats["projects"]["ai-vllm"]["episodes"]["domain"], 1)
+        self.assertEqual(stats["projects"]["clare"]["episodes"]["domain"], 1)
+
     def test_records_last_run_metrics_when_no_new_sessions(self):
         self._write_session("ai-vllm", "2026-07-01", "processed")
         index_path = self.root / "meta/session_index.json"

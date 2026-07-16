@@ -38,7 +38,14 @@ class SendRunNotificationTests(unittest.TestCase):
         stats_path = self.corpus_root / "meta" / "corpus_stats.json"
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         stats_path.write_text(
-            json.dumps({"episodes": {"domain": 16}, "last_distillation": "2026-07-12T05:00:28Z"}),
+            json.dumps({
+                "projects": {
+                    "ai-vllm": {
+                        "episodes": {"domain": 16},
+                        "last_distillation": "2026-07-12T05:00:28Z",
+                    }
+                }
+            }),
             encoding="utf-8",
         )
 
@@ -107,6 +114,109 @@ class SendRunNotificationTests(unittest.TestCase):
         sent_msg = self.smtp_instance.send_message.call_args[0][0]
         self.assertIn("POSTPONED", sent_msg["Subject"])
         self.assertIn("2 inference request(s) are active", sent_msg.get_content())
+
+    def test_distillation_lines_report_every_project(self):
+        stats_path = self.corpus_root / "meta" / "corpus_stats.json"
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        stats_path.write_text(
+            json.dumps({
+                "projects": {
+                    "ai-vllm": {
+                        "episodes": {"domain": 25},
+                        "last_distillation": "2026-07-16T05:02:22Z",
+                    },
+                    "clare": {
+                        "episodes": {"style": 3},
+                        "last_distillation": "2026-07-16T05:03:10Z",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        notify.send_run_notification("skipped_no_new_content", run_id="run-1")
+        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        self.assertIn("ai-vllm:", body)
+        self.assertIn("clare:", body)
+        self.assertIn("domain: 25", body)
+        self.assertIn("style: 3", body)
+
+
+class SendBatchRunNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.corpus_root = pathlib.Path(self.temp.name)
+        self.corpus_patch = patch.object(corpus, "CORPUS_ROOT", self.corpus_root)
+        self.corpus_patch.start()
+
+        self.to_patch = patch.object(notify, "NOTIFY_TO", "james_clare2@ketrenos.com")
+        self.to_patch.start()
+
+        self.smtp_instance = MagicMock()
+        self.smtp_instance.send_message.return_value = {}
+        self.smtp_cm = MagicMock()
+        self.smtp_cm.__enter__.return_value = self.smtp_instance
+        self.smtp_cm.__exit__.return_value = False
+        self.smtp_patch = patch.object(notify.smtplib, "SMTP", return_value=self.smtp_cm)
+        self.smtp_mock = self.smtp_patch.start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def _results(self):
+        return [
+            {
+                "adapter_id": "clare-ai-vllm-1",
+                "project": "ai-vllm",
+                "mlflow_run_id": "mlflow-1",
+                "outcome": "rejected",
+                "report": {
+                    "candidate": {"pass_rate": 0.1, "passed": 2, "total": 20},
+                    "baseline": {"pass_rate": 0.1, "passed": 2, "total": 20},
+                    "mandatory_pass": False,
+                    "no_category_regression": True,
+                    "approved": False,
+                },
+            },
+            {
+                "adapter_id": "clare-clare-1",
+                "project": "clare",
+                "mlflow_run_id": "mlflow-2",
+                "outcome": "promoted",
+                "report": {
+                    "candidate": {"pass_rate": 1.0, "passed": 20, "total": 20},
+                    "baseline": {"pass_rate": 0.5, "passed": 10, "total": 20},
+                    "mandatory_pass": True,
+                    "no_category_regression": True,
+                    "approved": True,
+                },
+            },
+        ]
+
+    def test_sends_one_email_covering_every_project(self):
+        notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        self.smtp_instance.send_message.assert_called_once()
+        sent_msg = self.smtp_instance.send_message.call_args[0][0]
+        body = sent_msg.get_content()
+        self.assertIn("ai-vllm", body)
+        self.assertIn("clare", body)
+        self.assertIn("REJECTED", body)
+        self.assertIn("PROMOTED", body)
+
+    def test_no_op_when_notify_to_empty(self):
+        with patch.object(notify, "NOTIFY_TO", ""):
+            notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        self.smtp_mock.assert_not_called()
+
+    def test_increments_ok_metric_on_success(self):
+        before = metrics.notification_sent.labels(outcome="batch_complete", status="ok")._value.get()
+        notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        after = metrics.notification_sent.labels(outcome="batch_complete", status="ok")._value.get()
+        self.assertEqual(after, before + 1)
+
+    def test_empty_results_does_not_raise(self):
+        notify.send_batch_run_notification(run_id="run-1", results=[])
+        self.smtp_instance.send_message.assert_called_once()
 
 
 if __name__ == "__main__":

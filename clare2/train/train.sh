@@ -48,19 +48,21 @@ sys.exit(0 if latest and latest.get("status") in BLOCKING_STATUSES else 1)
 PY
 }
 
-_send_callback() {
-  local meta_path="$1"
+_send_batch_callback() {
   local payload
-  payload=$(python3 - "$meta_path" <<'PY'
+  payload=$(python3 - "$RUN_ID" "${TRAINED_META_PATHS[@]}" <<'PY'
 import json, sys
-meta = json.load(open(sys.argv[1]))
-print(json.dumps({
-    "adapter_id": meta["adapter_id"],
-    "run_id": meta["run_id"],
-    "mlflow_run_id": meta["mlflow_run_id"],
-    "loss": meta["final_loss"],
-    "epoch_losses": [entry["loss"] for entry in meta["loss_history"]],
-}, separators=(",", ":")))
+run_id, meta_paths = sys.argv[1], sys.argv[2:]
+adapters = []
+for meta_path in meta_paths:
+    meta = json.load(open(meta_path))
+    adapters.append({
+        "adapter_id": meta["adapter_id"],
+        "mlflow_run_id": meta["mlflow_run_id"],
+        "loss": meta["final_loss"],
+        "epoch_losses": [entry["loss"] for entry in meta["loss_history"]],
+    })
+print(json.dumps({"run_id": run_id, "adapters": adapters}, separators=(",", ":")))
 PY
   )
   local timestamp signature
@@ -73,7 +75,7 @@ PY
     -H "X-CLARE-Timestamp: ${timestamp}" \
     -H "X-CLARE-Signature: ${signature}" \
     --data "$payload" \
-    "${CLARE2_PIPELINE_URL:-http://clare2-policy:8000}/training/done"
+    "${CLARE2_PIPELINE_URL:-http://clare2-policy:8000}/training/batch-done"
 }
 
 _send_skipped_callback() {
@@ -145,9 +147,7 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
 done
 
 if [[ "$TRAINED_ANY" -eq 1 && "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" != "1" ]]; then
-  for meta_path in "${TRAINED_META_PATHS[@]}"; do
-    _send_callback "$meta_path"
-  done
+  _send_batch_callback
 fi
 
 if [[ "$TRAINED_ANY" -eq 0 ]]; then

@@ -47,7 +47,7 @@ PHASES = {
     "failed",
 }
 
-TERMINAL_OUTCOMES = {"promoted", "rejected", "skipped_no_new_content"}
+TERMINAL_OUTCOMES = {"promoted", "rejected", "skipped_no_new_content", "batch_complete"}
 
 
 def status() -> dict[str, Any]:
@@ -63,6 +63,10 @@ def reconcile_terminal_state() -> dict[str, Any]:
         adapter_id = state.get("candidate_id")
         if adapter_id:
             _reconcile_rejected_candidate(adapter_id)
+    elif state.get("outcome") == "batch_complete":
+        for result in state.get("batch_results", []):
+            if result.get("outcome") == "rejected":
+                _reconcile_rejected_candidate(result["adapter_id"])
     if state.get("outcome") in TERMINAL_OUTCOMES and state.get("phase") not in {"idle", "failed"}:
         _set_state("idle")
         return status()
@@ -147,6 +151,13 @@ def run_nightly_training() -> None:
         resuming = state.get("phase") == "postponed"
         run_id = state.get("run_id") if resuming else _new_run_id()
         postponement_notified = resuming and bool(state.get("postponement_notified"))
+        if not resuming:
+            _set_state(
+                "idle",
+                reset=True,
+                run_id=run_id,
+                postponement_notified=False,
+            )
         postponement_notified = _wait_for_inference_idle(run_id, postponement_notified)
 
         # Rebuild at admission time so a delayed run never trains an older SFT snapshot.
@@ -202,50 +213,17 @@ def _apply_evaluation(
     mlflow_run_id: str | None,
     report: dict[str, Any],
     project: str = "unknown",
-) -> None:
+) -> str:
+    """Promote or reject a candidate in the registry. Returns the outcome."""
     if not report["approved"]:
         registry.transition(adapter_id, "rejected")
         metrics.lifecycle_outcomes.labels(outcome="rejected").inc()
-        _set_state(
-            "idle",
-            run_id=run_id,
-            candidate_id=adapter_id,
-            completed_adapter_id=adapter_id,
-            mlflow_run_id=mlflow_run_id,
-            outcome="rejected",
-            evaluation=report,
-        )
-        notify.send_run_notification(
-            "rejected",
-            adapter_id=adapter_id,
-            run_id=run_id,
-            mlflow_run_id=mlflow_run_id,
-            report=report,
-            project=project,
-        )
-        return
+        return "rejected"
 
-    _set_state("promoting", run_id=run_id, candidate_id=adapter_id)
     registry.promote(adapter_id, report)
     controller.reconcile()
     metrics.lifecycle_outcomes.labels(outcome="promoted").inc()
-    _set_state(
-        "idle",
-        run_id=run_id,
-        candidate_id=adapter_id,
-        completed_adapter_id=adapter_id,
-        mlflow_run_id=mlflow_run_id,
-        outcome="promoted",
-        evaluation=report,
-    )
-    notify.send_run_notification(
-        "promoted",
-        adapter_id=adapter_id,
-        run_id=run_id,
-        mlflow_run_id=mlflow_run_id,
-        report=report,
-        project=project,
-    )
+    return "promoted"
 
 
 def _record_training_metrics(
@@ -287,33 +265,130 @@ def complete_training(
         if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
             raise RuntimeError("callback does not match the active training run")
         try:
-            candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"
-            candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
-            project = candidate.get("project_scope", "unknown")
-            if adapter_id not in registry.read()["adapters"]:
-                registry.add_adapter(candidate)
-            _record_training_metrics(adapter_id, project, loss, epoch_losses or [])
+            _register_candidate(adapter_id, run_id, mlflow_run_id, loss, epoch_losses or [])
             _set_state("restarting", run_id=run_id, candidate_id=adapter_id, mlflow_run_id=mlflow_run_id)
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
 
-            document = registry.read()
-            current_id = document["aliases"]["current"]
-            baseline_id = current_id or BASE_MODEL_ID
-            _set_state("loading", run_id=run_id, candidate_id=adapter_id)
-            if current_id:
-                controller.ensure_loaded(current_id)
-            controller.ensure_loaded(adapter_id)
-
-            _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
-            report = evaluator.compare(adapter_id, baseline_id, _invoke_probe, project=project)
-            _apply_evaluation(adapter_id, run_id, mlflow_run_id, report, project=project)
+            result = _evaluate_and_apply(run_id, adapter_id, mlflow_run_id)
+            _set_state(
+                "idle",
+                run_id=run_id,
+                candidate_id=adapter_id,
+                completed_adapter_id=adapter_id,
+                mlflow_run_id=mlflow_run_id,
+                outcome=result["outcome"],
+                evaluation=result["report"],
+            )
             maintenance.exit()
+            notify.send_run_notification(
+                result["outcome"],
+                adapter_id=adapter_id,
+                run_id=run_id,
+                mlflow_run_id=mlflow_run_id,
+                report=result["report"],
+                project=result["project"],
+            )
             return status()
         except Exception as exc:
             _recover(run_id, exc, adapter_id=adapter_id)
             raise
+
+
+def _register_candidate(
+    adapter_id: str,
+    run_id: str,
+    mlflow_run_id: str | None,
+    loss: float | None,
+    epoch_losses: list[float],
+) -> str:
+    """Add the trained adapter to the registry if needed and record its
+    training metrics. Returns the adapter's project scope."""
+    candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    project = candidate.get("project_scope", "unknown")
+    if adapter_id not in registry.read()["adapters"]:
+        registry.add_adapter(candidate)
+    _record_training_metrics(adapter_id, project, loss, epoch_losses)
+    return project
+
+
+def complete_training_batch(run_id: str, adapters: list[dict[str, Any]]) -> dict[str, Any]:
+    """Handle the nightly run's single batch callback covering every project
+    clare2-train trained in this invocation. vLLM is restarted once — not per
+    adapter — since clare2-train trains all projects sequentially in one GPU
+    reservation and only signals completion after the whole batch finishes.
+    Each candidate is still evaluated and promoted/rejected independently so
+    one project's outcome never blocks another's."""
+    with single_run():
+        state = status()
+        if state.get("completed_run_id") == run_id:
+            return state
+        if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
+            raise RuntimeError("callback does not match the active training run")
+        in_flight_adapter_id: str | None = None
+        try:
+            _set_state("restarting", run_id=run_id, pending_adapter_ids=[a["adapter_id"] for a in adapters])
+            _container("start", VLLM_CONTAINER)
+            _wait_for_vllm()
+            controller.reconcile()
+
+            results = []
+            for adapter in adapters:
+                in_flight_adapter_id = adapter["adapter_id"]
+                results.append(_complete_one_candidate(run_id, adapter))
+            in_flight_adapter_id = None
+
+            maintenance.exit()
+            _set_state(
+                "idle",
+                run_id=run_id,
+                completed_run_id=run_id,
+                outcome="batch_complete",
+                batch_results=results,
+            )
+            notify.send_batch_run_notification(run_id=run_id, results=results)
+            return status()
+        except Exception as exc:
+            _recover(run_id, exc, adapter_id=in_flight_adapter_id)
+            raise
+
+
+def _complete_one_candidate(run_id: str, adapter: dict[str, Any]) -> dict[str, Any]:
+    adapter_id = adapter["adapter_id"]
+    mlflow_run_id = adapter.get("mlflow_run_id")
+    project = _register_candidate(
+        adapter_id, run_id, mlflow_run_id, adapter.get("loss"), adapter.get("epoch_losses") or []
+    )
+    result = _evaluate_and_apply(run_id, adapter_id, mlflow_run_id, project=project)
+    return {"adapter_id": adapter_id, "mlflow_run_id": mlflow_run_id, **result}
+
+
+def _evaluate_and_apply(
+    run_id: str,
+    adapter_id: str,
+    mlflow_run_id: str | None,
+    project: str | None = None,
+) -> dict[str, Any]:
+    """Load the candidate against the current baseline, evaluate it, and
+    promote or reject it in the registry. Returns project/outcome/report."""
+    if project is None:
+        candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"
+        project = json.loads(candidate_path.read_text(encoding="utf-8")).get("project_scope", "unknown")
+
+    document = registry.read()
+    current_id = document["aliases"]["current"]
+    baseline_id = current_id or BASE_MODEL_ID
+    _set_state("loading", run_id=run_id, candidate_id=adapter_id)
+    if current_id:
+        controller.ensure_loaded(current_id)
+    controller.ensure_loaded(adapter_id)
+
+    _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
+    report = evaluator.compare(adapter_id, baseline_id, _invoke_probe, project=project)
+    outcome = _apply_evaluation(adapter_id, run_id, mlflow_run_id, report, project=project)
+    return {"project": project, "outcome": outcome, "report": report}
 
 
 def complete_training_skipped(run_id: str) -> dict[str, Any]:
@@ -432,11 +507,11 @@ def _wait_for_vllm() -> None:
     raise TimeoutError("vLLM did not become healthy")
 
 
-def _set_state(phase: str, **fields: Any) -> None:
+def _set_state(phase: str, reset: bool = False, **fields: Any) -> None:
     if phase not in PHASES:
         raise ValueError(f"unknown lifecycle phase: {phase}")
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    data = status()
+    data = {} if reset else status()
     if "error" not in fields and phase not in {"recovering", "failed"}:
         data.pop("error", None)
     data.update(fields)

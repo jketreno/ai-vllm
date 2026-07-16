@@ -131,6 +131,13 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         patch.stopall()
 
     def test_postpones_once_then_refreshes_corpus_and_trains(self):
+        lifecycle._set_state(
+            "idle",
+            run_id="old-run",
+            dream_mode=True,
+            outcome="rejected",
+            evaluation={"approved": False},
+        )
         with patch.object(lifecycle, "_active_inference_sessions", side_effect=[2, 1, 0]):
             lifecycle.run_nightly_training()
 
@@ -146,6 +153,10 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
                 unittest.mock.call("start", lifecycle.TRAIN_CONTAINER),
             ],
         )
+        state = lifecycle.status()
+        self.assertNotIn("dream_mode", state)
+        self.assertNotIn("outcome", state)
+        self.assertNotIn("evaluation", state)
 
     def test_prometheus_failure_is_fail_closed_without_email(self):
         with patch.object(
@@ -175,7 +186,11 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
                 lifecycle._active_inference_sessions()
 
 
-class ApplyEvaluationNotificationTests(unittest.TestCase):
+class ApplyEvaluationTests(unittest.TestCase):
+    """_apply_evaluation only mutates the registry and reports the outcome;
+    sending a notification is the caller's responsibility (single-adapter vs.
+    batch callers each compose their own notification around it)."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.state_root = pathlib.Path(self.temp.name)
@@ -189,7 +204,7 @@ class ApplyEvaluationNotificationTests(unittest.TestCase):
         self.registry_patch = patch.object(lifecycle, "registry")
         self.controller_patch = patch.object(lifecycle, "controller")
         self.notify_patch = patch.object(lifecycle, "notify")
-        self.registry_patch.start()
+        self.registry = self.registry_patch.start()
         self.controller_patch.start()
         self.notify_patch.start()
 
@@ -197,29 +212,143 @@ class ApplyEvaluationNotificationTests(unittest.TestCase):
         self.temp.cleanup()
         patch.stopall()
 
-    def test_sends_rejected_notification_with_report_and_project(self):
+    def test_rejects_and_returns_outcome_without_notifying(self):
         report = {"approved": False, "candidate": {"pass_rate": 0.1}}
-        lifecycle._apply_evaluation("adapter-1", "run-1", "mlflow-1", report, project="ai-vllm")
-        lifecycle.notify.send_run_notification.assert_called_once_with(
-            "rejected",
-            adapter_id="adapter-1",
-            run_id="run-1",
-            mlflow_run_id="mlflow-1",
-            report=report,
-            project="ai-vllm",
+        outcome = lifecycle._apply_evaluation("adapter-1", "run-1", "mlflow-1", report, project="ai-vllm")
+        self.assertEqual(outcome, "rejected")
+        self.registry.transition.assert_called_once_with("adapter-1", "rejected")
+        lifecycle.notify.send_run_notification.assert_not_called()
+
+    def test_promotes_and_returns_outcome_without_notifying(self):
+        report = {"approved": True, "candidate": {"pass_rate": 1.0}}
+        outcome = lifecycle._apply_evaluation("adapter-1", "run-1", "mlflow-1", report, project="ai-vllm")
+        self.assertEqual(outcome, "promoted")
+        self.registry.promote.assert_called_once_with("adapter-1", report)
+        lifecycle.notify.send_run_notification.assert_not_called()
+
+
+class CompleteTrainingBatchTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.state_root = pathlib.Path(self.temp.name) / "state"
+        self.models_root = pathlib.Path(self.temp.name) / "models"
+        self.state_patch = patch.object(lifecycle, "STATE_ROOT", self.state_root)
+        self.state_path_patch = patch.object(lifecycle, "STATE_PATH", self.state_root / "lifecycle.json")
+        self.lock_path_patch = patch.object(lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock")
+        self.state_patch.start()
+        self.state_path_patch.start()
+        self.lock_path_patch.start()
+
+        self.registry_patch = patch.object(lifecycle, "registry")
+        self.registry = self.registry_patch.start()
+        self.registry.adapters_root = self.models_root / "adapters"
+        self.registry.read.return_value = {"adapters": {}, "aliases": {"current": None}}
+
+        self.controller_patch = patch.object(lifecycle, "controller")
+        self.controller_patch.start()
+        self.maintenance_patch = patch.object(lifecycle, "maintenance")
+        self.maintenance_patch.start()
+        self.notify_patch = patch.object(lifecycle, "notify")
+        self.notify_patch.start()
+        self.container_patch = patch.object(lifecycle, "_container")
+        self.container_patch.start()
+        self.wait_patch = patch.object(lifecycle, "_wait_for_vllm")
+        self.wait_patch.start()
+
+        self.evaluator_patch = patch.object(lifecycle, "evaluator")
+        self.evaluator = self.evaluator_patch.start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def _write_candidate(self, adapter_id: str, project: str) -> None:
+        adapter_dir = self.registry.adapters_root / adapter_id
+        adapter_dir.mkdir(parents=True)
+        manifest = {"id": adapter_id, "project_scope": project, "status": "candidate"}
+        (adapter_dir / "candidate_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def _set_training_state(self, run_id: str) -> None:
+        lifecycle._set_state("training", run_id=run_id)
+
+    def test_evaluates_every_project_independently(self):
+        self._write_candidate("clare-ai-vllm-1", "ai-vllm")
+        self._write_candidate("clare-clare-1", "clare")
+        self._set_training_state("run-1")
+        self.evaluator.compare.side_effect = [
+            {"approved": False, "candidate": {}, "baseline": {}},
+            {"approved": True, "candidate": {}, "baseline": {}},
+        ]
+
+        result = lifecycle.complete_training_batch(
+            "run-1",
+            [{"adapter_id": "clare-ai-vllm-1"}, {"adapter_id": "clare-clare-1"}],
         )
 
-    def test_sends_promoted_notification_with_report_and_project(self):
-        report = {"approved": True, "candidate": {"pass_rate": 1.0}}
-        lifecycle._apply_evaluation("adapter-1", "run-1", "mlflow-1", report, project="ai-vllm")
-        lifecycle.notify.send_run_notification.assert_called_once_with(
-            "promoted",
-            adapter_id="adapter-1",
-            run_id="run-1",
-            mlflow_run_id="mlflow-1",
-            report=report,
-            project="ai-vllm",
+        self.assertEqual(result["outcome"], "batch_complete")
+        outcomes = {r["project"]: r["outcome"] for r in result["batch_results"]}
+        self.assertEqual(outcomes, {"ai-vllm": "rejected", "clare": "promoted"})
+        self.registry.transition.assert_called_once_with("clare-ai-vllm-1", "rejected")
+        self.registry.promote.assert_called_once()
+
+    def test_restarts_vllm_exactly_once_for_the_whole_batch(self):
+        self._write_candidate("clare-ai-vllm-1", "ai-vllm")
+        self._write_candidate("clare-clare-1", "clare")
+        self._set_training_state("run-1")
+        self.evaluator.compare.return_value = {"approved": False, "candidate": {}, "baseline": {}}
+
+        lifecycle.complete_training_batch(
+            "run-1",
+            [{"adapter_id": "clare-ai-vllm-1"}, {"adapter_id": "clare-clare-1"}],
         )
+
+        lifecycle._container.assert_called_once_with("start", lifecycle.VLLM_CONTAINER)
+        lifecycle._wait_for_vllm.assert_called_once()
+
+    def test_sends_one_batch_notification(self):
+        self._write_candidate("clare-ai-vllm-1", "ai-vllm")
+        self._set_training_state("run-1")
+        self.evaluator.compare.return_value = {"approved": True, "candidate": {}, "baseline": {}}
+
+        lifecycle.complete_training_batch("run-1", [{"adapter_id": "clare-ai-vllm-1"}])
+
+        lifecycle.notify.send_batch_run_notification.assert_called_once()
+        lifecycle.notify.send_run_notification.assert_not_called()
+
+    def test_idempotent_on_repeated_callback(self):
+        self._write_candidate("clare-ai-vllm-1", "ai-vllm")
+        self._set_training_state("run-1")
+        self.evaluator.compare.return_value = {"approved": True, "candidate": {}, "baseline": {}}
+
+        lifecycle.complete_training_batch("run-1", [{"adapter_id": "clare-ai-vllm-1"}])
+        lifecycle._container.reset_mock()
+        result = lifecycle.complete_training_batch("run-1", [{"adapter_id": "clare-ai-vllm-1"}])
+
+        self.assertEqual(result["completed_run_id"], "run-1")
+        lifecycle._container.assert_not_called()
+
+    def test_recovers_on_mid_batch_failure_without_losing_earlier_outcome(self):
+        self._write_candidate("clare-ai-vllm-1", "ai-vllm")
+        # "missing-adapter" has no candidate_manifest.json on disk, so its
+        # read fails after clare-ai-vllm-1 has already been promoted.
+        self._set_training_state("run-1")
+        self.evaluator.compare.return_value = {"approved": True, "candidate": {}, "baseline": {}}
+
+        with self.assertRaises(FileNotFoundError):
+            lifecycle.complete_training_batch(
+                "run-1",
+                [{"adapter_id": "clare-ai-vllm-1"}, {"adapter_id": "missing-adapter"}],
+            )
+
+        self.registry.promote.assert_called_once_with("clare-ai-vllm-1", unittest.mock.ANY)
+        state = lifecycle.status()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["candidate_id"], "missing-adapter")
+
+    def test_rejects_mismatched_run_id(self):
+        self._set_training_state("run-1")
+        with self.assertRaises(RuntimeError):
+            lifecycle.complete_training_batch("run-2", [])
 
 
 class RecordTrainingMetricsTests(unittest.TestCase):

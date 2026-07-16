@@ -198,7 +198,7 @@ def _distill_project(project: str, date: datetime | None, prompt_template: str) 
     )
 
     _update_session_index(processed_files, project)
-    _update_corpus_stats(all_patterns)
+    _update_corpus_stats(project, all_patterns)
     _record_last_distillation_metrics(project, len(session_files), len(all_patterns), gated_out)
 
     return {
@@ -282,7 +282,13 @@ def _update_session_index(session_files: list[pathlib.Path], project: str) -> No
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
 
-def _update_corpus_stats(patterns: list[dict]) -> None:
+def _update_corpus_stats(project: str, patterns: list[dict]) -> None:
+    """Update per-project distillation stats under stats["projects"][project].
+
+    Each project's episode counts and last_distillation timestamp are tracked
+    independently so a report can distinguish which projects actually
+    distilled new content, instead of one run's numbers overwriting another's.
+    """
     stats_path = CORPUS_ROOT / "meta" / "corpus_stats.json"
     stats_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -290,12 +296,15 @@ def _update_corpus_stats(patterns: list[dict]) -> None:
     except json.JSONDecodeError:
         stats = {}
 
-    episodes = stats.get("episodes", {"style": 0, "architecture": 0, "antipattern": 0, "domain": 0})
+    projects = stats.setdefault("projects", {})
+    project_stats = projects.setdefault(
+        project, {"episodes": {"style": 0, "architecture": 0, "antipattern": 0, "domain": 0}}
+    )
+    episodes = project_stats["episodes"]
     for p in patterns:
         cat = p.get("category", "unknown")
         episodes[cat] = episodes.get(cat, 0) + 1
-    stats["episodes"] = episodes
-    stats["last_distillation"] = datetime.now(tz=timezone.utc).isoformat()
+    project_stats["last_distillation"] = datetime.now(tz=timezone.utc).isoformat()
     stats_path.write_text(json.dumps(stats, indent=2))
 
 
