@@ -24,6 +24,7 @@ OUTCOME_LABELS = {
     "promoted": "PROMOTED",
     "rejected": "REJECTED",
     "skipped_no_new_content": "SKIPPED (no new content)",
+    "postponed": "POSTPONED (inference active)",
     "failed": "FAILED",
 }
 
@@ -86,6 +87,13 @@ def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str]:
     elif outcome == "skipped_no_new_content":
         lines.append("TRAINING")
         lines.append("  No project had enough new corpus content to train; run skipped.")
+    elif outcome == "postponed":
+        lines.append("TRAINING")
+        lines.append(
+            f"  Postponed because {context.get('active_sessions', 'unknown')} "
+            "inference request(s) are active."
+        )
+        lines.append("  Active inference will be checked again every 30 seconds.")
     elif outcome == "failed":
         lines.append("FAILURE")
         lines.append(f"  adapter_id: {context.get('adapter_id') or 'n/a'}")

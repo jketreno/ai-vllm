@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 import app.lifecycle as lifecycle
 import app.metrics as metrics
 from app.registry import AdapterRegistry
@@ -108,6 +110,69 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
             lifecycle._set_state("evaluating", run_id="run-1", candidate_id=adapter_id, outcome="rejected")
             lifecycle.reconcile_terminal_state()
             registry.transition.assert_called_once_with(adapter_id, "rejected")
+
+
+class NightlyTrainingAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.state_root = pathlib.Path(self.temp.name)
+        patch.object(lifecycle, "STATE_ROOT", self.state_root).start()
+        patch.object(lifecycle, "STATE_PATH", self.state_root / "lifecycle.json").start()
+        patch.object(lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock").start()
+        patch.object(lifecycle, "TRAINING_RETRY_INTERVAL", 0).start()
+        patch.object(lifecycle, "maintenance").start()
+        patch.object(lifecycle, "notify").start()
+        patch.object(lifecycle, "corpus").start()
+        patch.object(lifecycle, "_container").start()
+        patch.object(lifecycle.time, "sleep").start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def test_postpones_once_then_refreshes_corpus_and_trains(self):
+        with patch.object(lifecycle, "_active_inference_sessions", side_effect=[2, 1, 0]):
+            lifecycle.run_nightly_training()
+
+        lifecycle.notify.send_run_notification.assert_called_once()
+        outcome, = lifecycle.notify.send_run_notification.call_args.args
+        self.assertEqual(outcome, "postponed")
+        self.assertEqual(lifecycle.time.sleep.call_count, 2)
+        lifecycle.corpus.assemble.assert_called_once_with()
+        self.assertEqual(
+            lifecycle._container.call_args_list,
+            [
+                unittest.mock.call("stop", lifecycle.VLLM_CONTAINER),
+                unittest.mock.call("start", lifecycle.TRAIN_CONTAINER),
+            ],
+        )
+
+    def test_prometheus_failure_is_fail_closed_without_email(self):
+        with patch.object(
+            lifecycle, "_active_inference_sessions", side_effect=[httpx.ConnectError("down"), 0]
+        ):
+            lifecycle.run_nightly_training()
+
+        lifecycle.notify.send_run_notification.assert_not_called()
+        lifecycle.time.sleep.assert_called_once_with(0)
+
+    def test_active_session_query_sums_prometheus_results(self):
+        response = unittest.mock.Mock()
+        response.json.return_value = {
+            "status": "success",
+            "data": {"result": [{"value": [1, "2"]}, {"value": [1, "1.0"]}]},
+        }
+        with patch.object(lifecycle.httpx, "get", return_value=response) as get:
+            self.assertEqual(lifecycle._active_inference_sessions(), 3)
+        response.raise_for_status.assert_called_once_with()
+        self.assertEqual(get.call_args.kwargs["params"], {"query": lifecycle.ACTIVE_INFERENCE_QUERY})
+
+    def test_active_session_query_rejects_missing_metric(self):
+        response = unittest.mock.Mock()
+        response.json.return_value = {"status": "success", "data": {"result": []}}
+        with patch.object(lifecycle.httpx, "get", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "no active-inference metric"):
+                lifecycle._active_inference_sessions()
 
 
 class ApplyEvaluationNotificationTests(unittest.TestCase):

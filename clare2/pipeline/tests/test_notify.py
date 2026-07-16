@@ -102,6 +102,12 @@ class SendRunNotificationTests(unittest.TestCase):
         notify.send_run_notification("skipped_no_new_content", run_id="run-1")
         self.smtp_instance.send_message.assert_called_once()
 
+    def test_composes_postponement_notice_with_active_count(self):
+        notify.send_run_notification("postponed", run_id="run-1", active_sessions=2)
+        sent_msg = self.smtp_instance.send_message.call_args[0][0]
+        self.assertIn("POSTPONED", sent_msg["Subject"])
+        self.assertIn("2 inference request(s) are active", sent_msg.get_content())
+
 
 if __name__ == "__main__":
     unittest.main()

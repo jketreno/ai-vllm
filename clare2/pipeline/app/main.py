@@ -76,8 +76,7 @@ def startup() -> None:
     scheduler.add_job(sync_distill_and_assemble, "cron", hour=22, minute=0, id="distill_daily")
     scheduler.add_job(summarizer.run_scheduled, "cron", hour=22, minute=30, id="summarize")
     scheduler.add_job(corpus.assemble, "cron", hour=23, minute=30, id="corpus_assemble")
-    scheduler.add_job(lifecycle.drain_and_stop_infer, "cron", hour=23, minute=45, id="drain")
-    scheduler.add_job(lifecycle.start_training, "cron", hour=0, minute=0, id="train")
+    scheduler.add_job(lifecycle.run_nightly_training, "cron", hour=0, minute=0, id="train")
     scheduler.start()
     try:
         lifecycle.reconcile_terminal_state()

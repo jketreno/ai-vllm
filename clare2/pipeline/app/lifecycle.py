@@ -16,7 +16,7 @@ from typing import Any, Iterator
 
 import httpx
 
-from . import evaluator, metrics, notify
+from . import corpus, evaluator, metrics, notify
 from .runtime import BASE_MODEL_ID, VLLM_URL, controller, maintenance, registry
 
 log = logging.getLogger(__name__)
@@ -28,9 +28,15 @@ VLLM_CONTAINER = os.environ.get("CLARE2_VLLM_CONTAINER", "vllm-engine")
 TRAIN_CONTAINER = os.environ.get("CLARE2_TRAIN_CONTAINER", "clare2-train")
 DRAIN_TIMEOUT = float(os.environ.get("CLARE2_DRAIN_TIMEOUT", "900"))
 START_TIMEOUT = float(os.environ.get("CLARE2_START_TIMEOUT", "900"))
+PROMETHEUS_URL = os.environ.get("CLARE2_PROMETHEUS_URL", "http://prometheus:9090")
+ACTIVE_INFERENCE_QUERY = os.environ.get(
+    "CLARE2_ACTIVE_INFERENCE_QUERY", "sum(vllm:num_requests_running)"
+)
+TRAINING_RETRY_INTERVAL = float(os.environ.get("CLARE2_TRAINING_RETRY_INTERVAL", "30"))
 
 PHASES = {
     "idle",
+    "postponed",
     "draining",
     "training",
     "restarting",
@@ -84,6 +90,81 @@ def drain_and_stop_infer() -> None:
                 raise TimeoutError("timed out waiting for in-flight inference")
             _container("stop", VLLM_CONTAINER)
             _set_state("training", run_id=run_id)
+        except Exception as exc:
+            _recover(run_id, exc)
+            raise
+        finally:
+            metrics.maintenance_duration.observe(time.monotonic() - started)
+
+
+def _active_inference_sessions() -> int:
+    """Return the active inference count reported by Prometheus."""
+    response = httpx.get(
+        f"{PROMETHEUS_URL}/api/v1/query",
+        params={"query": ACTIVE_INFERENCE_QUERY},
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status") != "success":
+        raise RuntimeError(f"Prometheus query failed: {payload.get('error', 'unknown error')}")
+    result = payload.get("data", {}).get("result", [])
+    if not result:
+        raise RuntimeError("Prometheus returned no active-inference metric")
+    return sum(max(0, int(float(series["value"][1]))) for series in result)
+
+
+def _wait_for_inference_idle(run_id: str, postponement_notified: bool) -> bool:
+    while True:
+        try:
+            active_sessions = _active_inference_sessions()
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, RuntimeError):
+            log.exception("Unable to determine active inference sessions; postponing training")
+            time.sleep(TRAINING_RETRY_INTERVAL)
+            continue
+        if active_sessions == 0:
+            return postponement_notified
+        if not postponement_notified:
+            notify.send_run_notification(
+                "postponed", run_id=run_id, active_sessions=active_sessions
+            )
+            postponement_notified = True
+        _set_state(
+            "postponed",
+            run_id=run_id,
+            postponement_notified=postponement_notified,
+            active_sessions=active_sessions,
+        )
+        time.sleep(TRAINING_RETRY_INTERVAL)
+
+
+def run_nightly_training() -> None:
+    """Wait for inference to become idle, refresh SFT data, then train."""
+    with single_run():
+        state = reconcile_terminal_state()
+        if state.get("phase") not in {"postponed", "idle"}:
+            raise RuntimeError(f"cannot start nightly training from {state.get('phase')}")
+        resuming = state.get("phase") == "postponed"
+        run_id = state.get("run_id") if resuming else _new_run_id()
+        postponement_notified = resuming and bool(state.get("postponement_notified"))
+        postponement_notified = _wait_for_inference_idle(run_id, postponement_notified)
+
+        # Rebuild at admission time so a delayed run never trains an older SFT snapshot.
+        corpus.assemble()
+        started = time.monotonic()
+        _set_state(
+            "draining",
+            run_id=run_id,
+            postponement_notified=postponement_notified,
+            active_sessions=0,
+        )
+        maintenance.enter()
+        try:
+            if not maintenance.wait_for_drain(DRAIN_TIMEOUT):
+                raise TimeoutError("timed out waiting for in-flight inference")
+            _container("stop", VLLM_CONTAINER)
+            _set_state("training", run_id=run_id, postponement_notified=postponement_notified)
+            _container("start", TRAIN_CONTAINER)
         except Exception as exc:
             _recover(run_id, exc)
             raise
