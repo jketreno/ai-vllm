@@ -84,6 +84,12 @@ Prometheus scrapes them under the `sam3` job, and Grafana provisions the
 `SAM3 Annotator` dashboard for model, inference, data-pipeline, training, GPU
 memory, and process-health telemetry.
 
+The same container exposes an internal API at `http://sam3-annotator:8004` on
+the frontend network. `POST /v1/segment` accepts a multipart image, a JSON
+`prompts` array, and an optional `threshold`; it returns mask metadata and a
+base64 PNG overlay. API and Streamlit requests share one model instance and are
+serialized to prevent duplicate GPU allocations.
+
 For interactive exploration of text masks, point prompts, and video tracking,
 start the separately pinned SAM3-Demo frontend:
 

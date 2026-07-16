@@ -52,6 +52,7 @@ TRAINING_SECONDS = Histogram(
 CUDA_ALLOCATED = Gauge("sam3_cuda_memory_allocated_bytes", "CUDA memory allocated by this process")
 CUDA_RESERVED = Gauge("sam3_cuda_memory_reserved_bytes", "CUDA memory reserved by this process")
 CUDA_FREE = Gauge("sam3_cuda_memory_free_bytes", "CUDA memory currently free")
+SAM3_INFERENCE_LOCK = threading.RLock()
 
 
 def update_cuda_metrics():
@@ -74,24 +75,31 @@ def instrument_model_and_annotations():
 
     original_initialize = SAM3Annotator.initialize
     original_annotate = SAM3Annotator.annotate_single_image
+    shared = {"model": None, "processor": None}
 
     @functools.wraps(original_initialize)
     def initialize(self, *args, **kwargs):
-        if self.model is not None:
-            return original_initialize(self, *args, **kwargs)
-        started = time.monotonic()
-        try:
-            result = original_initialize(self, *args, **kwargs)
-            MODEL_LOADED.set(1)
-            MODEL_LOADS.labels("success").inc()
-            return result
-        except Exception:
-            MODEL_LOADED.set(0)
-            MODEL_LOADS.labels("error").inc()
-            raise
-        finally:
-            MODEL_LOAD_SECONDS.observe(time.monotonic() - started)
-            update_cuda_metrics()
+        with SAM3_INFERENCE_LOCK:
+            if self.model is not None:
+                return self.model, self.processor
+            if shared["model"] is not None:
+                self.model = shared["model"]
+                self.processor = shared["processor"]
+                return self.model, self.processor
+            started = time.monotonic()
+            try:
+                result = original_initialize(self, *args, **kwargs)
+                shared["model"], shared["processor"] = result
+                MODEL_LOADED.set(1)
+                MODEL_LOADS.labels("success").inc()
+                return result
+            except Exception:
+                MODEL_LOADED.set(0)
+                MODEL_LOADS.labels("error").inc()
+                raise
+            finally:
+                MODEL_LOAD_SECONDS.observe(time.monotonic() - started)
+                update_cuda_metrics()
 
     @functools.wraps(original_annotate)
     def annotate(self, image_path, text_prompts, *args, **kwargs):
@@ -103,7 +111,8 @@ def instrument_model_and_annotations():
         except OSError:
             pass
         try:
-            result = original_annotate(self, image_path, text_prompts, *args, **kwargs)
+            with SAM3_INFERENCE_LOCK:
+                result = original_annotate(self, image_path, text_prompts, *args, **kwargs)
             ANNOTATIONS.labels("success").inc()
             DETECTIONS.inc(len(result.get("detections", ())))
             return result
@@ -117,6 +126,7 @@ def instrument_model_and_annotations():
 
     SAM3Annotator.initialize = initialize
     SAM3Annotator.annotate_single_image = annotate
+    SAM3Annotator.inference_lock = SAM3_INFERENCE_LOCK
 
 
 def wrap_operation(owner, method_name, operation, result_count=None):
@@ -193,6 +203,11 @@ def main():
     instrument_model_and_annotations()
     instrument_pipeline()
     instrument_training_subprocesses()
+
+    import uvicorn
+
+    api_config = uvicorn.Config("sam3_api:app", host="0.0.0.0", port=8004, log_level="info")
+    threading.Thread(target=uvicorn.Server(api_config).run, daemon=True).start()
 
     from streamlit.web import cli as streamlit_cli
 

@@ -256,6 +256,7 @@ services:
     ports:
       - "${SAM3_BIND_ADDRESS:-127.0.0.1}:${SAM3_PORT:-8501}:8501"
     expose:
+      - "8004"
       - "9092"
     networks: [frontend, monitoring]
     healthcheck:
