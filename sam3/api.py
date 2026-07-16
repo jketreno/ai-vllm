@@ -49,7 +49,31 @@ def _normalize_mask(mask, canvas):
     ).astype(bool)
 
 
-def _segment_image(image, concepts, threshold):
+def _mask_to_polygon(mask: np.ndarray) -> list[list[float]]:
+    """Extract a contour polygon from a boolean mask."""
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return []
+    largest = max(contours, key=cv2.contourArea)
+    epsilon = 0.02 * cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, epsilon, True)
+    return [[round(float(p[0][0]), 1), round(float(p[0][1]), 1)] for p in approx]
+
+
+def _mask_to_data_uri(mask: np.ndarray) -> str:
+    """Encode a full-resolution boolean mask as a lossless monochrome PNG."""
+    encoded = io.BytesIO()
+    Image.fromarray(mask.astype(np.uint8) * 255).save(encoded, format="PNG")
+    payload = base64.b64encode(encoded.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+DEFAULT_FIELDS = {"concept", "score", "box", "color", "area_pixels"}
+
+
+def _segment_image(image, concepts, threshold, fields):
     _, processor = annotator.initialize()
     processor.confidence_threshold = 0.05
     canvas = np.asarray(image).copy().astype(np.float32)
@@ -67,13 +91,17 @@ def _segment_image(image, concepts, threshold):
             mask = _normalize_mask(masks[detection_index], canvas)
             color = COLORS[(concept_index + detection_index) % len(COLORS)]
             canvas[mask] = canvas[mask] * 0.52 + np.array(color) * 0.48
-            segments.append({
+            segment = {
                 "concept": concept,
                 "score": round(float(score), 4),
                 "box": [round(float(value), 1) for value in boxes[detection_index]],
                 "color": "#" + "".join(f"{channel:02x}" for channel in color),
                 "area_pixels": int(mask.sum()),
-            })
+                "mask": _mask_to_data_uri(mask),
+            }
+            if "polygon" in fields:
+                segment["polygon"] = _mask_to_polygon(mask)
+            segments.append(segment)
     return canvas, segments
 
 
@@ -94,8 +122,10 @@ async def segment(
     file: UploadFile = File(...),
     prompts: str = Form(...),
     threshold: float = Form(0.15),
+    fields: str = Form("concept,score,box,color,area_pixels"),
 ):
     image, concepts = await _read_request(file, prompts)
+    field_set = set(f.strip() for f in fields.split(",")) if fields else DEFAULT_FIELDS
     with annotator.inference_lock, torch.inference_mode():
-        canvas, segments = _segment_image(image, concepts, threshold)
+        canvas, segments = _segment_image(image, concepts, threshold, field_set)
     return _response(image, canvas, segments)

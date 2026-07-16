@@ -87,8 +87,11 @@ memory, and process-health telemetry.
 The same container exposes an internal API at `http://sam3-annotator:8004` on
 the frontend network. `POST /v1/segment` accepts a multipart image, a JSON
 `prompts` array, and an optional `threshold`; it returns mask metadata and a
-base64 PNG overlay. API and Streamlit requests share one model instance and are
-serialized to prevent duplicate GPU allocations.
+base64 PNG overlay. Each segment's `mask` is a lossless, full-resolution
+monochrome PNG data URI with background pixels set to 0 and matched pixels set
+to 255, suitable for direct use as an overlay or alpha mask. API and Streamlit
+requests share one model instance and are serialized to prevent duplicate GPU
+allocations.
 
 For interactive exploration of text masks, point prompts, and video tracking,
 start the separately pinned SAM3-Demo frontend:
@@ -209,10 +212,22 @@ Training callbacks use a timestamped HMAC and are idempotent.
 ## Monitoring
 
 Prometheus scrapes `clare2-policy`, `vllm-engine`, and `nvidia-exporter` by
-container name automatically. The `node` job in
-`monitoring/prometheus/prometheus.yml` ships with a placeholder target;
-edit it to point at your own node-exporter host (or remove the job) before
-starting the monitoring stack.
+container name automatically. The `node` job reaches the host-networked
+node-exporter through Docker's `host-gateway` mapping and supplies the
+`System Resources` dashboard. cAdvisor supplies per-service container
+working-set memory for that dashboard's allocation pie chart; model weights
+are attributed to the service hosting the model rather than individual tensors.
+The model-memory exporter reads vLLM's runtime profiler through the restricted
+Docker proxy and supplies a separate accelerator-memory pie for model weights,
+KV-cache capacity, CUDA graphs, and SAM3's live PyTorch reservation. Keeping
+the charts separate avoids double counting on coherent unified-memory systems
+such as NVIDIA GB10.
+
+The `comfyui_flux_arc` job scrapes the FLUX ComfyUI metrics sidecar on
+`battle-linux.ketrenos.com:9190`. Grafana provisions the `ComfyUI FLUX Arc`
+dashboard with service health, queue depth, prompt duration, retained-history
+outcomes, host memory, and Intel XPU memory. The sidecar reads ComfyUI's
+read-only status APIs and does not proxy generation requests.
 
 ## MLflow Tracking
 

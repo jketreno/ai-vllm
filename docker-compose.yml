@@ -411,6 +411,8 @@ services:
   prometheus:
     image: prom/prometheus:v3.4.1
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -452,6 +454,40 @@ services:
       - --path.rootfs=/host
     volumes:
       - /:/host:ro,rslave
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    expose:
+      - "8080"
+    networks: [monitoring]
+
+  model-memory-exporter:
+    build: monitoring/model-memory
+    restart: unless-stopped
+    environment:
+      DOCKER_PROXY_URL: http://docker-socket-proxy:2375
+      VLLM_CONTAINER: vllm-engine
+      VLLM_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
+    expose:
+      - "9836"
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+      vllm-engine:
+        condition: service_healthy
+    networks: [control, monitoring]
 
   nvidia-exporter:
     build:

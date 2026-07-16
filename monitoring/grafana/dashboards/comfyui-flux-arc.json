@@ -1,0 +1,79 @@
+{
+  "title": "ComfyUI FLUX Arc",
+  "uid": "comfyui-flux-arc",
+  "tags": ["comfyui", "flux", "intel-xpu"],
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "Exporter Up", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "up{job=\"comfyui_flux_arc\"}", "legendFormat": "exporter"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "id": 2, "title": "ComfyUI Up", "type": "stat", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_up", "legendFormat": "ComfyUI"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}}
+    },
+    {
+      "id": 3, "title": "Running", "type": "stat", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_queue_running", "legendFormat": "prompts"}]
+    },
+    {
+      "id": 4, "title": "Queued", "type": "stat", "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_queue_pending", "legendFormat": "prompts"}]
+    },
+    {
+      "id": 5, "title": "Last Prompt", "type": "stat", "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_last_prompt_duration_seconds", "legendFormat": "duration"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 6, "title": "Last Completion", "type": "stat", "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_last_prompt_timestamp_seconds * 1000", "legendFormat": "completed"}],
+      "fieldConfig": {"defaults": {"unit": "dateTimeFromNow"}}
+    },
+    {
+      "id": 7, "title": "Queue", "type": "timeseries", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_queue_running", "legendFormat": "running"},
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_queue_pending", "legendFormat": "pending"}
+      ]
+    },
+    {
+      "id": 8, "title": "Prompt Duration", "type": "timeseries", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_last_prompt_duration_seconds", "legendFormat": "latest"},
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_history_prompt_duration_seconds_sum / comfyui_history_prompt_duration_seconds_count", "legendFormat": "mean of retained history"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 9, "title": "Intel XPU Memory", "type": "timeseries", "gridPos": {"x": 0, "y": 11, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_device_vram_total_bytes - comfyui_device_vram_free_bytes", "legendFormat": "device used"},
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_device_vram_free_bytes", "legendFormat": "device free"},
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_device_torch_vram_total_bytes - comfyui_device_torch_vram_free_bytes", "legendFormat": "PyTorch used"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 10, "title": "Host Memory", "type": "timeseries", "gridPos": {"x": 12, "y": 11, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_ram_total_bytes - comfyui_ram_free_bytes", "legendFormat": "used"},
+        {"datasource": {"uid": "prometheus"}, "expr": "comfyui_ram_free_bytes", "legendFormat": "free"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 11, "title": "Retained Prompt History", "type": "timeseries", "gridPos": {"x": 0, "y": 18, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_history_prompts", "legendFormat": "{{status}}"}]
+    },
+    {
+      "id": 12, "title": "Metrics Collection Time", "type": "timeseries", "gridPos": {"x": 12, "y": 18, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "comfyui_metrics_scrape_duration_seconds", "legendFormat": "collector"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    }
+  ]
+}
