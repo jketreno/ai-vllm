@@ -307,6 +307,7 @@ services:
       stack: 67108864
     volumes:
       - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
+      - qwen-image-edit-state:/app/state
     ports:
       - "${QWEN_IMAGE_EDIT_BIND_ADDRESS:-127.0.0.1}:${QWEN_IMAGE_EDIT_PORT:-8006}:8006"
     expose:
@@ -544,6 +545,7 @@ volumes:
   sam3-base-models: {}
   sam3-logs: {}
   sam3-demo-data: {}
+  qwen-image-edit-state: {}
 
 secrets:
   huggingface_token:

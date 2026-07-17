@@ -110,13 +110,11 @@ avoiding three simultaneous SAM3 copies on the GPU.
 The optional `qwen-image-edit` profile runs `Qwen/Qwen-Image-Edit-2511` behind a
 small internal FastAPI wrapper. It shares the same unified-memory GPU as
 `vllm-engine`, so `CLARE2_GPU_MEMORY_UTILIZATION` is deliberately kept low
-(`0.55` by default — see `.env`) to leave headroom for it. The transformer is
+(`0.45` by default — see `.env`) to leave headroom for it. The transformer is
 quantized to fp8 at load time with `torchao`'s `Float8WeightOnlyConfig`
 (weights fp8-resident, activations bf16); the text encoder, VAE, and tokenizer
-load from the same upstream repo in bf16. Measured on this GB10 node: peak
-~43 GiB CUDA memory for one 1024px edit, comfortably inside vLLM's freed
-~54.7 GiB headroom, though with less margin than SAM3 leaves — do not run
-`qwen-image-edit` at the same time as `sam3` / `sam3-demo` / `clare2-train`.
+load from the same upstream repo in bf16. Measured on this GB10 node in
+isolation (vLLM stopped): peak ~43 GiB CUDA memory for one 1024px edit.
 
 A community single-file FP8 checkpoint (`1038lab/Qwen-Image-Edit-2511-FP8`) was
 evaluated first and rejected: loading it via `diffusers`' `from_single_file`
@@ -127,6 +125,49 @@ to produce numerically correct (non-NaN) output on this GB10's sm_121 GPU,
 which is not an officially supported PyTorch/torchao target as of this writing
 — re-verify output quality after any base image, diffusers, or torchao upgrade.
 
+**Do not run `qwen-image-edit` concurrently with `vllm-engine` without care.**
+On this GB10 node, real available memory under load has repeatedly measured
+lower than `(1 - CLARE2_GPU_MEMORY_UTILIZATION) × 121.63 GiB` implies — a first
+concurrent attempt OOM'd the container; a second attempt (after a loading-code
+fix) triggered a **full host lockup requiring a hard reboot**. Docker `mem_limit`
+was investigated as a safety backstop and rejected: it is documented as
+unreliable for CUDA/UVM allocations specifically on GB10's unified-memory
+architecture (cgroup memory accounting doesn't see UVM allocations, or
+`cudaMemGetInfo` misreports the full 128 GB pool as free regardless of the
+container's limit). Also do not run it at the same time as `sam3` / `sam3-demo`
+/ `clare2-train`.
+
+Instead, model loading is split into three instrumented sections (transformer,
+text encoder, pipeline assembly). Before each section, the service checks host
+`MemAvailable` (a fair proxy for real headroom on unified memory) against that
+section's expected requirement plus a safety margin
+(`QWEN_IMAGE_EDIT_SAFETY_MARGIN_GIB`, default 4 GiB); if headroom looks short it
+aborts loading *before* attempting the risky allocation instead of after. Every
+section's outcome — required/available/actual-used memory, CUDA
+allocated/reserved, duration, and (for the transformer) whether it loaded from
+cache or quantized fresh — is persisted to `/app/state/load_status.json` (named
+volume `qwen-image-edit-state`) after each step, so a partial or aborted load
+leaves a clear, inspectable record instead of silently retrying or taking the
+host down. Per-section size requirements (`QWEN_IMAGE_EDIT_REQUIRED_TRANSFORMER_GIB`,
+`..._TEXT_ENCODER_GIB`, `..._PIPELINE_GIB`) default to measured actuals from a
+successful run on this node (14/15/2 GiB with margin) — override via env if a
+future run's `actual_used_gib` values differ meaningfully.
+
+Quantizing the transformer from bf16 to fp8 takes several minutes on every
+startup by default. To avoid repeating that, the service caches the quantized
+weights on first run at `QWEN_IMAGE_EDIT_QUANTIZED_TRANSFORMER_PATH` (default
+`/root/.cache/huggingface/qwen-image-edit-2511-transformer-fp8`, on the shared
+`CLARE2_MODEL_CACHE` volume) via `torchao`'s `save_pretrained(...,
+safe_serialization=False)`, which persists real fp8 tensors rather than bf16 +
+a re-quantize instruction. Subsequent starts detect the cached checkpoint and
+load it directly, skipping quantization compute entirely. Measured on this
+node: first run (quantize + save) took 586.6s for the transformer section;
+a second run loading from cache took 297.4s — roughly halved, and the load
+status records `"transformer_source": "cache"` vs `"quantized_fresh"` so you
+can confirm which path a given startup took. Delete the cache directory to
+force re-quantization (e.g. after a `diffusers`/`torchao` upgrade you want to
+re-validate against).
+
 Build and start the profile:
 
 ```bash
@@ -134,9 +175,14 @@ docker compose --profile qwen-image-edit build qwen-image-edit
 docker compose --profile qwen-image-edit up -d qwen-image-edit
 ```
 
-The service loads its model on startup, which can take upward of 15 minutes on
-a cold Hugging Face cache. `GET /health` reports `model_loaded` once ready.
-Submit an edit:
+Before starting it alongside a live `vllm-engine`, check real headroom
+yourself first (`free -h`, looking at `available`) — don't rely solely on the
+in-process gate, since a lockup can happen fast enough that the gate's own
+abort doesn't help if the very first section's allocation is what overwhelms
+the host. The service loads its model on startup, which can take upward of 15
+minutes on a cold Hugging Face cache. `GET /health` reports `model_loaded`
+once ready; `GET /v1/load-status` returns the full per-section progress record
+at any time, including after an aborted load. Submit an edit:
 
 ```bash
 curl -s http://127.0.0.1:8006/v1/edit \
