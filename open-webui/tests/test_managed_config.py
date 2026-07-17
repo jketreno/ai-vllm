@@ -17,6 +17,54 @@ SPEC.loader.exec_module(MANAGED_CONFIG)
 
 
 class ManagedConfigTests(unittest.TestCase):
+    def test_removes_managed_values_from_normalized_config(self) -> None:
+        managed_keys = {
+            "openai.api_base_urls",
+            "openai.api_keys",
+            "image_generation.engine",
+            "image_generation.model",
+            "image_generation.size",
+            "image_generation.steps",
+            "image_generation.comfyui.base_url",
+            "image_generation.comfyui.workflow",
+            "image_generation.comfyui.nodes",
+            "images.edit.engine",
+            "images.edit.model",
+            "images.edit.size",
+            "images.edit.comfyui.base_url",
+            "images.edit.comfyui.workflow",
+            "images.edit.comfyui.nodes",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "webui.db"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    'CREATE TABLE config ("key" TEXT PRIMARY KEY, '
+                    "value JSON NOT NULL, updated_at BIGINT)"
+                )
+                connection.executemany(
+                    'INSERT INTO config ("key", value) VALUES (?, ?)',
+                    [(key, json.dumps("managed")) for key in managed_keys]
+                    + [("ui.enable_signup", "false")],
+                )
+
+            self.assertTrue(
+                MANAGED_CONFIG.remove_managed_openai_settings(database)
+            )
+            self.assertTrue(
+                MANAGED_CONFIG.remove_managed_image_generation_settings(database)
+            )
+            self.assertTrue(
+                MANAGED_CONFIG.remove_managed_image_edit_settings(database)
+            )
+
+            with sqlite3.connect(database) as connection:
+                remaining_keys = {
+                    row[0] for row in connection.execute('SELECT "key" FROM config')
+                }
+            self.assertEqual(remaining_keys, {"ui.enable_signup"})
+
     def test_removes_only_compose_managed_openai_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "webui.db"

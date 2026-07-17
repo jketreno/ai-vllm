@@ -53,6 +53,7 @@ Public bindings:
 - `127.0.0.1:8003`: authenticated spam-classification API
 - `0.0.0.0:8080`: Open WebUI
 - `127.0.0.1:8501`: SAM3 Auto Annotator (optional `sam3` profile)
+- `127.0.0.1:8006`: Qwen-Image-Edit API (optional `qwen-image-edit` profile)
 
 There is no host binding for raw vLLM.
 
@@ -103,6 +104,50 @@ docker compose --profile sam3-demo up -d --build sam3-demo
 Open `https://ai.ketrenos.com/sam3-demo/`. The demo loads only the model variant
 needed by the active mode and releases the prior variant when switching modes,
 avoiding three simultaneous SAM3 copies on the GPU.
+
+## Qwen-Image-Edit
+
+The optional `qwen-image-edit` profile runs `Qwen/Qwen-Image-Edit-2511` behind a
+small internal FastAPI wrapper. It shares the same unified-memory GPU as
+`vllm-engine`, so `CLARE2_GPU_MEMORY_UTILIZATION` is deliberately kept low
+(`0.55` by default — see `.env`) to leave headroom for it. The transformer is
+quantized to fp8 at load time with `torchao`'s `Float8WeightOnlyConfig`
+(weights fp8-resident, activations bf16); the text encoder, VAE, and tokenizer
+load from the same upstream repo in bf16. Measured on this GB10 node: peak
+~43 GiB CUDA memory for one 1024px edit, comfortably inside vLLM's freed
+~54.7 GiB headroom, though with less margin than SAM3 leaves — do not run
+`qwen-image-edit` at the same time as `sam3` / `sam3-demo` / `clare2-train`.
+
+A community single-file FP8 checkpoint (`1038lab/Qwen-Image-Edit-2511-FP8`) was
+evaluated first and rejected: loading it via `diffusers`' `from_single_file`
+with `torch_dtype=torch.bfloat16` silently upcasts the weights to bf16 instead
+of keeping them fp8-resident, which OOM'd on this hardware. The `torchao`
+quantize-on-load approach used here was verified to actually reduce memory and
+to produce numerically correct (non-NaN) output on this GB10's sm_121 GPU,
+which is not an officially supported PyTorch/torchao target as of this writing
+— re-verify output quality after any base image, diffusers, or torchao upgrade.
+
+Build and start the profile:
+
+```bash
+docker compose --profile qwen-image-edit build qwen-image-edit
+docker compose --profile qwen-image-edit up -d qwen-image-edit
+```
+
+The service loads its model on startup, which can take upward of 15 minutes on
+a cold Hugging Face cache. `GET /health` reports `model_loaded` once ready.
+Submit an edit:
+
+```bash
+curl -s http://127.0.0.1:8006/v1/edit \
+  -F file=@input.png \
+  -F prompt='add a small red circle in the center' \
+  | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); open("out.png","wb").write(base64.b64decode(d["image_png_base64"]))'
+```
+
+`qwen-image-edit` exports Prometheus metrics on its private monitoring-network
+port `9093` (job `qwen_image_edit`), following the same pattern as the SAM3
+services' `9092`.
 
 ## Spam Classification
 
@@ -222,6 +267,12 @@ Docker proxy and supplies a separate accelerator-memory pie for model weights,
 KV-cache capacity, CUDA graphs, and SAM3's live PyTorch reservation. Keeping
 the charts separate avoids double counting on coherent unified-memory systems
 such as NVIDIA GB10.
+
+`CLARE2_GPU_MEMORY_UTILIZATION` in `.env` governs how much of the node's 128 GB
+unified memory (121.63 GiB usable) `vllm-engine` reserves; the remainder is
+shared with any of `sam3`, `sam3-demo`, and `qwen-image-edit` that are running.
+Lower it further if a new GPU workload doesn't fit; raise it back toward `0.70`
+if those optional profiles are retired.
 
 The `comfyui_flux_arc` job scrapes the FLUX ComfyUI metrics sidecar on
 `battle-linux.ketrenos.com:9190`. Grafana provisions the `ComfyUI FLUX Arc`

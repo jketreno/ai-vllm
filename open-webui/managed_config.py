@@ -8,6 +8,22 @@ import sqlite3
 from pathlib import Path
 
 
+def _delete_normalized_keys(
+    connection: sqlite3.Connection, keys: tuple[str, ...]
+) -> bool | None:
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(config)").fetchall()
+    }
+    if not {"key", "value"}.issubset(columns):
+        return None
+
+    placeholders = ", ".join("?" for _ in keys)
+    cursor = connection.execute(
+        f'DELETE FROM config WHERE "key" IN ({placeholders})', keys
+    )
+    return cursor.rowcount > 0
+
+
 def _load_config(connection: sqlite3.Connection):
     row = connection.execute(
         "SELECT id, data FROM config ORDER BY id DESC LIMIT 1"
@@ -41,6 +57,12 @@ def remove_managed_openai_settings(database: Path) -> bool:
         return False
 
     with sqlite3.connect(database) as connection:
+        changed = _delete_normalized_keys(
+            connection, ("openai.api_base_urls", "openai.api_keys")
+        )
+        if changed is not None:
+            return changed
+
         row_id, data = _load_config(connection)
         if data is None:
             return False
@@ -74,6 +96,21 @@ def remove_managed_image_generation_settings(database: Path) -> bool:
         return False
 
     with sqlite3.connect(database) as connection:
+        changed = _delete_normalized_keys(
+            connection,
+            (
+                "image_generation.engine",
+                "image_generation.model",
+                "image_generation.size",
+                "image_generation.steps",
+                "image_generation.comfyui.base_url",
+                "image_generation.comfyui.workflow",
+                "image_generation.comfyui.nodes",
+            ),
+        )
+        if changed is not None:
+            return changed
+
         row_id, data = _load_config(connection)
         if data is None:
             return False
@@ -92,6 +129,20 @@ def remove_managed_image_edit_settings(database: Path) -> bool:
         return False
 
     with sqlite3.connect(database) as connection:
+        changed = _delete_normalized_keys(
+            connection,
+            (
+                "images.edit.engine",
+                "images.edit.model",
+                "images.edit.size",
+                "images.edit.comfyui.base_url",
+                "images.edit.comfyui.workflow",
+                "images.edit.comfyui.nodes",
+            ),
+        )
+        if changed is not None:
+            return changed
+
         row_id, data = _load_config(connection)
         if data is None:
             return False

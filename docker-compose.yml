@@ -139,10 +139,7 @@ services:
   vllm-engine:
     image: nvcr.io/nvidia/vllm:26.04-py3
     container_name: vllm-engine
-    # NVIDIA driver bug 590.48.01+: CUDA UVM memory not released after process exit on GB10.
-    # Repeated restart attempts compound leaked CUDA contexts and exhaust unified memory.
-    # Use restart:no so failures require a deliberate manual restart after confirming free memory.
-    restart: no
+    restart: unless-stopped
     gpus: all
     ipc: host
     expose: ["8001"]
@@ -293,6 +290,35 @@ services:
       retries: 3
       start_period: 120s
 
+  qwen-image-edit:
+    build:
+      context: .
+      dockerfile: qwen-image-edit/Dockerfile
+    profiles: [qwen-image-edit]
+    gpus: all
+    ipc: host
+    restart: unless-stopped
+    environment:
+      HF_TOKEN_FILE: /run/secrets/huggingface_token
+    secrets:
+      - huggingface_token
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    volumes:
+      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${QWEN_IMAGE_EDIT_BIND_ADDRESS:-127.0.0.1}:${QWEN_IMAGE_EDIT_PORT:-8006}:8006"
+    expose:
+      - "9093"
+    networks: [frontend, monitoring]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1800s
+
   clare2-train:
     container_name: clare2-train
     build:
@@ -362,11 +388,11 @@ services:
       - ldap_app_password
     ports: ["8080:8080"]
     volumes:
-      - open-webui:/app/backend/data
+      - ${OPEN_WEBUI_DATA_DIR:-./open-webui/data}:/app/backend/data
     networks: [control, frontend]
 
   ollama:
-    image: ollama/ollama:0.9.0
+    image: ollama/ollama:0.32.1
     restart: unless-stopped
     gpus: all
     ports: ["127.0.0.1:${OLLAMA_PORT:-11434}:11434"]
@@ -510,7 +536,6 @@ networks:
   monitoring: {}
 
 volumes:
-  open-webui: {}
   ollama_data: {}
   qdrant_storage: {}
   prometheus_data: {}
