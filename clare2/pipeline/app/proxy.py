@@ -133,7 +133,9 @@ async def _dispatch(
     request_guard,
 ) -> tuple[Response, bool]:
     if stream_requested:
-        client = httpx.AsyncClient(timeout=300)
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10)
+        )
         try:
             upstream_request = client.build_request(
                 request.method, upstream_url, content=body, headers=upstream_headers,
