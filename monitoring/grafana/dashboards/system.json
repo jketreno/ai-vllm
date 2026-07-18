@@ -134,6 +134,12 @@
           "expr": "sam3_cuda_memory_reserved_bytes",
           "legendFormat": "SAM3 / torch_reserved",
           "instant": true
+        },
+        {
+          "datasource": {"uid": "prometheus"},
+          "expr": "qwen_image_edit_cuda_memory_reserved_bytes",
+          "legendFormat": "Qwen-Image-Edit / torch_reserved",
+          "instant": true
         }
       ],
       "options": {

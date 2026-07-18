@@ -31,7 +31,7 @@ from diffusers import (
 )
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
-from prometheus_client import Histogram, start_http_server
+from prometheus_client import Gauge, Histogram, start_http_server
 from torchao.quantization import Float8WeightOnlyConfig
 from transformers import Qwen2_5_VLForConditionalGeneration
 
@@ -58,10 +58,12 @@ REQUIRED_GIB = {
     "transformer": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TRANSFORMER_GIB", "14")),
     "text_encoder": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TEXT_ENCODER_GIB", "15")),
     "pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_PIPELINE_GIB", "2")),
-    # QwenImageEditInpaintPipeline is built via DiffusionPipeline.from_pipe(), which
-    # reuses the edit pipeline's already-loaded transformer/text_encoder/vae by
+    # QwenImageEditInpaintPipeline is constructed directly from the edit pipeline's
+    # already-loaded scheduler/vae/text_encoder/tokenizer/processor/transformer by
     # reference rather than loading a second copy -- the only new allocation is the
-    # small Python wrapper object itself.
+    # small Python wrapper object itself. (Not built via DiffusionPipeline.from_pipe():
+    # it unconditionally ends with new_pipeline.to(dtype=...), which torchao's
+    # fp8-quantized transformer rejects.)
     "inpaint_pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_INPAINT_PIPELINE_GIB", "0.5")),
 }
 SAFETY_MARGIN_GIB = float(os.environ.get("QWEN_IMAGE_EDIT_SAFETY_MARGIN_GIB", "4"))
@@ -72,6 +74,28 @@ EDIT_LATENCY = Histogram(
 INPAINT_LATENCY = Histogram(
     "qwen_image_edit_inpaint_inference_seconds", "Time spent running one inpaint/outpaint inference"
 )
+
+CUDA_ALLOCATED = Gauge(
+    "qwen_image_edit_cuda_memory_allocated_bytes", "CUDA memory allocated by this process"
+)
+CUDA_RESERVED = Gauge(
+    "qwen_image_edit_cuda_memory_reserved_bytes", "CUDA memory reserved by this process"
+)
+CUDA_FREE = Gauge(
+    "qwen_image_edit_cuda_memory_free_bytes", "CUDA memory currently free"
+)
+
+
+def update_cuda_metrics():
+    """Update process and device CUDA memory gauges when CUDA is available."""
+    try:
+        if torch.cuda.is_available():
+            CUDA_ALLOCATED.set(torch.cuda.memory_allocated())
+            CUDA_RESERVED.set(torch.cuda.memory_reserved())
+            free, _ = torch.cuda.mem_get_info()
+            CUDA_FREE.set(free)
+    except Exception:
+        pass
 
 MAX_CANVAS_DIMENSION = int(os.environ.get("QWEN_IMAGE_EDIT_MAX_CANVAS_DIMENSION", "4096"))
 
@@ -207,9 +231,20 @@ def _load_pipeline():
 
     status.gate("inpaint_pipeline")
     t0 = time.time()
-    # from_pipe() shares this pipeline's already-loaded transformer/text_encoder/vae
-    # by reference -- no second copy of the weights is allocated.
-    inpaint_pipeline = QwenImageEditInpaintPipeline.from_pipe(pipeline)
+    # Constructed directly (not via from_pipe()) sharing this pipeline's already-loaded
+    # transformer/text_encoder/vae/scheduler by reference -- no second copy of the
+    # weights is allocated. from_pipe() always ends by casting the new pipeline to a
+    # dtype (torch.float32 unless overridden), which torchao's fp8-quantized
+    # transformer rejects outright (ValueError: "Casting a quantized model to a new
+    # dtype is unsupported"), so from_pipe() can never succeed here.
+    inpaint_pipeline = QwenImageEditInpaintPipeline(
+        scheduler=pipeline.scheduler,
+        vae=pipeline.vae,
+        text_encoder=pipeline.text_encoder,
+        tokenizer=pipeline.tokenizer,
+        processor=pipeline.processor,
+        transformer=pipeline.transformer,
+    )
     status.record_done("inpaint_pipeline", time.time() - t0)
 
     status._write({"state": "ready"})
@@ -222,6 +257,7 @@ def startup():
     start_http_server(METRICS_PORT)
     try:
         _pipeline, _inpaint_pipeline = _load_pipeline()
+        update_cuda_metrics()
     except LoadAborted as error:
         # Leave _pipeline/_inpaint_pipeline as None; /health reports not-ready and the
         # inference endpoints return 503. The process stays up so the status file and
@@ -328,6 +364,7 @@ async def edit(
             true_cfg_scale=true_cfg_scale,
             generator=generator,
         ).images[0]
+        update_cuda_metrics()
 
     return _encode_image_response(result)
 
@@ -374,6 +411,7 @@ async def inpaint(
             padding_mask_crop=padding_mask_crop,
             generator=generator,
         ).images[0]
+        update_cuda_metrics()
 
     return _encode_image_response(result)
 
@@ -449,6 +487,7 @@ async def outpaint(
             true_cfg_scale=true_cfg_scale,
             generator=generator,
         ).images[0]
+        update_cuda_metrics()
 
     return _encode_image_response(result)
 

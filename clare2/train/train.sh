@@ -7,7 +7,9 @@ REGISTRY=/models/adapters/registry.json
 MODEL=${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
 REVISION=${CLARE2_TRAIN_REVISION:?CLARE2_TRAIN_REVISION must pin the training base revision}
 MODEL_CACHE=${HF_HUB_CACHE:-${HF_HOME:-/root/.cache/huggingface}/hub}
-MIN_TRAIN_RECORDS=${CLARE2_MIN_TRAIN_RECORDS:-8}
+# Every non-empty project corpus participates by default. Operators can raise
+# this threshold when they intentionally prefer to accumulate more examples.
+MIN_TRAIN_RECORDS=${CLARE2_MIN_TRAIN_RECORDS:-1}
 
 [[ -s "$STATE" ]] || { echo "lifecycle state is missing" >&2; exit 1; }
 RUN_ID=$(python3 -c 'import json; print(json.load(open("'"$STATE"'"))["run_id"])')

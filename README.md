@@ -168,6 +168,38 @@ can confirm which path a given startup took. Delete the cache directory to
 force re-quantization (e.g. after a `diffusers`/`torchao` upgrade you want to
 re-validate against).
 
+**First-time setup: do the initial quantize-to-disk run with `vllm-engine`
+stopped.** A cold start (no cached fp8 checkpoint yet) briefly holds both the
+bf16 source weights and the fp8 result in memory during quantization, on top
+of the normal per-section footprint, and takes several minutes longer than a
+cached load. Combined with `vllm-engine` already holding its own weights and
+KV cache, that peak is exactly the kind of concurrent memory contention
+described above that has caused an OOM and, once, a full host lockup on this
+node. The in-process `MemAvailable` gate reduces but does not eliminate this
+risk — a lockup can happen fast enough that the gate's own abort doesn't help.
+Onboarding should always do the first run in isolation:
+
+```bash
+# 1. Make sure vllm-engine (and sam3 / sam3-demo / clare2-train) are stopped
+docker compose stop vllm-engine sam3-annotator sam3-demo clare2-train
+
+# 2. Build and start qwen-image-edit alone, and let it finish quantizing +
+#    caching to disk (watch for "transformer_source": "quantized_fresh" and
+#    then state "ready" in /v1/load-status; can take upward of 15 minutes)
+docker compose --profile qwen-image-edit build qwen-image-edit
+docker compose --profile qwen-image-edit up -d qwen-image-edit
+curl -s http://127.0.0.1:8006/v1/load-status   # poll until "state": "ready"
+
+# 3. Once cached, subsequent starts load fp8 weights directly (no
+#    bf16+fp8 double-hold), so vllm-engine can be brought back up and run
+#    concurrently with qwen-image-edit per the guidance below
+docker compose up -d vllm-engine
+```
+
+After this one-time step, the cached checkpoint persists on the
+`CLARE2_MODEL_CACHE` volume, so it survives container rebuilds/restarts and
+this isolation step does not need to be repeated unless the cache is deleted.
+
 Build and start the profile:
 
 ```bash
@@ -204,12 +236,15 @@ parameter. This service exposes the same prompt-driven editing plus additional
 endpoints built on `diffusers`' `QwenImageEditInpaintPipeline`, which *does*
 support a mask, so mask-guided workflows (e.g. `sam3`-selected regions from
 `auto-sam`) don't need to be implemented as bespoke composition logic in every
-client. `QwenImageEditInpaintPipeline` is constructed once at startup via
-`DiffusionPipeline.from_pipe(edit_pipeline)`, which shares the edit pipeline's
-already-loaded transformer/text_encoder/vae by reference rather than loading a
+client. `QwenImageEditInpaintPipeline` is constructed once at startup directly
+from the edit pipeline's already-loaded scheduler/vae/text_encoder/tokenizer/
+processor/transformer, which shares them by reference rather than loading a
 second copy — `GET /health` reports `inpaint_model_loaded` alongside
 `model_loaded`, and `/v1/load-status` records it as a fourth section
-(`inpaint_pipeline`).
+(`inpaint_pipeline`). (Not built via `DiffusionPipeline.from_pipe()`: it
+unconditionally ends with a `.to(dtype=...)` cast, which torchao's
+fp8-quantized transformer rejects with `ValueError: Casting a quantized model
+to a new dtype is unsupported`.)
 
 - `POST /v1/edit` — whole-image, prompt-driven edit (text editing, object
   add/remove/move, pose changes, style transfer, detail enhancement). Accepts
