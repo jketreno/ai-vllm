@@ -170,10 +170,12 @@ services:
       - "${CLARE2_MAX_MODEL_LEN:-131072}"
       - --kv-cache-dtype
       - fp8
+      # Favor interactive decode latency: excess requests queue instead of
+      # allowing concurrent long prefills to starve token generation.
       - --max-num-seqs
-      - "${CLARE2_MAX_NUM_SEQS:-4}"
+      - "${CLARE2_MAX_NUM_SEQS:-2}"
       - --max-num-batched-tokens
-      - "${CLARE2_MAX_NUM_BATCHED_TOKENS:-16384}"
+      - "${CLARE2_MAX_NUM_BATCHED_TOKENS:-8192}"
       - --reasoning-parser=qwen3
       - --reasoning-config
       - '{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
