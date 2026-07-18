@@ -13,14 +13,22 @@ instead of guessed size requirements.
 """
 
 import base64
+import binascii
 import io
 import json
 import os
+import re
 import threading
 import time
 
 import torch
-from diffusers import AutoModel, QwenImageEditPlusPipeline, TorchAoConfig
+from diffusers import (
+    AutoModel,
+    DiffusionPipeline,
+    QwenImageEditInpaintPipeline,
+    QwenImageEditPlusPipeline,
+    TorchAoConfig,
+)
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 from prometheus_client import Histogram, start_http_server
@@ -50,15 +58,26 @@ REQUIRED_GIB = {
     "transformer": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TRANSFORMER_GIB", "14")),
     "text_encoder": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TEXT_ENCODER_GIB", "15")),
     "pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_PIPELINE_GIB", "2")),
+    # QwenImageEditInpaintPipeline is built via DiffusionPipeline.from_pipe(), which
+    # reuses the edit pipeline's already-loaded transformer/text_encoder/vae by
+    # reference rather than loading a second copy -- the only new allocation is the
+    # small Python wrapper object itself.
+    "inpaint_pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_INPAINT_PIPELINE_GIB", "0.5")),
 }
 SAFETY_MARGIN_GIB = float(os.environ.get("QWEN_IMAGE_EDIT_SAFETY_MARGIN_GIB", "4"))
 
 EDIT_LATENCY = Histogram(
     "qwen_image_edit_inference_seconds", "Time spent running one edit inference"
 )
+INPAINT_LATENCY = Histogram(
+    "qwen_image_edit_inpaint_inference_seconds", "Time spent running one inpaint/outpaint inference"
+)
+
+MAX_CANVAS_DIMENSION = int(os.environ.get("QWEN_IMAGE_EDIT_MAX_CANVAS_DIMENSION", "4096"))
 
 app = FastAPI(title="ai-vllm Qwen-Image-Edit API", version="1.0.0")
 _pipeline = None
+_inpaint_pipeline = None
 _pipeline_lock = threading.Lock()
 
 
@@ -186,26 +205,81 @@ def _load_pipeline():
     pipeline.to("cuda")  # only moves the small remaining components (vae, tokenizer)
     status.record_done("pipeline", time.time() - t0)
 
+    status.gate("inpaint_pipeline")
+    t0 = time.time()
+    # from_pipe() shares this pipeline's already-loaded transformer/text_encoder/vae
+    # by reference -- no second copy of the weights is allocated.
+    inpaint_pipeline = QwenImageEditInpaintPipeline.from_pipe(pipeline)
+    status.record_done("inpaint_pipeline", time.time() - t0)
+
     status._write({"state": "ready"})
-    return pipeline
+    return pipeline, inpaint_pipeline
 
 
 @app.on_event("startup")
 def startup():
-    global _pipeline
+    global _pipeline, _inpaint_pipeline
     start_http_server(METRICS_PORT)
     try:
-        _pipeline = _load_pipeline()
+        _pipeline, _inpaint_pipeline = _load_pipeline()
     except LoadAborted as error:
-        # Leave _pipeline as None; /health reports not-ready and /v1/edit returns 503.
-        # The process stays up so the status file and logs remain inspectable rather
-        # than the container silently restart-looping.
+        # Leave _pipeline/_inpaint_pipeline as None; /health reports not-ready and the
+        # inference endpoints return 503. The process stays up so the status file and
+        # logs remain inspectable rather than the container silently restart-looping.
         print(f"qwen-image-edit: {error}", flush=True)
+
+
+_DATA_URI_RE = re.compile(r"^data:image/[a-zA-Z0-9.+-]+;base64,(?P<payload>.+)$", re.DOTALL)
+
+
+def _decode_image_bytes(raw: bytes, mode: str = "RGB") -> Image.Image:
+    try:
+        return Image.open(io.BytesIO(raw)).convert(mode)
+    except (UnidentifiedImageError, OSError) as error:
+        raise HTTPException(400, "Invalid image") from error
+
+
+async def _read_upload_image(file: UploadFile, mode: str = "RGB") -> Image.Image:
+    return _decode_image_bytes(await file.read(), mode)
+
+
+def _decode_mask(mask_data_uri: str) -> Image.Image:
+    """Decode a mask given as a `data:image/png;base64,...` string -- the exact
+    format SAM3's /v1/segment endpoint emits for each segment (see sam3/api.py
+    `_mask_to_data_uri`), so a SAM3 mask can be forwarded here unmodified. White
+    (255) marks the region to repaint; black (0) is preserved, matching
+    QwenImageEditInpaintPipeline's mask_image convention."""
+    match = _DATA_URI_RE.match(mask_data_uri.strip())
+    if not match:
+        raise HTTPException(400, "mask must be a data:image/...;base64,... URI")
+    try:
+        payload = base64.b64decode(match.group("payload"), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise HTTPException(400, "mask base64 payload is invalid") from error
+    return _decode_image_bytes(payload, mode="L")
+
+
+def _encode_image_response(result: Image.Image) -> dict:
+    buffer = io.BytesIO()
+    result.save(buffer, format="PNG")
+    return {
+        "width": result.width,
+        "height": result.height,
+        "image_png_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
+
+
+def _clamp_steps(num_inference_steps: int) -> int:
+    return max(1, min(num_inference_steps, 100))
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": _pipeline is not None}
+    return {
+        "status": "ok",
+        "model_loaded": _pipeline is not None,
+        "inpaint_model_loaded": _inpaint_pipeline is not None,
+    }
 
 
 @app.get("/v1/load-status")
@@ -225,21 +299,29 @@ async def edit(
     num_inference_steps: int = Form(20),
     true_cfg_scale: float = Form(4.0),
     seed: int = Form(0),
+    reference_files: list[UploadFile] | None = File(None),
 ):
+    """Whole-image, prompt-driven edit: text editing, object add/remove/move, pose
+    changes, style transfer, detail enhancement. Pass 1-2 `reference_files` to fuse
+    elements from additional images into the edit, per Qwen-Image-Edit-Plus's
+    multi-image fusion support (up to 3 images total, including `file`)."""
     if _pipeline is None:
         raise HTTPException(503, "Model not loaded (see /v1/load-status)")
-    try:
-        image = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    except (UnidentifiedImageError, OSError) as error:
-        raise HTTPException(400, "Invalid image") from error
+    image = await _read_upload_image(file)
     if not prompt.strip():
         raise HTTPException(400, "prompt must not be empty")
-    num_inference_steps = max(1, min(num_inference_steps, 100))
+    num_inference_steps = _clamp_steps(num_inference_steps)
+
+    images = [image]
+    for reference_file in reference_files or []:
+        images.append(await _read_upload_image(reference_file))
+    if len(images) > 3:
+        raise HTTPException(400, "at most 3 images total (file + 2 reference_files)")
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     with _pipeline_lock, torch.inference_mode(), EDIT_LATENCY.time():
         result = _pipeline(
-            image=image,
+            image=images if len(images) > 1 else images[0],
             prompt=prompt,
             negative_prompt=negative_prompt or None,
             num_inference_steps=num_inference_steps,
@@ -247,10 +329,161 @@ async def edit(
             generator=generator,
         ).images[0]
 
-    buffer = io.BytesIO()
-    result.save(buffer, format="PNG")
-    return {
-        "width": result.width,
-        "height": result.height,
-        "image_png_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    return _encode_image_response(result)
+
+
+@app.post("/v1/inpaint")
+async def inpaint(
+    file: UploadFile = File(...),
+    mask: str = Form(...),
+    prompt: str = Form(...),
+    negative_prompt: str = Form(""),
+    strength: float = Form(1.0),
+    num_inference_steps: int = Form(20),
+    true_cfg_scale: float = Form(4.0),
+    seed: int = Form(0),
+    padding_mask_crop: int | None = Form(None),
+):
+    """Mask-guided region edit: repaint only the masked area (e.g. a SAM-selected
+    region) per `prompt`, leaving the rest of the image untouched. `mask` is a
+    `data:image/png;base64,...` string -- SAM3's /v1/segment mask field can be
+    passed through as-is. `strength` (0-1) controls how strongly the masked region
+    is regenerated; 1.0 fully replaces it, matching Alibaba's "add/remove/move
+    objects" edit but constrained to a specific region instead of the whole image."""
+    if _pipeline is None or _inpaint_pipeline is None:
+        raise HTTPException(503, "Model not loaded (see /v1/load-status)")
+    image = await _read_upload_image(file)
+    mask_image = _decode_mask(mask)
+    if mask_image.size != image.size:
+        raise HTTPException(400, "mask dimensions must match the image")
+    if not prompt.strip():
+        raise HTTPException(400, "prompt must not be empty")
+    num_inference_steps = _clamp_steps(num_inference_steps)
+    strength = max(0.0, min(strength, 1.0))
+
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
+        result = _inpaint_pipeline(
+            image=image,
+            mask_image=mask_image,
+            prompt=prompt,
+            negative_prompt=negative_prompt or None,
+            strength=strength,
+            num_inference_steps=num_inference_steps,
+            true_cfg_scale=true_cfg_scale,
+            padding_mask_crop=padding_mask_crop,
+            generator=generator,
+        ).images[0]
+
+    return _encode_image_response(result)
+
+
+def _outpaint_canvas(image: Image.Image, target_width: int, target_height: int, anchor: str):
+    """Paste `image` onto a new `target_width` x `target_height` canvas positioned by
+    `anchor`, and build the companion mask: black (preserve) over the original image,
+    white (repaint) over the newly exposed border. Returns (canvas, mask)."""
+    src_w, src_h = image.size
+    if target_width < src_w or target_height < src_h:
+        raise HTTPException(400, "target dimensions must be >= the source image dimensions")
+
+    anchors = {
+        "center": ((target_width - src_w) // 2, (target_height - src_h) // 2),
+        "top-left": (0, 0),
+        "top-right": (target_width - src_w, 0),
+        "bottom-left": (0, target_height - src_h),
+        "bottom-right": (target_width - src_w, target_height - src_h),
+        "top": ((target_width - src_w) // 2, 0),
+        "bottom": ((target_width - src_w) // 2, target_height - src_h),
+        "left": (0, (target_height - src_h) // 2),
+        "right": (target_width - src_w, (target_height - src_h) // 2),
     }
+    if anchor not in anchors:
+        raise HTTPException(400, f"anchor must be one of {sorted(anchors)}")
+    left, top = anchors[anchor]
+
+    canvas = Image.new("RGB", (target_width, target_height))
+    canvas.paste(image, (left, top))
+
+    mask = Image.new("L", (target_width, target_height), 255)
+    mask.paste(Image.new("L", (src_w, src_h), 0), (left, top))
+
+    return canvas, mask
+
+
+@app.post("/v1/outpaint")
+async def outpaint(
+    file: UploadFile = File(...),
+    prompt: str = Form(...),
+    target_width: int = Form(...),
+    target_height: int = Form(...),
+    anchor: str = Form("center"),
+    negative_prompt: str = Form(""),
+    num_inference_steps: int = Form(20),
+    true_cfg_scale: float = Form(4.0),
+    seed: int = Form(0),
+):
+    """Expand the canvas: place the source image at `anchor` within a new
+    `target_width` x `target_height` canvas and fill the newly exposed border via
+    masked inpainting (strength fixed at 1.0, since the border starts blank).
+    `prompt` should describe the extended scene (e.g. "extend the beach and sky")."""
+    if _pipeline is None or _inpaint_pipeline is None:
+        raise HTTPException(503, "Model not loaded (see /v1/load-status)")
+    if target_width > MAX_CANVAS_DIMENSION or target_height > MAX_CANVAS_DIMENSION:
+        raise HTTPException(400, f"target dimensions must be <= {MAX_CANVAS_DIMENSION}px")
+    image = await _read_upload_image(file)
+    if not prompt.strip():
+        raise HTTPException(400, "prompt must not be empty")
+    num_inference_steps = _clamp_steps(num_inference_steps)
+
+    canvas, mask_image = _outpaint_canvas(image, target_width, target_height, anchor)
+
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
+        result = _inpaint_pipeline(
+            image=canvas,
+            mask_image=mask_image,
+            prompt=prompt,
+            negative_prompt=negative_prompt or None,
+            strength=1.0,
+            num_inference_steps=num_inference_steps,
+            true_cfg_scale=true_cfg_scale,
+            generator=generator,
+        ).images[0]
+
+    return _encode_image_response(result)
+
+
+@app.post("/v1/transform")
+async def transform(
+    file: UploadFile = File(...),
+    crop_left: int | None = Form(None),
+    crop_top: int | None = Form(None),
+    crop_width: int | None = Form(None),
+    crop_height: int | None = Form(None),
+    rotate_degrees: float = Form(0.0),
+    expand_canvas: bool = Form(True),
+):
+    """Pure geometric transform -- crop and/or rotate -- with no model inference.
+    Alibaba's API and the local Qwen-Image-Edit pipelines have no crop/rotate
+    primitive; this is a deterministic Pillow operation exposed alongside them so
+    clients (e.g. auto-sam) can compose crop/rotate/inpaint/outpaint without paying
+    GPU time for operations that don't need a model. Crop is applied before rotate.
+    """
+    image = await _read_upload_image(file)
+
+    crop_fields = (crop_left, crop_top, crop_width, crop_height)
+    if any(value is not None for value in crop_fields):
+        if any(value is None for value in crop_fields):
+            raise HTTPException(400, "crop requires crop_left, crop_top, crop_width, and crop_height together")
+        left, top, width, height = (int(value) for value in crop_fields)
+        if width <= 0 or height <= 0:
+            raise HTTPException(400, "crop_width and crop_height must be positive")
+        box = (left, top, left + width, top + height)
+        if box[0] < 0 or box[1] < 0 or box[2] > image.width or box[3] > image.height:
+            raise HTTPException(400, "crop region falls outside the image bounds")
+        image = image.crop(box)
+
+    if rotate_degrees % 360 != 0:
+        image = image.rotate(-rotate_degrees, expand=expand_canvas, resample=Image.Resampling.BICUBIC)
+
+    return _encode_image_response(image)

@@ -195,6 +195,57 @@ curl -s http://127.0.0.1:8006/v1/edit \
 port `9093` (job `qwen_image_edit`), following the same pattern as the SAM3
 services' `9092`.
 
+### API
+
+Alibaba's hosted Qwen-Image-Edit API (see
+[the Model Studio docs](https://www.alibabacloud.com/help/en/model-studio/qwen-image-edit-api))
+is purely prompt-driven — it has no mask, inpaint, outpaint, crop, or rotate
+parameter. This service exposes the same prompt-driven editing plus additional
+endpoints built on `diffusers`' `QwenImageEditInpaintPipeline`, which *does*
+support a mask, so mask-guided workflows (e.g. `sam3`-selected regions from
+`auto-sam`) don't need to be implemented as bespoke composition logic in every
+client. `QwenImageEditInpaintPipeline` is constructed once at startup via
+`DiffusionPipeline.from_pipe(edit_pipeline)`, which shares the edit pipeline's
+already-loaded transformer/text_encoder/vae by reference rather than loading a
+second copy — `GET /health` reports `inpaint_model_loaded` alongside
+`model_loaded`, and `/v1/load-status` records it as a fourth section
+(`inpaint_pipeline`).
+
+- `POST /v1/edit` — whole-image, prompt-driven edit (text editing, object
+  add/remove/move, pose changes, style transfer, detail enhancement). Accepts
+  optional `reference_files` (0-2 additional images) for Qwen-Image-Edit-Plus's
+  multi-image fusion, up to 3 images total.
+- `POST /v1/inpaint` — mask-guided region edit. `mask` is a
+  `data:image/png;base64,...` string where white pixels are repainted and
+  black pixels are preserved — exactly the format `sam3`'s `/v1/segment`
+  emits per segment, so a SAM mask can be forwarded unmodified. `strength`
+  (0.0-1.0, default 1.0) controls how strongly the masked region is
+  regenerated.
+- `POST /v1/outpaint` — canvas expansion ("expand image"). Give a
+  `target_width`/`target_height` and an `anchor`
+  (`center`/`top`/`bottom`/`left`/`right`/`top-left`/`top-right`/`bottom-left`/`bottom-right`);
+  the service pads the canvas, derives the border mask itself (no
+  client-side mask painting needed), and inpaints the new border at
+  `strength=1.0` per `prompt`.
+- `POST /v1/transform` — pure Pillow crop and/or rotate, no model inference
+  and no GPU time. Crop (`crop_left`/`crop_top`/`crop_width`/`crop_height`)
+  is applied before rotate (`rotate_degrees`, `expand_canvas`). Alibaba's API
+  and the local pipelines have no geometric-transform primitive, so this is
+  a deterministic local operation clients compose alongside the model-backed
+  endpoints rather than paying for a diffusion pass on a task that doesn't
+  need one.
+
+All endpoints return `{"width", "height", "image_png_base64"}`. Example
+inpaint call using a SAM3 mask:
+
+```bash
+curl -s http://127.0.0.1:8006/v1/inpaint \
+  -F file=@input.png \
+  -F mask="$(python3 -c 'import json,sys; print(json.load(open("segment.json"))["segments"][0]["mask"])')" \
+  -F prompt='a black cat sitting' \
+  | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); open("out.png","wb").write(base64.b64decode(d["image_png_base64"]))'
+```
+
 ## Spam Classification
 
 The classifier accepts parsed email data rather than raw RFC 822 input. This
