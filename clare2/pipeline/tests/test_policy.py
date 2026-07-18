@@ -651,68 +651,11 @@ class ProxyIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["model"], "Qwen/Qwen3.6-27B-FP8")
-        self.assertEqual(captured["thinking_token_budget"], 1024)
-        self.assertEqual(captured["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertNotIn("thinking_token_budget", captured)
+        self.assertNotIn("chat_template_kwargs", captured)
         self.assertEqual(blocked.status_code, 404)
 
-    def test_proxy_honors_and_clamps_thinking_budget(self):
-        captured: list[dict] = []
-
-        class FakeAsyncClient:
-            def __init__(self, **kwargs):
-                del kwargs
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                return None
-
-            async def request(self, method, url, content, headers):
-                del method, url, headers
-                captured.append(json.loads(content))
-                return httpx.Response(
-                    200,
-                    json={"choices": []},
-                    headers={"content-type": "application/json"},
-                )
-
-        app = FastAPI()
-        app.include_router(router_api)
-        client = TestClient(app)
-        with patch.dict(
-            "os.environ",
-            {
-                "CLARE2_PROXY_TOKEN": "secret",
-                "CLARE2_MAX_THINKING_TOKEN_BUDGET": "2048",
-            },
-        ), patch("app.proxy.httpx.AsyncClient", FakeAsyncClient):
-            preserved = client.post(
-                "/v1/chat/completions",
-                headers={"Authorization": "Bearer secret"},
-                json={
-                    "model": "ignored",
-                    "messages": [],
-                    "thinking_token_budget": 512,
-                    "chat_template_kwargs": {"enable_thinking": True},
-                },
-            )
-            clamped = client.post(
-                "/v1/chat/completions",
-                headers={"Authorization": "Bearer secret"},
-                json={
-                    "model": "ignored",
-                    "messages": [],
-                    "thinking_token_budget": 9999,
-                    "chat_template_kwargs": {"enable_thinking": True},
-                },
-            )
-        self.assertEqual(preserved.status_code, 200)
-        self.assertEqual(clamped.status_code, 200)
-        self.assertEqual(captured[0]["thinking_token_budget"], 512)
-        self.assertEqual(captured[1]["thinking_token_budget"], 2048)
-
-    def test_proxy_respects_no_thinking_request(self):
+    def test_proxy_preserves_client_thinking_configuration(self):
         captured: dict = {}
 
         class FakeAsyncClient:
@@ -738,8 +681,7 @@ class ProxyIntegrationTests(unittest.TestCase):
         app.include_router(router_api)
         client = TestClient(app)
         with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
-            "app.proxy.httpx.AsyncClient",
-            FakeAsyncClient,
+            "app.proxy.httpx.AsyncClient", FakeAsyncClient
         ):
             response = client.post(
                 "/v1/chat/completions",
@@ -747,12 +689,19 @@ class ProxyIntegrationTests(unittest.TestCase):
                 json={
                     "model": "ignored",
                     "messages": [],
-                    "chat_template_kwargs": {"enable_thinking": False},
+                    "thinking_token_budget": 512,
+                    "chat_template_kwargs": {
+                        "enable_thinking": False,
+                        "preserve_thinking": False,
+                    },
                 },
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["chat_template_kwargs"], {"enable_thinking": False})
-        self.assertNotIn("thinking_token_budget", captured)
+        self.assertEqual(captured["thinking_token_budget"], 512)
+        self.assertEqual(
+            captured["chat_template_kwargs"],
+            {"enable_thinking": False, "preserve_thinking": False},
+        )
 
     def test_proxy_accepts_route_id_in_path(self):
         captured: dict = {}
