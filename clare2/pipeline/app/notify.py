@@ -8,6 +8,7 @@ import os
 import smtplib
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
+from pathlib import Path
 from typing import Any
 
 from . import corpus, metrics
@@ -106,7 +107,12 @@ def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str]:
         lines.extend(_evaluation_lines(context))
     elif outcome == "skipped_no_new_content":
         lines.append("TRAINING")
-        lines.append("  No project had enough new corpus content to train; run skipped.")
+        summaries = _project_summaries()
+        if summaries:
+            for skipped_project, summary in summaries.items():
+                lines.append(f"  {skipped_project}: {_not_trained_reason(summary)}")
+        else:
+            lines.append("  No projects were discovered; run skipped.")
     elif outcome == "postponed":
         lines.append("TRAINING")
         lines.append(
@@ -123,7 +129,9 @@ def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str]:
 
 
 def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str]:
-    projects = sorted(r.get("project", "unknown") for r in results)
+    result_by_project = {r.get("project", "unknown"): r for r in results}
+    project_summaries = _project_summaries(set(result_by_project))
+    projects = sorted(result_by_project)
     promoted = sum(1 for r in results if r.get("outcome") == "promoted")
     rejected = sum(1 for r in results if r.get("outcome") == "rejected")
     subject = (
@@ -138,37 +146,105 @@ def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str
         "",
         "DISTILLATION",
     ]
-    lines.extend(_distillation_lines())
+    lines.extend(_distillation_lines(set(result_by_project)))
     lines.append("")
 
-    for result in sorted(results, key=lambda r: r.get("project", "unknown")):
-        label = OUTCOME_LABELS.get(result.get("outcome"), str(result.get("outcome")).upper())
-        lines.append(f"TRAINING / EVALUATION — {result.get('project', 'unknown')} ({label})")
-        lines.extend(_evaluation_lines(result))
+    for project, summary in project_summaries.items():
+        result = result_by_project.get(project)
+        if result:
+            label = OUTCOME_LABELS.get(result.get("outcome"), str(result.get("outcome")).upper())
+            lines.append(f"TRAINING / EVALUATION — {project} ({label})")
+            lines.extend(_evaluation_lines(result))
+        else:
+            lines.append(f"TRAINING / EVALUATION — {project} (NOT TRAINED)")
+            lines.append(f"  reason: {_not_trained_reason(summary)}")
         lines.append("")
 
     return subject, "\n".join(lines) + "\n"
 
 
-def _distillation_lines() -> list[str]:
-    stats_path = corpus.CORPUS_ROOT / "meta" / "corpus_stats.json"
-    try:
-        stats = json.loads(stats_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ["  corpus_stats.json unavailable"]
-    projects = stats.get("projects", {})
-    if not projects:
-        return ["  no project distillation stats on file"]
+def _distillation_lines(extra_projects: set[str] | None = None) -> list[str]:
+    summaries = _project_summaries(extra_projects)
+    if not summaries:
+        return ["  no projects discovered"]
     lines = []
-    for project in sorted(projects):
-        project_stats = projects[project]
+    for project, summary in summaries.items():
         lines.append(f"  {project}:")
-        lines.append(f"    last_distillation: {project_stats.get('last_distillation', 'unknown')}")
-        episodes = project_stats.get("episodes", {})
-        if episodes:
-            counts = ", ".join(f"{category}: {count}" for category, count in episodes.items())
-            lines.append(f"    episode patterns on file: {counts}")
+        lines.append(
+            "    sessions: "
+            f"{summary['session_count']} captured, {summary['processed_count']} processed, "
+            f"{summary['pending_count']} pending; latest: {summary['latest_session']}"
+        )
+        lines.append(f"    last_distillation: {summary['last_distillation']}")
+        episodes = summary["episodes"]
+        counts = ", ".join(f"{category}: {count}" for category, count in episodes.items())
+        lines.append(f"    episode patterns on file: {counts or 'none'}")
+        lines.append(
+            "    current corpus: "
+            f"{summary['sft_pairs']} SFT pair(s), ~{summary['tokens']} tokens; "
+            f"last updated: {summary['corpus_updated']}"
+        )
     return lines
+
+
+def _load_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _project_summaries(extra_projects: set[str] | None = None) -> dict[str, dict[str, Any]]:
+    stats = _load_json(corpus.CORPUS_ROOT / "meta" / "corpus_stats.json", {})
+    session_index = _load_json(corpus.CORPUS_ROOT / "meta" / "session_index.json", {})
+    projects = set(extra_projects or ()) | set(stats.get("projects", {}))
+    for relative in ("sessions", "episodes", "themes/active", "training"):
+        root = corpus.CORPUS_ROOT / relative
+        if root.exists():
+            projects.update(path.name for path in root.iterdir() if path.is_dir())
+
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for record in session_index.get("sessions", []):
+        project = record.get("project")
+        if project:
+            projects.add(project)
+            indexed.setdefault(project, []).append(record)
+
+    summaries = {}
+    for project in sorted(projects):
+        session_files = list((corpus.CORPUS_ROOT / "sessions" / project).glob("**/*.jsonl"))
+        processed = indexed.get(project, [])
+        session_dates = [record.get("date") for record in processed if record.get("date")]
+        for session_file in session_files:
+            relative_parts = session_file.relative_to(
+                corpus.CORPUS_ROOT / "sessions" / project
+            ).parts
+            if len(relative_parts) >= 4:
+                session_dates.append("-".join(relative_parts[:3]))
+        manifest = _load_json(corpus.CORPUS_ROOT / "training" / project / "manifest.json", {})
+        project_stats = stats.get("projects", {}).get(project, {})
+        summaries[project] = {
+            "session_count": len(session_files),
+            "processed_count": len(processed),
+            "pending_count": max(0, len(session_files) - len(processed)),
+            "latest_session": max(session_dates, default="none"),
+            "last_distillation": project_stats.get("last_distillation", "never"),
+            "episodes": project_stats.get("episodes", {}),
+            "sft_pairs": manifest.get("total_sft_pairs", 0),
+            "tokens": manifest.get("total_tokens", 0),
+            "corpus_updated": manifest.get("last_updated", "never"),
+        }
+    return summaries
+
+
+def _not_trained_reason(summary: dict[str, Any]) -> str:
+    if summary["session_count"] == 0:
+        return "no captured session activity"
+    if summary["pending_count"]:
+        return f"{summary['pending_count']} captured session(s) remain pending distillation"
+    if summary["sft_pairs"] == 0:
+        return "no accepted distilled patterns produced an SFT corpus"
+    return "current corpus was unchanged or otherwise ineligible for this run"
 
 
 def _evaluation_lines(context: dict[str, Any]) -> list[str]:

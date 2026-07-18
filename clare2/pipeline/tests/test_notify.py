@@ -140,6 +140,14 @@ class SendRunNotificationTests(unittest.TestCase):
         self.assertIn("domain: 25", body)
         self.assertIn("style: 3", body)
 
+    def test_skipped_run_reports_a_reason_for_each_known_project(self):
+        session_path = self.corpus_root / "sessions/backstory/2026/07/06/session.jsonl"
+        session_path.parent.mkdir(parents=True)
+        session_path.write_text("{}\n")
+        notify.send_run_notification("skipped_no_new_content", run_id="run-1")
+        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        self.assertIn("backstory: 1 captured session(s) remain pending distillation", body)
+
 
 class SendBatchRunNotificationTests(unittest.TestCase):
     def setUp(self):
@@ -193,7 +201,43 @@ class SendBatchRunNotificationTests(unittest.TestCase):
             },
         ]
 
+    def _write_project_inventory(self):
+        stats_path = self.corpus_root / "meta" / "corpus_stats.json"
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        stats_path.write_text(json.dumps({
+            "projects": {
+                "ai-vllm": {
+                    "episodes": {"domain": 8},
+                    "last_distillation": "2026-07-18T05:04:40Z",
+                }
+            }
+        }))
+        index_path = self.corpus_root / "meta" / "session_index.json"
+        index_path.write_text(json.dumps({
+            "sessions": [
+                {
+                    "project": "backstory",
+                    "date": "2026-07-06",
+                    "session_id": "session-1",
+                }
+            ]
+        }))
+        session_path = self.corpus_root / "sessions/backstory/2026/07/06/session-1.jsonl"
+        session_path.parent.mkdir(parents=True)
+        session_path.write_text("{}\n")
+        ze_session = self.corpus_root / "sessions/ze-monitor/2026/07/11/session-2.jsonl"
+        ze_session.parent.mkdir(parents=True)
+        ze_session.write_text("{}\n")
+        manifest_path = self.corpus_root / "training/ai-vllm/manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text(json.dumps({
+            "last_updated": "2026-07-18T05:05:00Z",
+            "total_sft_pairs": 15,
+            "total_tokens": 4200,
+        }))
+
     def test_sends_one_email_covering_every_project(self):
+        self._write_project_inventory()
         notify.send_batch_run_notification(run_id="run-1", results=self._results())
         self.smtp_instance.send_message.assert_called_once()
         sent_msg = self.smtp_instance.send_message.call_args[0][0]
@@ -202,6 +246,31 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         self.assertIn("clare", body)
         self.assertIn("REJECTED", body)
         self.assertIn("PROMOTED", body)
+
+    def test_reports_projects_with_sessions_but_no_corpus_or_training(self):
+        self._write_project_inventory()
+        notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+
+        self.assertIn("backstory:", body)
+        self.assertIn("1 captured, 1 processed, 0 pending; latest: 2026-07-06", body)
+        self.assertIn("current corpus: 0 SFT pair(s), ~0 tokens; last updated: never", body)
+        self.assertIn("TRAINING / EVALUATION — backstory (NOT TRAINED)", body)
+        self.assertIn("no accepted distilled patterns produced an SFT corpus", body)
+
+        self.assertIn("ze-monitor:", body)
+        self.assertIn("1 captured, 0 processed, 1 pending; latest: 2026-07-11", body)
+        self.assertIn("1 captured session(s) remain pending distillation", body)
+
+    def test_reports_latest_corpus_information(self):
+        self._write_project_inventory()
+        notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        self.assertIn(
+            "current corpus: 15 SFT pair(s), ~4200 tokens; "
+            "last updated: 2026-07-18T05:05:00Z",
+            body,
+        )
 
     def test_no_op_when_notify_to_empty(self):
         with patch.object(notify, "NOTIFY_TO", ""):
