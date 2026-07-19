@@ -16,7 +16,6 @@ RUN python -m pip install --no-cache-dir \
     pycocotools==2.0.11 \
     python-dotenv==1.2.2 \
     python-multipart==0.0.20 \
-    streamlit==1.55.0 \
     timm==1.0.25 \
     ultralytics==8.4.21 \
     uvicorn==0.35.0 \
@@ -26,9 +25,8 @@ RUN python -m pip uninstall -y opencv-python \
         --no-deps opencv-python-headless==4.13.0.92
 
 COPY third_party/sam3-auto-annotator/ /app/
-COPY sam3/api.py /app/sam3_api.py
-COPY sam3/launcher.py /app/sam3_launcher.py
+COPY sam3/api.py /app/sam3_worker.py
 COPY sam3/secret-entrypoint.sh /usr/local/bin/sam3-secret-entrypoint
 
 ENTRYPOINT ["sam3-secret-entrypoint"]
-CMD ["python", "sam3_launcher.py"]
+CMD ["uvicorn", "sam3_worker:app", "--host", "0.0.0.0", "--port", "8004"]

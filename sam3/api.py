@@ -1,131 +1,182 @@
-"""Internal HTTP API for the SAM3 model shared with the Streamlit UI."""
+"""Headless SAM3 model worker using the private capability RPC."""
 
 import base64
 import io
 import json
+import os
+import threading
+import time
 
-import cv2
 import numpy as np
 import torch
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from PIL import Image, UnidentifiedImageError
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from managers.annotation_manager import SAM3Annotator
 
 
-app = FastAPI(title="ai-vllm SAM3 API", version="1.0.0")
+PROTOCOL_VERSION = "1"
+MAX_ATTACHMENT_BYTES = int(os.environ.get("MODEL_RPC_MAX_ATTACHMENT_BYTES", str(64 * 1024 * 1024)))
+app = FastAPI(title="SAM3 model worker", version="1.0.0")
 annotator = SAM3Annotator()
-COLORS = (
-    (239, 68, 68), (34, 197, 94), (59, 130, 246), (234, 179, 8),
-    (168, 85, 247), (236, 72, 153), (20, 184, 166), (249, 115, 22),
-)
+inference_lock = threading.Lock()
+
+MODEL_LOADED = Gauge("sam3_model_loaded", "Whether the SAM3 model is loaded")
+MODEL_LOADS = Counter("sam3_model_loads_total", "SAM3 model loads", ["status"])
+MODEL_LOAD_SECONDS = Histogram("sam3_model_load_seconds", "SAM3 model load latency")
+INFERENCE_SECONDS = Histogram("sam3_annotation_duration_seconds", "SAM3 inference latency")
+INFERENCE_REQUESTS = Counter("sam3_annotation_requests_total", "SAM3 inference requests", ["status"])
+CUDA_ALLOCATED = Gauge("sam3_cuda_memory_allocated_bytes", "CUDA memory allocated")
+CUDA_RESERVED = Gauge("sam3_cuda_memory_reserved_bytes", "CUDA memory reserved")
+CUDA_FREE = Gauge("sam3_cuda_memory_free_bytes", "CUDA memory free")
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "model_loaded": annotator.model is not None}
+def _update_cuda_metrics():
+    if not torch.cuda.is_available():
+        return
+    CUDA_ALLOCATED.set(torch.cuda.memory_allocated())
+    CUDA_RESERVED.set(torch.cuda.memory_reserved())
+    free, _ = torch.cuda.mem_get_info()
+    CUDA_FREE.set(free)
 
 
-async def _read_request(file, prompts):
+@app.on_event("startup")
+def startup():
+    start_http_server(int(os.environ.get("SAM3_METRICS_PORT", "9092")))
+    started = time.monotonic()
     try:
-        concepts = json.loads(prompts)
-        if not isinstance(concepts, list) or not concepts:
-            raise ValueError
-        concepts = [value for value in concepts if isinstance(value, str) and value.strip()][:24]
-        image = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    except (ValueError, json.JSONDecodeError, UnidentifiedImageError, OSError) as error:
-        raise HTTPException(400, "Invalid image or JSON prompt list") from error
-    return image, concepts
+        annotator.initialize()
+        MODEL_LOADED.set(1)
+        MODEL_LOADS.labels("success").inc()
+    except Exception:
+        MODEL_LOADED.set(0)
+        MODEL_LOADS.labels("error").inc()
+        raise
+    finally:
+        MODEL_LOAD_SECONDS.observe(time.monotonic() - started)
+        _update_cuda_metrics()
 
 
-def _normalize_mask(mask, canvas):
-    mask = np.squeeze(mask).astype(bool)
-    if mask.shape == canvas.shape[:2]:
-        return mask
-    return cv2.resize(
-        mask.astype(np.uint8),
-        (canvas.shape[1], canvas.shape[0]),
-        interpolation=cv2.INTER_NEAREST,
-    ).astype(bool)
+@app.get("/health/live")
+def live():
+    return {"status": "ok"}
 
 
-def _mask_to_polygon(mask: np.ndarray) -> list[list[float]]:
-    """Extract a contour polygon from a boolean mask."""
-    contours, _ = cv2.findContours(
-        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    if not contours:
-        return []
-    largest = max(contours, key=cv2.contourArea)
-    epsilon = 0.02 * cv2.arcLength(largest, True)
-    approx = cv2.approxPolyDP(largest, epsilon, True)
-    return [[round(float(p[0][0]), 1), round(float(p[0][1]), 1)] for p in approx]
+@app.get("/health/ready")
+def ready(response: Response):
+    loaded = annotator.model is not None
+    if not loaded:
+        response.status_code = 503
+    return {"status": "ready" if loaded else "loading", "model_loaded": loaded}
 
 
-def _mask_to_data_uri(mask: np.ndarray) -> str:
-    """Encode a full-resolution boolean mask as a lossless monochrome PNG."""
-    encoded = io.BytesIO()
-    Image.fromarray(mask.astype(np.uint8) * 255).save(encoded, format="PNG")
-    payload = base64.b64encode(encoded.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{payload}"
+@app.get("/v1/capabilities")
+def capabilities():
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "worker": "sam3",
+        "operations": {
+            "segment": {
+                "inputs": ["image"],
+                "parameters": ["prompts", "threshold"],
+                "outputs": ["segments", "mask:*"],
+            }
+        },
+    }
 
 
-DEFAULT_FIELDS = {"concept", "score", "box", "color", "area_pixels"}
+async def _read_attachments(manifest: dict, files: list[UploadFile]) -> dict[str, bytes]:
+    descriptors = manifest.get("attachments", [])
+    if len(descriptors) != len(files):
+        raise HTTPException(400, "attachment descriptors do not match uploaded files")
+    result = {}
+    for descriptor, upload in zip(descriptors, files):
+        name = descriptor.get("name")
+        if not isinstance(name, str) or not name or name in result:
+            raise HTTPException(400, "attachment names must be unique non-empty strings")
+        payload = await upload.read(MAX_ATTACHMENT_BYTES + 1)
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(413, f"attachment '{name}' is too large")
+        result[name] = payload
+    return result
 
 
-def _segment_image(image, concepts, threshold, fields):
+def _mask_attachment(mask: np.ndarray, name: str) -> dict:
+    output = io.BytesIO()
+    Image.fromarray(mask.astype(np.uint8) * 255).save(output, format="PNG")
+    return {
+        "name": name,
+        "media_type": "image/png",
+        "data_base64": base64.b64encode(output.getvalue()).decode("ascii"),
+    }
+
+
+def _segment(image: Image.Image, prompts: list[str], threshold: float):
     _, processor = annotator.initialize()
     processor.confidence_threshold = 0.05
-    canvas = np.asarray(image).copy().astype(np.float32)
     state = processor.set_image(image)
     segments = []
-    for concept_index, concept in enumerate(concepts):
+    attachments = []
+    for concept in prompts:
         processor.reset_all_prompts(state)
         output = processor.set_text_prompt(state=state, prompt=concept)
         scores = output["scores"].detach().cpu().numpy()
         boxes = output["boxes"].detach().cpu().numpy()
         masks = output["masks"].detach().cpu().numpy()
-        for detection_index, score in enumerate(scores):
+        for index, score in enumerate(scores):
             if float(score) < threshold:
                 continue
-            mask = _normalize_mask(masks[detection_index], canvas)
-            color = COLORS[(concept_index + detection_index) % len(COLORS)]
-            canvas[mask] = canvas[mask] * 0.52 + np.array(color) * 0.48
-            segment = {
+            mask = np.squeeze(masks[index]).astype(bool)
+            if mask.shape != (image.height, image.width):
+                mask = np.asarray(
+                    Image.fromarray(mask.astype(np.uint8)).resize(image.size, Image.Resampling.NEAREST)
+                ).astype(bool)
+            name = f"mask:{len(segments)}"
+            attachments.append(_mask_attachment(mask, name))
+            segments.append({
                 "concept": concept,
                 "score": round(float(score), 4),
-                "box": [round(float(value), 1) for value in boxes[detection_index]],
-                "color": "#" + "".join(f"{channel:02x}" for channel in color),
-                "area_pixels": int(mask.sum()),
-                "mask": _mask_to_data_uri(mask),
-            }
-            if "polygon" in fields:
-                segment["polygon"] = _mask_to_polygon(mask)
-            segments.append(segment)
-    return canvas, segments
+                "box": [round(float(value), 1) for value in boxes[index]],
+                "mask_attachment": name,
+            })
+    return segments, attachments
 
 
-def _response(image, canvas, segments):
-    encoded = io.BytesIO()
-    Image.fromarray(np.clip(canvas, 0, 255).astype(np.uint8)).save(encoded, format="PNG")
-    overlay = base64.b64encode(encoded.getvalue()).decode("ascii")
-    return {
-        "segments": segments,
-        "overlay_image": f"data:image/png;base64,{overlay}",
-        "width": image.width,
-        "height": image.height,
-    }
-
-
-@app.post("/v1/segment")
-async def segment(
-    file: UploadFile = File(...),
-    prompts: str = Form(...),
-    threshold: float = Form(0.15),
-    fields: str = Form("concept,score,box,color,area_pixels"),
-):
-    image, concepts = await _read_request(file, prompts)
-    field_set = set(f.strip() for f in fields.split(",")) if fields else DEFAULT_FIELDS
-    with annotator.inference_lock, torch.inference_mode():
-        canvas, segments = _segment_image(image, concepts, threshold, field_set)
-    return _response(image, canvas, segments)
+@app.post("/v1/invoke")
+async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File(...)):
+    started = time.monotonic()
+    try:
+        request = json.loads(manifest)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise HTTPException(400, "manifest must be valid JSON") from error
+    if request.get("protocol_version") != PROTOCOL_VERSION:
+        raise HTTPException(400, "unsupported protocol_version")
+    if request.get("operation") != "segment":
+        raise HTTPException(404, "unknown operation")
+    uploaded = await _read_attachments(request, attachments)
+    try:
+        image = Image.open(io.BytesIO(uploaded["image"])).convert("RGB")
+    except (KeyError, UnidentifiedImageError, OSError) as error:
+        raise HTTPException(400, "a valid image attachment is required") from error
+    parameters = request.get("parameters", {})
+    prompts = parameters.get("prompts", [])
+    if not isinstance(prompts, list) or not prompts:
+        raise HTTPException(400, "prompts must be a non-empty list")
+    prompts = [value.strip() for value in prompts if isinstance(value, str) and value.strip()][:24]
+    try:
+        with inference_lock, torch.inference_mode(), INFERENCE_SECONDS.time():
+            segments, outputs = _segment(image, prompts, float(parameters.get("threshold", 0.15)))
+        INFERENCE_REQUESTS.labels("success").inc()
+        _update_cuda_metrics()
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": request.get("request_id"),
+            "status": "ok",
+            "data": {"segments": segments, "width": image.width, "height": image.height},
+            "attachments": outputs,
+            "metadata": {"duration_seconds": round(time.monotonic() - started, 4)},
+        }
+    except Exception:
+        INFERENCE_REQUESTS.labels("error").inc()
+        raise

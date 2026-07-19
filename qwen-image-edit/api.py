@@ -20,6 +20,7 @@ import os
 import re
 import threading
 import time
+import uuid
 
 import torch
 from diffusers import (
@@ -98,6 +99,8 @@ def update_cuda_metrics():
         pass
 
 MAX_CANVAS_DIMENSION = int(os.environ.get("QWEN_IMAGE_EDIT_MAX_CANVAS_DIMENSION", "4096"))
+PROTOCOL_VERSION = "1"
+MAX_ATTACHMENT_BYTES = int(os.environ.get("MODEL_RPC_MAX_ATTACHMENT_BYTES", str(64 * 1024 * 1024)))
 
 app = FastAPI(title="ai-vllm Qwen-Image-Edit API", version="1.0.0")
 _pipeline = None
@@ -309,16 +312,22 @@ def _clamp_steps(num_inference_steps: int) -> int:
     return max(1, min(num_inference_steps, 100))
 
 
-@app.get("/health")
-def health():
+@app.get("/health/live")
+def live():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def ready():
+    if _pipeline is None or _inpaint_pipeline is None:
+        raise HTTPException(503, "model is still loading")
     return {
-        "status": "ok",
+        "status": "ready",
         "model_loaded": _pipeline is not None,
         "inpaint_model_loaded": _inpaint_pipeline is not None,
     }
 
 
-@app.get("/v1/load-status")
 def load_status():
     try:
         with open(STATUS_PATH) as f:
@@ -327,7 +336,6 @@ def load_status():
         raise HTTPException(404, "No load status recorded yet")
 
 
-@app.post("/v1/edit")
 async def edit(
     file: UploadFile = File(...),
     prompt: str = Form(...),
@@ -342,7 +350,7 @@ async def edit(
     elements from additional images into the edit, per Qwen-Image-Edit-Plus's
     multi-image fusion support (up to 3 images total, including `file`)."""
     if _pipeline is None:
-        raise HTTPException(503, "Model not loaded (see /v1/load-status)")
+        raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
     if not prompt.strip():
         raise HTTPException(400, "prompt must not be empty")
@@ -369,7 +377,6 @@ async def edit(
     return _encode_image_response(result)
 
 
-@app.post("/v1/inpaint")
 async def inpaint(
     file: UploadFile = File(...),
     mask: str = Form(...),
@@ -388,7 +395,7 @@ async def inpaint(
     is regenerated; 1.0 fully replaces it, matching Alibaba's "add/remove/move
     objects" edit but constrained to a specific region instead of the whole image."""
     if _pipeline is None or _inpaint_pipeline is None:
-        raise HTTPException(503, "Model not loaded (see /v1/load-status)")
+        raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
     mask_image = _decode_mask(mask)
     if mask_image.size != image.size:
@@ -448,7 +455,6 @@ def _outpaint_canvas(image: Image.Image, target_width: int, target_height: int, 
     return canvas, mask
 
 
-@app.post("/v1/outpaint")
 async def outpaint(
     file: UploadFile = File(...),
     prompt: str = Form(...),
@@ -465,7 +471,7 @@ async def outpaint(
     masked inpainting (strength fixed at 1.0, since the border starts blank).
     `prompt` should describe the extended scene (e.g. "extend the beach and sky")."""
     if _pipeline is None or _inpaint_pipeline is None:
-        raise HTTPException(503, "Model not loaded (see /v1/load-status)")
+        raise HTTPException(503, "model is not loaded")
     if target_width > MAX_CANVAS_DIMENSION or target_height > MAX_CANVAS_DIMENSION:
         raise HTTPException(400, f"target dimensions must be <= {MAX_CANVAS_DIMENSION}px")
     image = await _read_upload_image(file)
@@ -492,7 +498,6 @@ async def outpaint(
     return _encode_image_response(result)
 
 
-@app.post("/v1/transform")
 async def transform(
     file: UploadFile = File(...),
     crop_left: int | None = Form(None),
@@ -526,3 +531,108 @@ async def transform(
         image = image.rotate(-rotate_degrees, expand=expand_canvas, resample=Image.Resampling.BICUBIC)
 
     return _encode_image_response(image)
+
+
+@app.get("/v1/capabilities")
+def capabilities():
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "worker": "qwen-image-edit",
+        "model": MODEL_ID,
+        "operations": {
+            "edit": {
+                "inputs": ["image", "reference:*"],
+                "parameters": ["prompt", "negative_prompt", "num_inference_steps", "true_cfg_scale", "seed"],
+                "outputs": ["image"],
+            },
+            "inpaint": {
+                "inputs": ["image", "mask"],
+                "parameters": ["prompt", "negative_prompt", "strength", "num_inference_steps", "true_cfg_scale", "seed", "padding_mask_crop"],
+                "outputs": ["image"],
+            },
+        },
+    }
+
+
+async def _rpc_attachments(request, files):
+    descriptors = request.get("attachments", [])
+    if len(descriptors) != len(files):
+        raise HTTPException(400, "attachment descriptors do not match uploaded files")
+    result = {}
+    for descriptor, upload in zip(descriptors, files):
+        name = descriptor.get("name")
+        if not isinstance(name, str) or not name or name in result:
+            raise HTTPException(400, "attachment names must be unique non-empty strings")
+        payload = await upload.read(MAX_ATTACHMENT_BYTES + 1)
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(413, f"attachment '{name}' is too large")
+        result[name] = (payload, descriptor.get("media_type", "application/octet-stream"))
+    return result
+
+
+def _upload(name, item):
+    payload, media_type = item
+    return UploadFile(filename=name, file=io.BytesIO(payload), headers={"content-type": media_type})
+
+
+def _rpc_result(request, result, started):
+    image_payload = base64.b64decode(result["image_png_base64"])
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": request.get("request_id", str(uuid.uuid4())),
+        "status": "ok",
+        "data": {"width": result["width"], "height": result["height"]},
+        "attachments": [{
+            "name": "image",
+            "media_type": "image/png",
+            "data_base64": base64.b64encode(image_payload).decode("ascii"),
+        }],
+        "metadata": {"duration_seconds": round(time.monotonic() - started, 4)},
+    }
+
+
+@app.post("/v1/invoke")
+async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File(...)):
+    started = time.monotonic()
+    try:
+        request = json.loads(manifest)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise HTTPException(400, "manifest must be valid JSON") from error
+    if request.get("protocol_version") != PROTOCOL_VERSION:
+        raise HTTPException(400, "unsupported protocol_version")
+    operation = request.get("operation")
+    if operation not in {"edit", "inpaint"}:
+        raise HTTPException(404, "unknown operation")
+    uploaded = await _rpc_attachments(request, attachments)
+    if "image" not in uploaded:
+        raise HTTPException(400, "image attachment is required")
+    parameters = request.get("parameters", {})
+    image = _upload("image", uploaded["image"])
+    if operation == "edit":
+        references = [_upload(name, item) for name, item in sorted(uploaded.items()) if name.startswith("reference:")]
+        result = await edit(
+            file=image,
+            prompt=str(parameters.get("prompt", "")),
+            negative_prompt=str(parameters.get("negative_prompt", "")),
+            num_inference_steps=int(parameters.get("num_inference_steps", 20)),
+            true_cfg_scale=float(parameters.get("true_cfg_scale", 4.0)),
+            seed=int(parameters.get("seed", 0)),
+            reference_files=references,
+        )
+    else:
+        if "mask" not in uploaded:
+            raise HTTPException(400, "mask attachment is required")
+        mask_payload = base64.b64encode(uploaded["mask"][0]).decode("ascii")
+        padding = parameters.get("padding_mask_crop")
+        result = await inpaint(
+            file=image,
+            mask=f"data:image/png;base64,{mask_payload}",
+            prompt=str(parameters.get("prompt", "")),
+            negative_prompt=str(parameters.get("negative_prompt", "")),
+            strength=float(parameters.get("strength", 1.0)),
+            num_inference_steps=int(parameters.get("num_inference_steps", 20)),
+            true_cfg_scale=float(parameters.get("true_cfg_scale", 4.0)),
+            seed=int(parameters.get("seed", 0)),
+            padding_mask_crop=int(padding) if padding is not None else None,
+        )
+    return _rpc_result(request, result, started)

@@ -229,7 +229,7 @@ services:
       timeout: 10s
       retries: 3
 
-  sam3-annotator:
+  sam3-worker:
     build:
       context: .
       dockerfile: sam3/Dockerfile
@@ -240,56 +240,22 @@ services:
     environment:
       HF_TOKEN_FILE: /run/secrets/huggingface_token
       LOG_LEVEL: ${SAM3_LOG_LEVEL:-INFO}
-      STREAMLIT_SERVER_BASE_URL_PATH: sam3
-      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "1024"
     secrets:
       - huggingface_token
     volumes:
       - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
-      - sam3-projects:/app/projects
-      - sam3-base-models:/app/base_models
-      - sam3-logs:/app/logs
-    ports:
-      - "${SAM3_BIND_ADDRESS:-127.0.0.1}:${SAM3_PORT:-8501}:8501"
     expose:
       - "8004"
       - "9092"
-    networks: [frontend, monitoring]
+    networks: [inference, monitoring]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/sam3/_stcore/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 600s
 
-  sam3-demo:
-    build:
-      context: .
-      dockerfile: sam3-demo/Dockerfile
-    profiles: [sam3-demo]
-    gpus: all
-    ipc: host
-    restart: unless-stopped
-    environment:
-      HF_TOKEN_FILE: /run/secrets/huggingface_token
-      GRADIO_ROOT_PATH: /sam3-demo
-      GRADIO_ANALYTICS_ENABLED: "false"
-    secrets:
-      - huggingface_token
-    volumes:
-      - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
-      - sam3-demo-data:/data
-    ports:
-      - "${SAM3_DEMO_BIND_ADDRESS:-127.0.0.1}:${SAM3_DEMO_PORT:-7860}:7860"
-    networks: [frontend]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860/sam3-demo/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-
-  qwen-image-edit:
+  qwen-image-edit-worker:
     build:
       context: .
       dockerfile: qwen-image-edit/Dockerfile
@@ -307,17 +273,39 @@ services:
     volumes:
       - ${CLARE2_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
       - qwen-image-edit-state:/app/state
-    ports:
-      - "${QWEN_IMAGE_EDIT_BIND_ADDRESS:-127.0.0.1}:${QWEN_IMAGE_EDIT_PORT:-8006}:8006"
     expose:
+      - "8006"
       - "9093"
-    networks: [frontend, monitoring]
+    networks: [inference, monitoring]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 1800s
+
+  image-api:
+    build:
+      context: .
+      dockerfile: image-api/Dockerfile
+    restart: unless-stopped
+    environment:
+      SAM3_WORKER_URL: http://sam3-worker:8004
+      QWEN_IMAGE_EDIT_WORKER_URL: http://qwen-image-edit-worker:8006
+      IMAGE_API_POLICY_URL: http://clare2-policy:8000/v1
+      IMAGE_API_POLICY_TOKEN_FILE: /run/secrets/clare2_proxy_token
+      IMAGE_API_VISION_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
+      IMAGE_API_MAX_UPLOAD_BYTES: ${IMAGE_API_MAX_UPLOAD_BYTES:-52428800}
+    secrets:
+      - clare2_proxy_token
+    ports:
+      - "${IMAGE_API_BIND_ADDRESS:-127.0.0.1}:${IMAGE_API_PORT:-8005}:8000"
+    networks: [inference, frontend, monitoring]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   clare2-train:
     container_name: clare2-train
@@ -544,10 +532,6 @@ volumes:
   qdrant_storage: {}
   prometheus_data: {}
   grafana_data: {}
-  sam3-projects: {}
-  sam3-base-models: {}
-  sam3-logs: {}
-  sam3-demo-data: {}
   qwen-image-edit-state: {}
 
 secrets:

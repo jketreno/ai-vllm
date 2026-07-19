@@ -52,63 +52,43 @@ Public bindings:
 - `127.0.0.1:9091`: Prometheus metrics
 - `127.0.0.1:8003`: authenticated spam-classification API
 - `0.0.0.0:8080`: Open WebUI
-- `127.0.0.1:8501`: SAM3 Auto Annotator (optional `sam3` profile)
-- `127.0.0.1:8006`: Qwen-Image-Edit API (optional `qwen-image-edit` profile)
+- `127.0.0.1:8005`: unified Image API
 
 There is no host binding for raw vLLM.
 
-## SAM3 Annotation
+## Image API and SAM3
 
-The optional `sam3` profile runs the pinned
-[SAM3 Auto Annotator](https://github.com/data-with-shobhit/sam3-auto-annotator)
-Streamlit frontend and GPU-backed SAM3 inference in one container. Model weights
-share the existing Hugging Face cache; projects, trained models, and logs use
-named volumes. Keep the UI's annotation worker count at one on the GB10 to avoid
-loading concurrent SAM3 model copies into unified memory.
+`image-api` is the CPU-only public facade for analysis, segmentation, editing,
+inpainting, outpainting, and deterministic transforms. Host clients use
+`http://127.0.0.1:8005`; containers such as Auto SAM use
+`http://image-api:8000`. Restarting it does not reload model workers.
+
+The optional `sam3` profile runs a headless `sam3-worker`. Its capability RPC
+and metrics are private to Docker networks; no Streamlit UI is installed.
 
 SAM3 is gated on Hugging Face. Accept Meta's model terms for the account behind
 `secrets/huggingface_token`, then build and start the profile:
 
 ```bash
-docker compose --profile sam3 build sam3-annotator
-docker compose --profile sam3 up -d sam3-annotator
+docker compose --profile sam3 build sam3-worker image-api
+docker compose --profile sam3 up -d sam3-worker image-api
 ```
 
-Open `https://ai.ketrenos.com/sam3/`. The direct loopback endpoint remains
-available at `http://127.0.0.1:8501/sam3/`. Persistent
-projects, exports, database state, and caches use named volumes. Stop the SAM3
-profile before CLARE2 training because both workloads require substantial
-unified GPU memory.
+Stop the SAM3 profile before CLARE2 training because both workloads require
+substantial unified GPU memory.
 
 SAM3 exports Prometheus metrics on its private monitoring-network port `9092`.
 Prometheus scrapes them under the `sam3` job, and Grafana provisions the
-`SAM3 Annotator` dashboard for model, inference, data-pipeline, training, GPU
-memory, and process-health telemetry.
+SAM3 dashboard for model, inference, GPU memory, and process-health telemetry.
 
-The same container exposes an internal API at `http://sam3-annotator:8004` on
-the frontend network. `POST /v1/segment` accepts a multipart image, a JSON
-`prompts` array, and an optional `threshold`; it returns mask metadata and a
-base64 PNG overlay. Each segment's `mask` is a lossless, full-resolution
-monochrome PNG data URI with background pixels set to 0 and matched pixels set
-to 255, suitable for direct use as an overlay or alpha mask. API and Streamlit
-requests share one model instance and are serialized to prevent duplicate GPU
-allocations.
-
-For interactive exploration of text masks, point prompts, and video tracking,
-start the separately pinned SAM3-Demo frontend:
-
-```bash
-docker compose --profile sam3-demo up -d --build sam3-demo
-```
-
-Open `https://ai.ketrenos.com/sam3-demo/`. The demo loads only the model variant
-needed by the active mode and releases the prior variant when switching modes,
-avoiding three simultaneous SAM3 copies on the GPU.
+Use `POST /v1/images/analyze` for concept discovery plus segmentation, or
+`POST /v1/images/segment` with an explicit JSON prompt list.
 
 ## Qwen-Image-Edit
 
-The optional `qwen-image-edit` profile runs `Qwen/Qwen-Image-Edit-2511` behind a
-small internal FastAPI wrapper. It shares the same unified-memory GPU as
+The optional `qwen-image-edit` profile runs a private persistent worker for
+`Qwen/Qwen-Image-Edit-2511`. The Image API exposes its capabilities as domain
+operations. It shares the same unified-memory GPU as
 `vllm-engine`, so `CLARE2_GPU_MEMORY_UTILIZATION` is deliberately kept low
 (`0.45` by default — see `.env`) to leave headroom for it. The transformer is
 quantized to fp8 at load time with `torchao`'s `Float8WeightOnlyConfig`
@@ -134,8 +114,8 @@ was investigated as a safety backstop and rejected: it is documented as
 unreliable for CUDA/UVM allocations specifically on GB10's unified-memory
 architecture (cgroup memory accounting doesn't see UVM allocations, or
 `cudaMemGetInfo` misreports the full 128 GB pool as free regardless of the
-container's limit). Also do not run it at the same time as `sam3` / `sam3-demo`
-/ `clare2-train`.
+container's limit). Also do not run it at the same time as `sam3` or
+`clare2-train`.
 
 Instead, model loading is split into three instrumented sections (transformer,
 text encoder, pipeline assembly). Before each section, the service checks host
@@ -180,15 +160,15 @@ risk — a lockup can happen fast enough that the gate's own abort doesn't help.
 Onboarding should always do the first run in isolation:
 
 ```bash
-# 1. Make sure vllm-engine (and sam3 / sam3-demo / clare2-train) are stopped
-docker compose stop vllm-engine sam3-annotator sam3-demo clare2-train
+# 1. Make sure vllm-engine (and sam3 / clare2-train) are stopped
+docker compose stop vllm-engine sam3-worker clare2-train
 
 # 2. Build and start qwen-image-edit alone, and let it finish quantizing +
 #    caching to disk (watch for "transformer_source": "quantized_fresh" and
 #    then state "ready" in /v1/load-status; can take upward of 15 minutes)
-docker compose --profile qwen-image-edit build qwen-image-edit
-docker compose --profile qwen-image-edit up -d qwen-image-edit
-curl -s http://127.0.0.1:8006/v1/load-status   # poll until "state": "ready"
+docker compose --profile qwen-image-edit build qwen-image-edit-worker image-api
+docker compose --profile qwen-image-edit up -d qwen-image-edit-worker image-api
+docker compose exec qwen-image-edit-worker curl -s http://localhost:8006/health/ready
 
 # 3. Once cached, subsequent starts load fp8 weights directly (no
 #    bf16+fp8 double-hold), so vllm-engine can be brought back up and run
@@ -203,8 +183,8 @@ this isolation step does not need to be repeated unless the cache is deleted.
 Build and start the profile:
 
 ```bash
-docker compose --profile qwen-image-edit build qwen-image-edit
-docker compose --profile qwen-image-edit up -d qwen-image-edit
+docker compose --profile qwen-image-edit build qwen-image-edit-worker image-api
+docker compose --profile qwen-image-edit up -d qwen-image-edit-worker image-api
 ```
 
 Before starting it alongside a live `vllm-engine`, check real headroom
@@ -212,12 +192,12 @@ yourself first (`free -h`, looking at `available`) — don't rely solely on the
 in-process gate, since a lockup can happen fast enough that the gate's own
 abort doesn't help if the very first section's allocation is what overwhelms
 the host. The service loads its model on startup, which can take upward of 15
-minutes on a cold Hugging Face cache. `GET /health` reports `model_loaded`
-once ready; `GET /v1/load-status` returns the full per-section progress record
-at any time, including after an aborted load. Submit an edit:
+minutes on a cold Hugging Face cache. Its private `/health/ready` endpoint
+reports readiness; load progress remains persisted in the state volume.
+Submit an edit through the Image API:
 
 ```bash
-curl -s http://127.0.0.1:8006/v1/edit \
+curl -s http://127.0.0.1:8005/v1/images/edit \
   -F file=@input.png \
   -F prompt='add a small red circle in the center' \
   | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); open("out.png","wb").write(base64.b64decode(d["image_png_base64"]))'
@@ -227,7 +207,7 @@ curl -s http://127.0.0.1:8006/v1/edit \
 port `9093` (job `qwen_image_edit`), following the same pattern as the SAM3
 services' `9092`.
 
-### API
+### Image API
 
 Alibaba's hosted Qwen-Image-Edit API (see
 [the Model Studio docs](https://www.alibabacloud.com/help/en/model-studio/qwen-image-edit-api))
@@ -239,30 +219,29 @@ support a mask, so mask-guided workflows (e.g. `sam3`-selected regions from
 client. `QwenImageEditInpaintPipeline` is constructed once at startup directly
 from the edit pipeline's already-loaded scheduler/vae/text_encoder/tokenizer/
 processor/transformer, which shares them by reference rather than loading a
-second copy — `GET /health` reports `inpaint_model_loaded` alongside
-`model_loaded`, and `/v1/load-status` records it as a fourth section
-(`inpaint_pipeline`). (Not built via `DiffusionPipeline.from_pipe()`: it
+second copy. Load status records it as a fourth section (`inpaint_pipeline`).
+(Not built via `DiffusionPipeline.from_pipe()`: it
 unconditionally ends with a `.to(dtype=...)` cast, which torchao's
 fp8-quantized transformer rejects with `ValueError: Casting a quantized model
 to a new dtype is unsupported`.)
 
-- `POST /v1/edit` — whole-image, prompt-driven edit (text editing, object
+- `POST /v1/images/edit` — whole-image, prompt-driven edit (text editing, object
   add/remove/move, pose changes, style transfer, detail enhancement). Accepts
   optional `reference_files` (0-2 additional images) for Qwen-Image-Edit-Plus's
   multi-image fusion, up to 3 images total.
-- `POST /v1/inpaint` — mask-guided region edit. `mask` is a
+- `POST /v1/images/inpaint` — mask-guided region edit. `mask` is a
   `data:image/png;base64,...` string where white pixels are repainted and
-  black pixels are preserved — exactly the format `sam3`'s `/v1/segment`
-  emits per segment, so a SAM mask can be forwarded unmodified. `strength`
+  black pixels are preserved — exactly the format returned by
+  `/v1/images/segment`, so a SAM mask can be forwarded unmodified. `strength`
   (0.0-1.0, default 1.0) controls how strongly the masked region is
   regenerated.
-- `POST /v1/outpaint` — canvas expansion ("expand image"). Give a
+- `POST /v1/images/outpaint` — canvas expansion ("expand image"). Give a
   `target_width`/`target_height` and an `anchor`
   (`center`/`top`/`bottom`/`left`/`right`/`top-left`/`top-right`/`bottom-left`/`bottom-right`);
   the service pads the canvas, derives the border mask itself (no
   client-side mask painting needed), and inpaints the new border at
   `strength=1.0` per `prompt`.
-- `POST /v1/transform` — pure Pillow crop and/or rotate, no model inference
+- `POST /v1/images/transform` — pure Pillow crop and/or rotate, no model inference
   and no GPU time. Crop (`crop_left`/`crop_top`/`crop_width`/`crop_height`)
   is applied before rotate (`rotate_degrees`, `expand_canvas`). Alibaba's API
   and the local pipelines have no geometric-transform primitive, so this is
@@ -274,7 +253,7 @@ All endpoints return `{"width", "height", "image_png_base64"}`. Example
 inpaint call using a SAM3 mask:
 
 ```bash
-curl -s http://127.0.0.1:8006/v1/inpaint \
+curl -s http://127.0.0.1:8005/v1/images/inpaint \
   -F file=@input.png \
   -F mask="$(python3 -c 'import json,sys; print(json.load(open("segment.json"))["segments"][0]["mask"])')" \
   -F prompt='a black cat sitting' \
@@ -402,7 +381,7 @@ such as NVIDIA GB10.
 
 `CLARE2_GPU_MEMORY_UTILIZATION` in `.env` governs how much of the node's 128 GB
 unified memory (121.63 GiB usable) `vllm-engine` reserves; the remainder is
-shared with any of `sam3`, `sam3-demo`, and `qwen-image-edit` that are running.
+shared with either `sam3` or `qwen-image-edit` when those services are running.
 Lower it further if a new GPU workload doesn't fit; raise it back toward `0.70`
 if those optional profiles are retired.
 
