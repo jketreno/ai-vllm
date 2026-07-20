@@ -37,7 +37,10 @@ TRAINING_RETRY_INTERVAL = float(os.environ.get("CLARE2_TRAINING_RETRY_INTERVAL",
 PHASES = {
     "idle",
     "postponed",
+    "preparing_training",
+    "waiting_for_training_container",
     "draining",
+    "starting_training",
     "training",
     "restarting",
     "loading",
@@ -161,7 +164,14 @@ def run_nightly_training() -> None:
         postponement_notified = _wait_for_inference_idle(run_id, postponement_notified)
 
         # Rebuild at admission time so a delayed run never trains an older SFT snapshot.
+        _set_state(
+            "preparing_training",
+            run_id=run_id,
+            postponement_notified=postponement_notified,
+            active_sessions=0,
+        )
         corpus.assemble()
+        _wait_for_training_container(run_id, postponement_notified=postponement_notified)
         started = time.monotonic()
         _set_state(
             "draining",
@@ -174,8 +184,7 @@ def run_nightly_training() -> None:
             if not maintenance.wait_for_drain(DRAIN_TIMEOUT):
                 raise TimeoutError("timed out waiting for in-flight inference")
             _container("stop", VLLM_CONTAINER)
-            _set_state("training", run_id=run_id, postponement_notified=postponement_notified)
-            _container("start", TRAIN_CONTAINER)
+            _start_training_container(run_id, postponement_notified=postponement_notified)
         except Exception as exc:
             _recover(run_id, exc)
             raise
@@ -189,9 +198,8 @@ def start_training() -> None:
         run_id = state.get("run_id") or _new_run_id()
         if state.get("phase") not in {"training", "idle"}:
             raise RuntimeError(f"cannot start training from {state.get('phase')}")
-        _set_state("training", run_id=run_id)
         try:
-            _container("start", TRAIN_CONTAINER)
+            _start_training_container(run_id)
         except Exception as exc:
             _recover(run_id, exc)
             raise
@@ -266,7 +274,13 @@ def complete_training(
             raise RuntimeError("callback does not match the active training run")
         try:
             _register_candidate(adapter_id, run_id, mlflow_run_id, loss, epoch_losses or [])
-            _set_state("restarting", run_id=run_id, candidate_id=adapter_id, mlflow_run_id=mlflow_run_id)
+            _set_state(
+                "restarting",
+                run_id=run_id,
+                candidate_id=adapter_id,
+                mlflow_run_id=mlflow_run_id,
+                trainer_start_requested=False,
+            )
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
@@ -329,7 +343,12 @@ def complete_training_batch(run_id: str, adapters: list[dict[str, Any]]) -> dict
             raise RuntimeError("callback does not match the active training run")
         in_flight_adapter_id: str | None = None
         try:
-            _set_state("restarting", run_id=run_id, pending_adapter_ids=[a["adapter_id"] for a in adapters])
+            _set_state(
+                "restarting",
+                run_id=run_id,
+                pending_adapter_ids=[a["adapter_id"] for a in adapters],
+                trainer_start_requested=False,
+            )
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
@@ -403,7 +422,7 @@ def complete_training_skipped(run_id: str) -> dict[str, Any]:
         if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
             raise RuntimeError("callback does not match the active training run")
         try:
-            _set_state("restarting", run_id=run_id)
+            _set_state("restarting", run_id=run_id, trainer_start_requested=False)
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
@@ -451,7 +470,13 @@ def rollback() -> dict[str, Any]:
 
 def _recover(run_id: str, error: Exception, adapter_id: str | None = None) -> None:
     log.exception("Lifecycle failure; recovering prior approved adapter")
-    _set_state("recovering", run_id=run_id, candidate_id=adapter_id, error=str(error))
+    _set_state(
+        "recovering",
+        run_id=run_id,
+        candidate_id=adapter_id,
+        error=str(error),
+        trainer_start_requested=False,
+    )
     try:
         if adapter_id and adapter_id in registry.read()["adapters"]:
             registry.transition(adapter_id, "failed")
@@ -492,6 +517,59 @@ def _container(action: str, name: str) -> None:
     response = httpx.post(f"{DOCKER_PROXY_URL}/containers/{name}/{action}", timeout=30)
     if response.status_code not in {204, 304}:
         response.raise_for_status()
+
+
+def _container_exists(name: str) -> bool:
+    response = httpx.get(f"{DOCKER_PROXY_URL}/containers/{name}/json", timeout=30)
+    if response.status_code == 404:
+        return False
+    response.raise_for_status()
+    return True
+
+
+def _wait_for_training_container(run_id: str, **fields: Any) -> None:
+    """Keep inference available while Compose finishes creating the trainer."""
+    while not _container_exists(TRAIN_CONTAINER):
+        _set_state(
+            "waiting_for_training_container",
+            run_id=run_id,
+            waiting_for=TRAIN_CONTAINER,
+            **fields,
+        )
+        log.info("Training container %s is not available yet; waiting", TRAIN_CONTAINER)
+        time.sleep(TRAINING_RETRY_INTERVAL)
+
+
+def _start_training_container(run_id: str, **fields: Any) -> None:
+    """Start the trainer, treating a transient Docker 404 as a wait state."""
+    while True:
+        _set_state(
+            "starting_training",
+            run_id=run_id,
+            trainer_start_requested=True,
+            **fields,
+        )
+        try:
+            _container("start", TRAIN_CONTAINER)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            _set_state(
+                "waiting_for_training_container",
+                run_id=run_id,
+                waiting_for=TRAIN_CONTAINER,
+                **fields,
+            )
+            log.info("Training container %s disappeared before start; waiting", TRAIN_CONTAINER)
+            time.sleep(TRAINING_RETRY_INTERVAL)
+            continue
+        _set_state(
+            "training",
+            run_id=run_id,
+            trainer_start_requested=True,
+            **fields,
+        )
+        return
 
 
 def _wait_for_vllm() -> None:

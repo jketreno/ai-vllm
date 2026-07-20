@@ -171,9 +171,9 @@ done <"${OUTPUT_DIR}/model.env"
 echo "Validating Compose configuration..."
 docker compose config --quiet
 echo "Building CLARE₂ services..."
-docker compose --profile training build \
+docker compose build \
   mlflow docker-socket-proxy clare2-policy clare2-mcp clare2-train spam-classifier
-docker compose --profile training create clare2-train
+docker compose create clare2-train
 
 if $START_SERVICES; then
   docker compose up -d mlflow redis docker-socket-proxy vllm-engine clare2-policy clare2-mcp spam-classifier

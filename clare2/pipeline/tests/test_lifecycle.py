@@ -48,6 +48,7 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         self.assertEqual(result["phase"], "idle")
         self.assertEqual(result["outcome"], "skipped_no_new_content")
         self.assertEqual(result["completed_adapter_id"], "skipped:run-1")
+        self.assertFalse(result["trainer_start_requested"])
 
     def test_sends_skipped_notification(self):
         self._set_training_state("run-1")
@@ -124,6 +125,7 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         patch.object(lifecycle, "notify").start()
         patch.object(lifecycle, "corpus").start()
         patch.object(lifecycle, "_container").start()
+        patch.object(lifecycle, "_container_exists", return_value=True).start()
         patch.object(lifecycle.time, "sleep").start()
 
     def tearDown(self):
@@ -157,6 +159,48 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         self.assertNotIn("dream_mode", state)
         self.assertNotIn("outcome", state)
         self.assertNotIn("evaluation", state)
+        self.assertEqual(state["phase"], "training")
+        self.assertTrue(state["trainer_start_requested"])
+
+    def test_waits_for_training_container_before_stopping_inference(self):
+        with patch.object(lifecycle, "_active_inference_sessions", return_value=0), patch.object(
+            lifecycle, "_container_exists", side_effect=[False, True]
+        ):
+            lifecycle.run_nightly_training()
+
+        lifecycle.time.sleep.assert_called_once_with(lifecycle.TRAINING_RETRY_INTERVAL)
+        self.assertEqual(
+            lifecycle._container.call_args_list,
+            [
+                unittest.mock.call("stop", lifecycle.VLLM_CONTAINER),
+                unittest.mock.call("start", lifecycle.TRAIN_CONTAINER),
+            ],
+        )
+        self.assertEqual(lifecycle.status()["phase"], "training")
+
+    def test_retries_when_training_container_disappears_during_start(self):
+        missing = httpx.Response(
+            404,
+            request=httpx.Request("POST", "http://docker/containers/clare2-train/start"),
+        )
+        lifecycle._container.side_effect = [
+            None,
+            httpx.HTTPStatusError("missing", request=missing.request, response=missing),
+            None,
+        ]
+
+        with patch.object(lifecycle, "_active_inference_sessions", return_value=0):
+            lifecycle.run_nightly_training()
+
+        lifecycle.time.sleep.assert_called_once_with(lifecycle.TRAINING_RETRY_INTERVAL)
+        self.assertEqual(lifecycle.status()["phase"], "training")
+        self.assertTrue(lifecycle.status()["trainer_start_requested"])
+
+    def test_container_existence_maps_not_found_to_false(self):
+        response = unittest.mock.Mock(status_code=404)
+        with patch.object(lifecycle.httpx, "get", return_value=response):
+            self.assertFalse(lifecycle._container_exists(lifecycle.TRAIN_CONTAINER))
+        response.raise_for_status.assert_not_called()
 
     def test_prometheus_failure_is_fail_closed_without_email(self):
         with patch.object(
@@ -286,6 +330,7 @@ class CompleteTrainingBatchTests(unittest.TestCase):
         )
 
         self.assertEqual(result["outcome"], "batch_complete")
+        self.assertFalse(result["trainer_start_requested"])
         outcomes = {r["project"]: r["outcome"] for r in result["batch_results"]}
         self.assertEqual(outcomes, {"ai-vllm": "rejected", "clare": "promoted"})
         self.registry.transition.assert_called_once_with("clare-ai-vllm-1", "rejected")

@@ -313,7 +313,7 @@ services:
     container_name: clare2-train
     build:
       context: clare2/train
-    profiles: [training]
+    restart: "no"
     gpus: all
     ipc: host
     environment:

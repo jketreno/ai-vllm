@@ -344,10 +344,19 @@ fingerprint before training. `registry.example.json` documents the schema.
 The persisted, single-run state machine performs:
 
 ```text
-maintenance -> drain -> stop vLLM -> train -> restart base -> reconcile
+prepare -> wait for training container -> maintenance -> drain -> stop vLLM
+-> start training container -> train -> restart base -> reconcile
 -> load current and candidate -> deterministic comparison -> promote/reject
 -> resume
 ```
+
+The policy persists each handoff phase. A temporarily absent training container
+during a Compose transition remains a waiting status and is retried; it does not
+fail the lifecycle or stop inference before the container is available.
+`clare2-train` is part of the normal Compose model, but its entrypoint exits
+without training unless policy has persisted an explicit start request. Thus a
+plain `docker compose down && docker compose up -d` safely recreates the stopped
+trainer that the nightly lifecycle starts later.
 
 Promotion requires all mandatory probes, pass rate `>= 0.90`, and no category
 regression. Failure restarts the prior approved adapter and preserves the

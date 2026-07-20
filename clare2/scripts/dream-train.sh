@@ -196,7 +196,7 @@ print(json.dumps({
     "keep_services": $(json_array "${KEEP_SERVICES[@]}"),
     "stop_services": $(json_array "${STOP_SERVICES[@]}"),
     "wake_services": $(json_array "${WAKE_SERVICES[@]}"),
-    "training_command": "docker compose --profile training run --no-deps --rm clare2-train",
+    "training_command": "docker compose run --no-deps --rm clare2-train",
 }, indent=2, sort_keys=True))
 PY
   exit 0
@@ -230,7 +230,8 @@ docker compose up -d "${KEEP_SERVICES[@]}"
 docker compose stop "${STOP_SERVICES[@]}"
 SNAPSHOTS+=("$(memory_snapshot before_training)")
 
-docker compose --profile training run --no-deps --rm \
+docker compose run --no-deps --rm \
+  -e CLARE2_TRAIN_AUTHORIZED=1 \
   -e CLARE2_TRAIN_SKIP_CALLBACK=1 \
   -e CLARE2_TRAIN_MLFLOW_DISABLED=1 \
   clare2-train
