@@ -38,13 +38,26 @@
       "id": 3,
       "title": "Memory Used / Available",
       "type": "timeseries",
-      "gridPos": {"x": 6, "y": 7, "w": 18, "h": 6},
+      "gridPos": {"x": 6, "y": 7, "w": 12, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024 / 1024", "legendFormat": "used (GiB)"},
         {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemAvailable_bytes / 1024 / 1024 / 1024", "legendFormat": "available (GiB)"},
         {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemTotal_bytes / 1024 / 1024 / 1024", "legendFormat": "total (GiB)"}
       ],
       "fieldConfig": {"defaults": {"unit": "GiB"}}
+    },
+    {
+      "id": 10,
+      "title": "Current Memory",
+      "type": "bargauge",
+      "gridPos": {"x": 18, "y": 7, "w": 6, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024 / 1024", "legendFormat": "used (GiB)", "instant": true},
+        {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemAvailable_bytes / 1024 / 1024 / 1024", "legendFormat": "available (GiB)", "instant": true},
+        {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemTotal_bytes / 1024 / 1024 / 1024", "legendFormat": "total (GiB)", "instant": true}
+      ],
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true},
+      "fieldConfig": {"defaults": {"unit": "GiB", "min": 0}}
     },
     {
       "id": 4,
