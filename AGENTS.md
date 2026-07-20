@@ -2,6 +2,17 @@
 
 This project uses the **CLARE** framework for AI-assisted development.
 
+## Deployment Topology
+
+This checkout is a **development system**. The `docker-compose.yml` services
+(`qwen-image-edit-worker`, `sam3-worker`, `image-api`, `vllm-engine`, etc.) do
+**not** run here — expect `docker compose ps` / `docker ps` on this host to
+show them absent. Those services run on a separate **production system**.
+Do not assume a service is broken or misconfigured just because it has no
+running container on this dev machine; ask the user how to reach the
+production host (e.g. remote docker context, SSH) if logs or live status are
+needed.
+
 ## The verify-ci.sh Rule
 
 **When to run it:** only in a turn where you created, updated, or deleted a file. If you edited no files this turn — including any plan-mode, research, or read-only turn — do not run it.
