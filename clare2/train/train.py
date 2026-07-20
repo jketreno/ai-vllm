@@ -107,27 +107,14 @@ def inference_base_from_env(
     }
 
 
-def _tokenize_pair(
-    tokenizer: Any,
-    prompt: str,
-    completion: str,
-) -> str:
-    return tokenizer.apply_chat_template(
-        [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": completion},
-        ],
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-
-
 def _process_line(
     line: str,
     tokenizer: Any,
     max_seq_length: int,
     skipped: dict[str, int],
 ) -> dict[str, Any] | None:
+    # Keep prompt/completion as separate columns: SFTTrainer only masks the
+    # prompt out of the loss when it sees this shape, not a flattened "text" field.
     if not line.strip():
         skipped["blank"] = skipped.get("blank", 0) + 1
         return None
@@ -144,15 +131,23 @@ def _process_line(
     if not isinstance(completion, str) or not completion.strip():
         skipped["missing_completion"] = skipped.get("missing_completion", 0) + 1
         return None
-    text = _tokenize_pair(tokenizer, prompt, completion)
-    tokens = tokenizer(text, add_special_tokens=False)["input_ids"]
+    prompt_messages = [{"role": "user", "content": prompt}]
+    completion_messages = [{"role": "assistant", "content": completion}]
+    full_text = tokenizer.apply_chat_template(
+        prompt_messages + completion_messages, tokenize=False, add_generation_prompt=False
+    )
+    tokens = tokenizer(full_text, add_special_tokens=False)["input_ids"]
     if not tokens:
         skipped["empty_tokens"] = skipped.get("empty_tokens", 0) + 1
         return None
     if len(tokens) > max_seq_length:
         skipped["over_length"] = skipped.get("over_length", 0) + 1
         return None
-    return {"text": text, "category": source.get("category", "general")}
+    return {
+        "prompt": prompt_messages,
+        "completion": completion_messages,
+        "category": source.get("category", "general"),
+    }
 
 
 def load_corpus(
@@ -289,7 +284,7 @@ def main() -> None:
             save_strategy="epoch",
             bf16=True,
             max_length=args.max_seq_length,
-            dataset_text_field="text",
+            completion_only_loss=True,
             report_to="none",
             seed=args.seed,
         )

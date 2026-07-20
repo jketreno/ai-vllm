@@ -73,11 +73,25 @@ class AssembleProjectMetricsTests(unittest.TestCase):
         self.assertIsNotNone(pair)
         self.assertIn("Project: ai-vllm", pair["prompt"])
         self.assertIn("Anti-pattern", pair["prompt"])
-        self.assertIn("Avoid the anti-pattern", pair["completion"])
+        self.assertIn("Do not bypass CLARE verification.", pair["completion"])
+        self.assertIn("Run ./clare/verify-ci.sh before completion.", pair["completion"])
         self.assertEqual(pair["source_session"], "codex-session")
         self.assertEqual(pair["source_date"], "2026-07-09")
         self.assertEqual(pair["evidence_count"], 3)
         self.assertEqual(pair["weight"], 1.5)
+
+    def test_sft_completions_vary_across_patterns_in_the_same_category(self):
+        completions = {
+            corpus._pattern_to_sft_pair({
+                "project": "ai-vllm",
+                "category": "domain",
+                "pattern": f"Distinct domain rule number {i}.",
+                "session_id": f"session-{i}",
+            })["completion"]
+            for i in range(6)
+        }
+
+        self.assertGreater(len(completions), 1)
 
     def test_backfilled_episode_is_used_when_it_is_project_latest(self):
         self._write_episode(

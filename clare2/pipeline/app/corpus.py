@@ -1,5 +1,6 @@
 """Corpus assembler: active themes + recent episodes → SFT pairs for training."""
 
+import hashlib
 import json
 import logging
 import os
@@ -87,6 +88,99 @@ def _load_recent_episodes(project: str, days: int = RECENT_EPISODE_WINDOW_DAYS) 
     return episodes
 
 
+
+# Multiple phrasings per category so the completion side of the corpus isn't
+# the same boilerplate sentence repeated for every pattern — a repetitive
+# completion gives the model little to learn beyond memorizing filler text.
+_PROMPT_VARIANTS: dict[str, list[str]] = {
+    "antipattern": [
+        "{context}\nYou are modifying this repository and encounter the following anti-pattern.\n"
+        "Anti-pattern: {description}\n\nRespond with the concrete behavior you should apply instead.",
+        "{context}\nA teammate proposes the change below, which repeats a known anti-pattern here.\n"
+        "Anti-pattern: {description}\n\nExplain what you would do instead and why.",
+        "{context}\nCode review flagged the following recurring anti-pattern in this codebase.\n"
+        "Anti-pattern: {description}\n\nDescribe the correction you would request.",
+    ],
+    "style": [
+        "{context}\nYou are preparing a code or documentation change for this repository.\n"
+        "Style convention: {description}\n\nRespond with how you should apply this convention.",
+        "{context}\nA new contributor asks how code in this repository should be formatted.\n"
+        "Style convention: {description}\n\nExplain the convention and when it applies.",
+        "{context}\nYou are reviewing a diff that may not follow this repository's conventions.\n"
+        "Style convention: {description}\n\nState what you would change and why.",
+    ],
+    "architecture": [
+        "{context}\nYou are designing or changing a component in this repository.\n"
+        "Architectural pattern: {description}\n\nRespond with the implementation approach that respects this architecture.",
+        "{context}\nA proposed change risks cutting across this repository's established boundaries.\n"
+        "Architectural pattern: {description}\n\nExplain how you would keep the change consistent with it.",
+        "{context}\nSomeone asks where new logic like this belongs in the codebase.\n"
+        "Architectural pattern: {description}\n\nDescribe where and how you would place it.",
+    ],
+    "domain": [
+        "{context}\nYou are answering or implementing a change for this repository.\n"
+        "Domain rule: {description}\n\nRespond with the correct project-specific handling.",
+        "{context}\nA question comes up about how this project handles a specific situation.\n"
+        "Domain rule: {description}\n\nExplain the project-specific answer.",
+        "{context}\nYou need project-specific context before implementing a related change.\n"
+        "Domain rule: {description}\n\nState the rule and how it shapes your implementation.",
+    ],
+}
+
+_COMPLETION_VARIANTS: dict[str, list[str]] = {
+    "antipattern": [
+        "Avoid the anti-pattern: {description}\n"
+        "Instead, verify the behavior through the repository's authoritative path, preserve the existing "
+        "project constraints, and explain the safer implementation choice.{reference}",
+        "This is a known anti-pattern here: {description}\n"
+        "I'd request the safer alternative instead — one that keeps the repository's existing constraints "
+        "intact and is verifiable through its authoritative path.{reference}",
+        "That repeats {description}\n"
+        "The fix is to route through the repository's authoritative path rather than the shortcut, keeping "
+        "the project's existing constraints intact.{reference}",
+    ],
+    "style": [
+        "Apply the style convention consistently: {description}\n"
+        "Use the convention where it affects prose or code users will see, while preserving literal "
+        "identifiers, paths, environment variables, and protocol values.{reference}",
+        "This repository's convention is: {description}\n"
+        "I'd apply it anywhere it affects visible prose or code, without touching literal identifiers, "
+        "paths, environment variables, or protocol values.{reference}",
+        "Following this project's style: {description}\n"
+        "That convention governs visible code and prose here, but literal values like paths, env vars, "
+        "and protocol strings stay untouched.{reference}",
+    ],
+    "architecture": [
+        "Follow the established architecture: {description}\n"
+        "Keep ownership boundaries explicit, derive generated artifacts from their sources, and add "
+        "focused verification for the invariant being protected.{reference}",
+        "The established pattern here is: {description}\n"
+        "I'd keep ownership boundaries explicit, derive any generated artifacts from their source, and add "
+        "targeted verification for the invariant it protects.{reference}",
+        "This codebase's architecture calls for: {description}\n"
+        "New logic should respect that boundary, source generated output from its origin, and be checked "
+        "against the specific invariant it exists to protect.{reference}",
+    ],
+    "domain": [
+        "Use the project-specific rule directly: {description}\n"
+        "Prefer the repository's configured source of truth over assumptions, and make the resulting "
+        "behavior observable through the normal project workflow.{reference}",
+        "In this project: {description}\n"
+        "I'd rely on the repository's configured source of truth rather than assuming, and surface the "
+        "result through the normal project workflow.{reference}",
+        "The project-specific answer is: {description}\n"
+        "That comes from the repository's configured source of truth, not assumption, and should be "
+        "observable through the usual workflow.{reference}",
+    ],
+}
+
+
+def _variant_index(pattern: dict, variants: list[str]) -> int:
+    key = f"{pattern.get('session_id', '')}|{pattern.get('category', '')}|{pattern.get('pattern', '')}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return int(digest, 16) % len(variants)
+
+
 def _pattern_to_sft_pair(pattern: dict) -> dict | None:
     """Convert a distilled pattern record into an SFT prompt/completion pair."""
     category = pattern.get("category", "unknown")
@@ -111,59 +205,13 @@ def _pattern_to_sft_pair(pattern: dict) -> dict | None:
         f"{f' ({session_id})' if session_id else ''}\n"
     )
 
-    # SFT pair: prompt presents a realistic decision point; completion models the desired action.
-    if category == "antipattern":
-        prompt = (
-            f"{context}\n"
-            "You are modifying this repository and encounter the following anti-pattern.\n"
-            f"Anti-pattern: {description}\n\n"
-            "Respond with the concrete behavior you should apply instead."
-        )
-        completion = (
-            f"Avoid the anti-pattern: {description}\n"
-            "Instead, verify the behavior through the repository's authoritative path, "
-            "preserve the existing project constraints, and explain the safer implementation choice."
-            f"{reference}"
-        )
-    elif category == "style":
-        prompt = (
-            f"{context}\n"
-            "You are preparing a code or documentation change for this repository.\n"
-            f"Style convention: {description}\n\n"
-            "Respond with how you should apply this convention."
-        )
-        completion = (
-            f"Apply the style convention consistently: {description}\n"
-            "Use the convention where it affects prose or code users will see, while preserving literal "
-            "identifiers, paths, environment variables, and protocol values."
-            f"{reference}"
-        )
-    elif category == "architecture":
-        prompt = (
-            f"{context}\n"
-            "You are designing or changing a component in this repository.\n"
-            f"Architectural pattern: {description}\n\n"
-            "Respond with the implementation approach that respects this architecture."
-        )
-        completion = (
-            f"Follow the established architecture: {description}\n"
-            "Keep ownership boundaries explicit, derive generated artifacts from their sources, and add "
-            "focused verification for the invariant being protected."
-            f"{reference}"
-        )
-    else:  # domain
-        prompt = (
-            f"{context}\n"
-            "You are answering or implementing a change for this repository.\n"
-            f"Domain rule: {description}\n\n"
-            "Respond with the correct project-specific handling."
-        )
-        completion = (
-            f"Use the project-specific rule directly: {description}\n"
-            "Prefer the repository's configured source of truth over assumptions, and make the resulting "
-            "behavior observable through the normal project workflow."
-            f"{reference}"
-        )
+    prompt_variants = _PROMPT_VARIANTS.get(category, _PROMPT_VARIANTS["domain"])
+    completion_variants = _COMPLETION_VARIANTS.get(category, _COMPLETION_VARIANTS["domain"])
+    variant_index = _variant_index(pattern, prompt_variants)
+    prompt = prompt_variants[variant_index].format(context=context, description=description)
+    completion = completion_variants[variant_index % len(completion_variants)].format(
+        description=description, reference=reference
+    )
 
     return {
         "prompt": prompt,
