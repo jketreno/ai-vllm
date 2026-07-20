@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-PROJECT=ai-vllm
+. .env
 
 # If dirty, prompt to continue
 git diff --quiet || {
@@ -14,4 +14,4 @@ git diff --quiet || {
 
 git push
 
-ssh ai.ketrenos.com "bash -lc 'cd docker/${PROJECT} && git pull && docker compose build && docker compose up -d'"
+ssh -t ${DEPLOYMENT} "bash -lic 'cd ${PROJECT} && git pull && docker compose build && docker compose up -d'"
