@@ -2,7 +2,7 @@
   "title": "System Resources",
   "uid": "system-resources",
   "tags": ["system", "node"],
-  "schemaVersion": 39,
+  "schemaVersion": 41,
   "refresh": "15s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -10,7 +10,7 @@
       "id": 1,
       "title": "CPU Usage % (all cores)",
       "type": "timeseries",
-      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 7},
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 6},
       "targets": [
         {
           "datasource": {"uid": "prometheus"},
@@ -24,7 +24,7 @@
       "id": 2,
       "title": "CPU Usage % (average)",
       "type": "gauge",
-      "gridPos": {"x": 0, "y": 7, "w": 6, "h": 6},
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 6},
       "targets": [
         {
           "datasource": {"uid": "prometheus"},
@@ -35,22 +35,10 @@
       "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}]}}}
     },
     {
-      "id": 3,
-      "title": "Memory Used / Available",
-      "type": "timeseries",
-      "gridPos": {"x": 6, "y": 7, "w": 12, "h": 6},
-      "targets": [
-        {"datasource": {"uid": "prometheus"}, "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024 / 1024", "legendFormat": "used (GiB)"},
-        {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemAvailable_bytes / 1024 / 1024 / 1024", "legendFormat": "available (GiB)"},
-        {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemTotal_bytes / 1024 / 1024 / 1024", "legendFormat": "total (GiB)"}
-      ],
-      "fieldConfig": {"defaults": {"unit": "GiB"}}
-    },
-    {
       "id": 10,
       "title": "Current Memory",
       "type": "bargauge",
-      "gridPos": {"x": 18, "y": 7, "w": 6, "h": 6},
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024 / 1024", "legendFormat": "used (GiB)", "instant": true},
         {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemAvailable_bytes / 1024 / 1024 / 1024", "legendFormat": "available (GiB)", "instant": true},
@@ -60,10 +48,22 @@
       "fieldConfig": {"defaults": {"unit": "GiB", "min": 0}}
     },
     {
+      "id": 3,
+      "title": "Memory Used / Available",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 6},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024 / 1024", "legendFormat": "used (GiB)"},
+        {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemAvailable_bytes / 1024 / 1024 / 1024", "legendFormat": "available (GiB)"},
+        {"datasource": {"uid": "prometheus"}, "expr": "node_memory_MemTotal_bytes / 1024 / 1024 / 1024", "legendFormat": "total (GiB)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "GiB"}}
+    },
+    {
       "id": 4,
       "title": "Disk I/O (bytes/s)",
       "type": "timeseries",
-      "gridPos": {"x": 0, "y": 13, "w": 12, "h": 6},
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "rate(node_disk_read_bytes_total[2m])", "legendFormat": "read {{device}}"},
         {"datasource": {"uid": "prometheus"}, "expr": "rate(node_disk_written_bytes_total[2m])", "legendFormat": "write {{device}}"}
@@ -74,7 +74,7 @@
       "id": 5,
       "title": "Network I/O (bytes/s)",
       "type": "timeseries",
-      "gridPos": {"x": 12, "y": 13, "w": 12, "h": 6},
+      "gridPos": {"x": 12, "y": 6, "w": 12, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "rate(node_network_receive_bytes_total{device!~\"lo|docker.*|br-.*|veth.*\"}[2m])", "legendFormat": "rx {{device}}"},
         {"datasource": {"uid": "prometheus"}, "expr": "rate(node_network_transmit_bytes_total{device!~\"lo|docker.*|br-.*|veth.*\"}[2m])", "legendFormat": "tx {{device}}"}
@@ -85,7 +85,7 @@
       "id": 6,
       "title": "Load Average",
       "type": "timeseries",
-      "gridPos": {"x": 0, "y": 19, "w": 12, "h": 6},
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6},
       "targets": [
         {"datasource": {"uid": "prometheus"}, "expr": "node_load1", "legendFormat": "1m"},
         {"datasource": {"uid": "prometheus"}, "expr": "node_load5", "legendFormat": "5m"},
@@ -94,47 +94,11 @@
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
     {
-      "id": 7,
-      "title": "Disk Space Used %",
-      "type": "bargauge",
-      "gridPos": {"x": 12, "y": 19, "w": 12, "h": 6},
-      "targets": [
-        {
-          "datasource": {"uid": "prometheus"},
-          "expr": "100 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"} * 100)",
-          "legendFormat": "{{mountpoint}}"
-        }
-      ],
-      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}]}}}
-    },
-    {
-      "id": 8,
-      "title": "Memory Allocation by Service / Model Host",
-      "description": "Current container working-set RAM. Model weights are attributed to the service process hosting the model.",
-      "type": "piechart",
-      "gridPos": {"x": 0, "y": 25, "w": 24, "h": 9},
-      "targets": [
-        {
-          "datasource": {"uid": "prometheus"},
-          "expr": "sum by (container_label_com_docker_compose_service) (container_memory_working_set_bytes{container_label_com_docker_compose_project=\"ai-vllm\",container_label_com_docker_compose_service!=\"\"})",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
-          "instant": true
-        }
-      ],
-      "options": {
-        "pieType": "pie",
-        "displayLabels": ["name", "percent", "value"],
-        "legend": {"displayMode": "table", "placement": "right", "showLegend": true, "values": ["value", "percent"]},
-        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}
-      },
-      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}}
-    },
-    {
       "id": 9,
       "title": "Accelerator Memory by Model Allocation",
       "description": "vLLM profiler allocations on unified-memory NVIDIA systems. This is separate from Linux container RSS to avoid conflating accounting domains.",
       "type": "piechart",
-      "gridPos": {"x": 0, "y": 34, "w": 24, "h": 9},
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6},
       "targets": [
         {
           "datasource": {"uid": "prometheus"},
@@ -152,6 +116,42 @@
           "datasource": {"uid": "prometheus"},
           "expr": "qwen_image_edit_cuda_memory_reserved_bytes",
           "legendFormat": "Qwen-Image-Edit / torch_reserved",
+          "instant": true
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "displayLabels": ["name", "percent", "value"],
+        "legend": {"displayMode": "table", "placement": "right", "showLegend": true, "values": ["value", "percent"]},
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}
+      },
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}}
+    },
+    {
+      "id": 7,
+      "title": "Disk Space Used %",
+      "type": "bargauge",
+      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 6},
+      "targets": [
+        {
+          "datasource": {"uid": "prometheus"},
+          "expr": "100 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"} * 100)",
+          "legendFormat": "{{mountpoint}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}]}}}
+    },
+    {
+      "id": 8,
+      "title": "Memory Allocation by Service / Model Host",
+      "description": "Current container working-set RAM. Model weights are attributed to the service process hosting the model.",
+      "type": "piechart",
+      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 6},
+      "targets": [
+        {
+          "datasource": {"uid": "prometheus"},
+          "expr": "sum by (container_label_com_docker_compose_service) (container_memory_working_set_bytes{container_label_com_docker_compose_project=\"ai-vllm\",container_label_com_docker_compose_service!=\"\"})",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
           "instant": true
         }
       ],
