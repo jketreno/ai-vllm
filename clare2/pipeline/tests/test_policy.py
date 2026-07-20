@@ -560,6 +560,71 @@ class SecurityAndEvaluationTests(unittest.TestCase):
 
 
 class ProxyIntegrationTests(unittest.TestCase):
+    def test_proxy_returns_503_without_traceback_when_vllm_is_unreachable(self):
+        class UnreachableAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def request(self, method, url, content, headers):
+                del method, content, headers
+                raise httpx.ConnectError("down", request=httpx.Request("POST", url))
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient", UnreachableAsyncClient
+        ), self.assertLogs("app.proxy", level="ERROR") as captured:
+            response = client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "ignored", "messages": []},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "unable to connect to vLLM engine"})
+        self.assertEqual(len(captured.output), 1)
+        self.assertIn("Unable to connect to vLLM engine", captured.output[0])
+        self.assertEqual(maintenance.active, 0)
+
+    def test_streaming_proxy_returns_503_when_vllm_is_unreachable(self):
+        class UnreachableAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            def build_request(self, method, url, content, headers):
+                return httpx.Request(method, url, content=content, headers=headers)
+
+            async def send(self, request, *, stream):
+                del stream
+                raise httpx.ConnectError("down", request=request)
+
+            async def aclose(self):
+                return None
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient", UnreachableAsyncClient
+        ), self.assertLogs("app.proxy", level="ERROR") as captured:
+            response = client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer secret"},
+                json={"model": "ignored", "messages": [], "stream": True},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "unable to connect to vLLM engine"})
+        self.assertEqual(len(captured.output), 1)
+        self.assertEqual(maintenance.active, 0)
+
     def test_proxy_streams_upstream_chunks_and_releases_request(self):
         captured = {"stream": False, "response_closed": False, "client_closed": False}
 
@@ -615,7 +680,7 @@ class ProxyIntegrationTests(unittest.TestCase):
 
         class FakeAsyncClient:
             def __init__(self, **kwargs):
-                del kwargs
+                captured["timeout"] = kwargs["timeout"]
 
             async def __aenter__(self):
                 return self
@@ -651,6 +716,10 @@ class ProxyIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["model"], "Qwen/Qwen3.6-27B-FP8")
+        self.assertEqual(captured["timeout"].connect, 10)
+        self.assertIsNone(captured["timeout"].read)
+        self.assertEqual(captured["timeout"].write, 30)
+        self.assertEqual(captured["timeout"].pool, 10)
         self.assertNotIn("thinking_token_budget", captured)
         self.assertNotIn("chat_template_kwargs", captured)
         self.assertEqual(blocked.status_code, 404)

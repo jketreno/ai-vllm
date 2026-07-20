@@ -63,18 +63,18 @@ inpainting, outpainting, and deterministic transforms. Host clients use
 `http://127.0.0.1:8005`; containers such as Auto SAM use
 `http://image-api:8000`. Restarting it does not reload model workers.
 
-The optional `sam3` profile runs a headless `sam3-worker`. Its capability RPC
-and metrics are private to Docker networks; no Streamlit UI is installed.
+The default stack runs a headless `sam3-worker`. Its capability RPC and metrics
+are private to Docker networks; no Streamlit UI is installed.
 
 SAM3 is gated on Hugging Face. Accept Meta's model terms for the account behind
-`secrets/huggingface_token`, then build and start the profile:
+`secrets/huggingface_token`, then build and start the services:
 
 ```bash
-docker compose --profile sam3 build sam3-worker image-api
-docker compose --profile sam3 up -d sam3-worker image-api
+docker compose build sam3-worker image-api
+docker compose up -d sam3-worker image-api
 ```
 
-Stop the SAM3 profile before CLARE2 training because both workloads require
+Stop `sam3-worker` before CLARE2 training because both workloads require
 substantial unified GPU memory.
 
 SAM3 exports Prometheus metrics on its private monitoring-network port `9092`.
@@ -86,7 +86,7 @@ Use `POST /v1/images/analyze` for concept discovery plus segmentation, or
 
 ## Qwen-Image-Edit
 
-The optional `qwen-image-edit` profile runs a private persistent worker for
+The default stack runs a private persistent worker for
 `Qwen/Qwen-Image-Edit-2511`. The Image API exposes its capabilities as domain
 operations. It shares the same unified-memory GPU as
 `vllm-engine`, so `CLARE2_GPU_MEMORY_UTILIZATION` is deliberately kept low
@@ -166,8 +166,8 @@ docker compose stop vllm-engine sam3-worker clare2-train
 # 2. Build and start qwen-image-edit alone, and let it finish quantizing +
 #    caching to disk (watch for "transformer_source": "quantized_fresh" and
 #    then state "ready" in /v1/load-status; can take upward of 15 minutes)
-docker compose --profile qwen-image-edit build qwen-image-edit-worker image-api
-docker compose --profile qwen-image-edit up -d qwen-image-edit-worker image-api
+docker compose build qwen-image-edit-worker image-api
+docker compose up -d qwen-image-edit-worker image-api
 docker compose exec qwen-image-edit-worker curl -s http://localhost:8006/health/ready
 
 # 3. Once cached, subsequent starts load fp8 weights directly (no
@@ -180,11 +180,11 @@ After this one-time step, the cached checkpoint persists on the
 `CLARE2_MODEL_CACHE` volume, so it survives container rebuilds/restarts and
 this isolation step does not need to be repeated unless the cache is deleted.
 
-Build and start the profile:
+Build and start the services:
 
 ```bash
-docker compose --profile qwen-image-edit build qwen-image-edit-worker image-api
-docker compose --profile qwen-image-edit up -d qwen-image-edit-worker image-api
+docker compose build qwen-image-edit-worker image-api
+docker compose up -d qwen-image-edit-worker image-api
 ```
 
 Before starting it alongside a live `vllm-engine`, check real headroom
@@ -381,9 +381,9 @@ such as NVIDIA GB10.
 
 `CLARE2_GPU_MEMORY_UTILIZATION` in `.env` governs how much of the node's 128 GB
 unified memory (121.63 GiB usable) `vllm-engine` reserves; the remainder is
-shared with either `sam3` or `qwen-image-edit` when those services are running.
-Lower it further if a new GPU workload doesn't fit; raise it back toward `0.70`
-if those optional profiles are retired.
+shared with the SAM3 and Qwen-Image-Edit workers. Lower it further if a new GPU
+workload does not fit; raise it only when one of those core workers is explicitly
+disabled.
 
 The `comfyui_flux_arc` job scrapes the FLUX ComfyUI metrics sidecar on
 `battle-linux.ketrenos.com:9190`. Grafana provisions the `ComfyUI FLUX Arc`

@@ -20,9 +20,19 @@ editor = WorkerClient(os.environ.get("QWEN_IMAGE_EDIT_WORKER_URL", "http://qwen-
 MAX_UPLOAD_BYTES = int(os.environ.get("IMAGE_API_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 MAX_CANVAS_DIMENSION = int(os.environ.get("IMAGE_API_MAX_CANVAS_DIMENSION", "4096"))
 POLICY_URL = os.environ.get("IMAGE_API_POLICY_URL", "http://clare2-policy:8000/v1")
+POLICY_HEALTH_URL = os.environ.get("IMAGE_API_POLICY_HEALTH_URL", "http://clare2-policy:8000/health")
 POLICY_TOKEN_FILE = os.environ.get("IMAGE_API_POLICY_TOKEN_FILE", "/run/secrets/clare2_proxy_token")
 VISION_MODEL = os.environ.get("IMAGE_API_VISION_MODEL", "Qwen/Qwen3.6-27B-FP8")
 CONCEPT_PROMPT = "Identify concrete visibly segmentable regions. Return only JSON: {\"sam3_prompts\":[\"specific object\"]}. Avoid synonyms and cap at 24 prompts."
+
+
+async def policy_ready() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(POLICY_HEALTH_URL)
+        return response.is_success
+    except httpx.HTTPError:
+        return False
 
 
 async def read_image(file: UploadFile) -> tuple[bytes, str, Image.Image]:
@@ -83,15 +93,16 @@ def live():
 
 @app.get("/health/ready")
 async def ready():
-    statuses = {"segment": await sam.ready(), "edit": await editor.ready()}
+    sam_ready, edit_ready, vision_ready = await sam.ready(), await editor.ready(), await policy_ready()
+    statuses = {"analyze": sam_ready and vision_ready, "segment": sam_ready, "edit": edit_ready}
     return {"status": "ready" if all(statuses.values()) else "degraded", "capabilities": statuses}
 
 
 @app.get("/v1/capabilities")
 async def capabilities():
-    sam_ready, edit_ready = await sam.ready(), await editor.ready()
+    sam_ready, edit_ready, vision_ready = await sam.ready(), await editor.ready(), await policy_ready()
     return {"api_version": "1", "capabilities": {
-        "analyze": "ready" if sam_ready else "unavailable",
+        "analyze": "ready" if sam_ready and vision_ready else "unavailable",
         "segment": "ready" if sam_ready else "unavailable",
         "edit": "ready" if edit_ready else "unavailable",
         "inpaint": "ready" if edit_ready else "unavailable",

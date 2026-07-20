@@ -18,6 +18,7 @@ from .security import require_bearer, secret_value
 
 log = logging.getLogger(__name__)
 router_api = APIRouter()
+VLLM_TIMEOUT = httpx.Timeout(connect=10, read=None, write=30, pool=10)
 
 ALLOWED_ENDPOINTS = {
     "/v1/chat/completions",
@@ -83,9 +84,7 @@ async def _dispatch(
     request_guard,
 ) -> tuple[Response, bool]:
     if stream_requested:
-        client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10)
-        )
+        client = httpx.AsyncClient(timeout=VLLM_TIMEOUT)
         try:
             upstream_request = client.build_request(
                 request.method, upstream_url, content=body, headers=upstream_headers,
@@ -100,7 +99,7 @@ async def _dispatch(
             True,
         )
 
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=VLLM_TIMEOUT) as client:
         upstream = await client.request(
             request.method, upstream_url, content=body, headers=upstream_headers,
         )
@@ -150,17 +149,25 @@ async def forward(
 
     guard_owned_by_stream = False
     try:
-        if adapter_id:
-            controller.ensure_loaded(adapter_id)
-        body, stream_requested = await _prepare_body(request, endpoint, adapter_id)
-        started = time.monotonic()
-        upstream_url = f"{VLLM_URL}{endpoint}"
-        upstream_headers = {"content-type": request.headers.get("content-type", "application/json")}
-        response, guard_owned_by_stream = await _dispatch(
-            request, endpoint, body, stream_requested, upstream_url, upstream_headers,
-            started, resolved_route_id, project_id, policy_rule, adapter_id, request_guard,
-        )
-        return response
+        try:
+            if adapter_id:
+                controller.ensure_loaded(adapter_id)
+            body, stream_requested = await _prepare_body(request, endpoint, adapter_id)
+            started = time.monotonic()
+            upstream_url = f"{VLLM_URL}{endpoint}"
+            upstream_headers = {"content-type": request.headers.get("content-type", "application/json")}
+            response, guard_owned_by_stream = await _dispatch(
+                request, endpoint, body, stream_requested, upstream_url, upstream_headers,
+                started, resolved_route_id, project_id, policy_rule, adapter_id, request_guard,
+            )
+            return response
+        except httpx.ConnectError:
+            log.error("Unable to connect to vLLM engine at %s", VLLM_URL)
+            return Response(
+                content='{"detail":"unable to connect to vLLM engine"}',
+                status_code=503,
+                media_type="application/json",
+            )
     finally:
         if not guard_owned_by_stream:
             request_guard.__exit__(None, None, None)
