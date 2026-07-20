@@ -211,6 +211,16 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         lifecycle.notify.send_run_notification.assert_not_called()
         lifecycle.time.sleep.assert_called_once_with(0)
 
+    def test_failed_run_does_not_block_a_fresh_nightly_run(self):
+        lifecycle._set_state("failed", run_id="failed-run", error="old failure")
+        with patch.object(lifecycle, "_active_inference_sessions", return_value=0):
+            lifecycle.run_nightly_training()
+
+        state = lifecycle.status()
+        self.assertEqual(state["phase"], "training")
+        self.assertNotEqual(state["run_id"], "failed-run")
+        self.assertNotIn("error", state)
+
     def test_active_session_query_sums_prometheus_results(self):
         response = unittest.mock.Mock()
         response.json.return_value = {

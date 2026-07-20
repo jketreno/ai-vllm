@@ -149,7 +149,7 @@ def run_nightly_training() -> None:
     """Wait for inference to become idle, refresh SFT data, then train."""
     with single_run():
         state = reconcile_terminal_state()
-        if state.get("phase") not in {"postponed", "idle"}:
+        if state.get("phase") not in {"postponed", "idle", "failed"}:
             raise RuntimeError(f"cannot start nightly training from {state.get('phase')}")
         resuming = state.get("phase") == "postponed"
         run_id = state.get("run_id") if resuming else _new_run_id()
