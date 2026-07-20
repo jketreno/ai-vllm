@@ -12,6 +12,7 @@ aborted load leaves a clear record, and so future runs can use measured actuals
 instead of guessed size requirements.
 """
 
+import asyncio
 import base64
 import binascii
 import io
@@ -363,17 +364,21 @@ async def edit(
         raise HTTPException(400, "at most 3 images total (file + 2 reference_files)")
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
-    with _pipeline_lock, torch.inference_mode(), EDIT_LATENCY.time():
-        result = _pipeline(
-            image=images if len(images) > 1 else images[0],
-            prompt=prompt,
-            negative_prompt=negative_prompt or None,
-            num_inference_steps=num_inference_steps,
-            true_cfg_scale=true_cfg_scale,
-            generator=generator,
-        ).images[0]
-        update_cuda_metrics()
 
+    def _run():
+        with _pipeline_lock, torch.inference_mode(), EDIT_LATENCY.time():
+            out = _pipeline(
+                image=images if len(images) > 1 else images[0],
+                prompt=prompt,
+                negative_prompt=negative_prompt or None,
+                num_inference_steps=num_inference_steps,
+                true_cfg_scale=true_cfg_scale,
+                generator=generator,
+            ).images[0]
+            update_cuda_metrics()
+            return out
+
+    result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
 
 
@@ -406,20 +411,24 @@ async def inpaint(
     strength = max(0.0, min(strength, 1.0))
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
-    with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
-        result = _inpaint_pipeline(
-            image=image,
-            mask_image=mask_image,
-            prompt=prompt,
-            negative_prompt=negative_prompt or None,
-            strength=strength,
-            num_inference_steps=num_inference_steps,
-            true_cfg_scale=true_cfg_scale,
-            padding_mask_crop=padding_mask_crop,
-            generator=generator,
-        ).images[0]
-        update_cuda_metrics()
 
+    def _run():
+        with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
+            out = _inpaint_pipeline(
+                image=image,
+                mask_image=mask_image,
+                prompt=prompt,
+                negative_prompt=negative_prompt or None,
+                strength=strength,
+                num_inference_steps=num_inference_steps,
+                true_cfg_scale=true_cfg_scale,
+                padding_mask_crop=padding_mask_crop,
+                generator=generator,
+            ).images[0]
+            update_cuda_metrics()
+            return out
+
+    result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
 
 
@@ -482,19 +491,23 @@ async def outpaint(
     canvas, mask_image = _outpaint_canvas(image, target_width, target_height, anchor)
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
-    with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
-        result = _inpaint_pipeline(
-            image=canvas,
-            mask_image=mask_image,
-            prompt=prompt,
-            negative_prompt=negative_prompt or None,
-            strength=1.0,
-            num_inference_steps=num_inference_steps,
-            true_cfg_scale=true_cfg_scale,
-            generator=generator,
-        ).images[0]
-        update_cuda_metrics()
 
+    def _run():
+        with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
+            out = _inpaint_pipeline(
+                image=canvas,
+                mask_image=mask_image,
+                prompt=prompt,
+                negative_prompt=negative_prompt or None,
+                strength=1.0,
+                num_inference_steps=num_inference_steps,
+                true_cfg_scale=true_cfg_scale,
+                generator=generator,
+            ).images[0]
+            update_cuda_metrics()
+            return out
+
+    result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
 
 
