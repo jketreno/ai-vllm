@@ -133,9 +133,16 @@ def _move_unregistered_tensor_caches(model, device):
 
 
 def _convert_floating_weights(model, dtype):
-    """Convert floating parameters without corrupting complex buffers."""
+    """Convert floating parameters while retaining required FP32 FFNs."""
+    fp32_parameters = {
+        id(parameter)
+        for module in model.modules()
+        if module.__class__.__name__ == "TransformerDecoderLayer"
+        for layer in (module.linear1, module.linear2)
+        for parameter in layer.parameters()
+    }
     for parameter in model.parameters():
-        if parameter.is_floating_point():
+        if parameter.is_floating_point() and id(parameter) not in fp32_parameters:
             parameter.data = parameter.data.to(dtype=dtype)
 
 

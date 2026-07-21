@@ -4,7 +4,15 @@ import unittest
 
 import torch
 
-from sam3.runtime import runtime_config
+from sam3.runtime import _convert_floating_weights, runtime_config
+
+
+class TransformerDecoderLayer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear1 = torch.nn.Linear(2, 4)
+        self.linear2 = torch.nn.Linear(4, 2)
+        self.convertible = torch.nn.Linear(2, 2)
 
 
 class RuntimeConfigTests(unittest.TestCase):
@@ -43,6 +51,13 @@ class RuntimeConfigTests(unittest.TestCase):
     def test_unknown_platform_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "SAM3_PLATFORM"):
             runtime_config({"SAM3_PLATFORM": "unknown"})
+
+    def test_conversion_retains_decoder_ffn_in_fp32(self):
+        model = TransformerDecoderLayer()
+        _convert_floating_weights(model, torch.bfloat16)
+        self.assertEqual(model.linear1.weight.dtype, torch.float32)
+        self.assertEqual(model.linear2.weight.dtype, torch.float32)
+        self.assertEqual(model.convertible.weight.dtype, torch.bfloat16)
 
 
 if __name__ == "__main__":
