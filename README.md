@@ -137,17 +137,23 @@ to produce numerically correct (non-NaN) output on this GB10's sm_121 GPU,
 which is not an officially supported PyTorch/torchao target as of this writing
 — re-verify output quality after any base image, diffusers, or torchao upgrade.
 
-**Do not run `qwen-image-edit` concurrently with `vllm-engine` without care.**
-On this GB10 node, real available memory under load has repeatedly measured
-lower than `(1 - CLARE2_GPU_MEMORY_UTILIZATION) × 121.63 GiB` implies — a first
+**History: `qwen-image-edit` concurrent with `vllm-engine` and `sam3` once
+caused a full host lockup.** On this GB10 node, with SAM3 also loaded, real
+available memory under load repeatedly measured lower than
+`(1 - CLARE2_GPU_MEMORY_UTILIZATION) × 121.63 GiB` implies — a first
 concurrent attempt OOM'd the container; a second attempt (after a loading-code
 fix) triggered a **full host lockup requiring a hard reboot**. Docker `mem_limit`
 was investigated as a safety backstop and rejected: it is documented as
 unreliable for CUDA/UVM allocations specifically on GB10's unified-memory
 architecture (cgroup memory accounting doesn't see UVM allocations, or
 `cudaMemGetInfo` misreports the full 128 GB pool as free regardless of the
-container's limit). Also do not run it at the same time as `sam3` or
-`clare2-train`.
+container's limit). SAM3 has since been moved to a separate machine and
+reduced to bf16, removing the largest contributor to that peak, so
+`qwen-image-edit` and `vllm-engine` now run concurrently by default (see
+`IMAGE_API_EXCLUSIVE_VLLM` below to restore the old serialized behavior).
+Still do not run it at the same time as `clare2-train` — training's memory
+requirements are handled separately via the CLARE2 nightly lifecycle, not
+this flag.
 
 Instead, model loading is split into three instrumented sections (transformer,
 text encoder, pipeline assembly). Before each section, the service checks host
@@ -240,11 +246,23 @@ port `9093` (job `qwen_image_edit`), following the same pattern as the SAM3
 services' `9092`.
 
 Image inference is admitted only when host `MemAvailable` is at least
-`QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB` (16 GiB by default). The Image API
-acquires an authenticated CLARE2 resource lease before edit/inpaint/outpaint:
-CLARE2 drains and stops `vllm-engine`, grants the lease once memory is safe,
-then restarts vLLM when the request finishes. Concurrent image requests queue
-behind the active lease, and an expired lease is reconciled automatically.
+`QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB` (16 GiB by default).
+
+By default (`IMAGE_API_EXCLUSIVE_VLLM=false`), `qwen-image-edit` and
+`vllm-engine` run concurrently — the OOM/host-lockup history above predates
+offloading SAM3 to a separate machine and reducing it to bf16, both of which
+were contributing factors. Set `IMAGE_API_EXCLUSIVE_VLLM=true` in `.env` to
+restore the old behavior if concurrent memory contention becomes a problem
+again on this node: the Image API then acquires an authenticated CLARE2
+resource lease before every edit/inpaint/outpaint request, CLARE2 drains and
+stops `vllm-engine`, grants the lease once memory is safe, then restarts vLLM
+when the request finishes. Concurrent image requests queue behind the active
+lease, and an expired lease is reconciled automatically.
+
+vLLM is still always stopped during CLARE2 nightly training regardless of
+this flag — that exclusivity (`clare2/pipeline/app/lifecycle.py`'s
+`drain_and_stop_infer`) is unrelated to the image-edit lease and exists so
+training has enough GPU memory to fit.
 
 `QWEN_IMAGE_EDIT_PROFILE=base` is the production default (20 steps, CFG 4).
 The optional `lightning` profile loads the configured LightX2V four-step FP32

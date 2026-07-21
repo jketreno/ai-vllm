@@ -71,9 +71,9 @@ class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
         response = unittest.mock.Mock(status_code=200)
         response.json.return_value = {"lease_id": "lease-1"}
         response.raise_for_status.return_value = None
-        with patch.object(resource_lease, "_token", return_value="token"), patch.object(
-            resource_lease.httpx, "AsyncClient"
-        ) as client_class:
+        with patch.object(resource_lease, "EXCLUSIVE_VLLM", True), patch.object(
+            resource_lease, "_token", return_value="token"
+        ), patch.object(resource_lease.httpx, "AsyncClient") as client_class:
             client = client_class.return_value.__aenter__.return_value
             client.post = AsyncMock(return_value=response)
             client.delete = AsyncMock()
@@ -84,6 +84,15 @@ class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
 
         client.delete.assert_awaited_once()
         self.assertTrue(client.delete.call_args.args[0].endswith("/lease-1"))
+
+    async def test_lease_is_a_no_op_when_exclusive_vllm_disabled(self):
+        with patch.object(resource_lease, "EXCLUSIVE_VLLM", False), patch.object(
+            resource_lease.httpx, "AsyncClient"
+        ) as client_class:
+            async with resource_lease.image_edit_lease("request-1"):
+                pass
+
+        client_class.assert_not_called()
 
     async def test_edit_invocation_holds_resource_lease_and_preserves_request_id(self):
         events = []

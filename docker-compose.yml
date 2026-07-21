@@ -307,6 +307,7 @@ services:
       IMAGE_API_POLICY_TOKEN_FILE: /run/secrets/clare2_proxy_token
       IMAGE_API_RESOURCE_LEASE_URL: http://clare2-policy:8000/operator/resource-leases/image-edit
       IMAGE_API_RESOURCE_LEASE_TOKEN_FILE: /run/secrets/clare2_operator_token
+      IMAGE_API_EXCLUSIVE_VLLM: ${IMAGE_API_EXCLUSIVE_VLLM:-false}
       IMAGE_API_VISION_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
       IMAGE_API_MAX_UPLOAD_BYTES: ${IMAGE_API_MAX_UPLOAD_BYTES:-52428800}
     secrets:

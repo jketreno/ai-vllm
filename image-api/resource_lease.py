@@ -14,6 +14,9 @@ LEASE_URL = os.environ.get(
 LEASE_TOKEN_FILE = os.environ.get(
     "IMAGE_API_RESOURCE_LEASE_TOKEN_FILE", "/run/secrets/clare2_operator_token"
 )
+EXCLUSIVE_VLLM = os.environ.get("IMAGE_API_EXCLUSIVE_VLLM", "false").lower() in (
+    "1", "true", "yes",
+)
 
 
 def _token() -> str:
@@ -28,6 +31,9 @@ def _token() -> str:
 
 @asynccontextmanager
 async def image_edit_lease(request_id: str):
+    if not EXCLUSIVE_VLLM:
+        yield
+        return
     headers = {"Authorization": f"Bearer {_token()}"}
     timeout = httpx.Timeout(connect=10, read=900, write=30, pool=10)
     lease_id = None
