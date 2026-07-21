@@ -39,7 +39,9 @@ from transformers import Qwen2_5_VLForConditionalGeneration
 
 MODEL_ID = os.environ.get("QWEN_IMAGE_EDIT_MODEL", "Qwen/Qwen-Image-Edit-2511")
 METRICS_PORT = int(os.environ.get("QWEN_IMAGE_EDIT_METRICS_PORT", "9093"))
-STATUS_PATH = os.environ.get("QWEN_IMAGE_EDIT_STATUS_PATH", "/app/state/load_status.json")
+STATUS_PATH = os.environ.get(
+    "QWEN_IMAGE_EDIT_STATUS_PATH", "/app/state/load_status.json"
+)
 # Quantizing the transformer from bf16 to fp8 on every startup takes several minutes
 # and briefly holds both the bf16 source and the fp8 result in memory. Cache the
 # already-quantized weights on first run and load them directly on subsequent starts
@@ -57,8 +59,12 @@ QUANTIZED_TRANSFORMER_PATH = os.environ.get(
 # margin: transformer 12.81, text_encoder 13.38, pipeline 0.66 GiB actually used.
 # Override via env if a future run's STATUS_PATH actuals differ meaningfully.
 REQUIRED_GIB = {
-    "transformer": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TRANSFORMER_GIB", "14")),
-    "text_encoder": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TEXT_ENCODER_GIB", "15")),
+    "transformer": float(
+        os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TRANSFORMER_GIB", "14")
+    ),
+    "text_encoder": float(
+        os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TEXT_ENCODER_GIB", "15")
+    ),
     "pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_PIPELINE_GIB", "2")),
     # QwenImageEditInpaintPipeline is constructed directly from the edit pipeline's
     # already-loaded scheduler/vae/text_encoder/tokenizer/processor/transformer by
@@ -66,7 +72,9 @@ REQUIRED_GIB = {
     # small Python wrapper object itself. (Not built via DiffusionPipeline.from_pipe():
     # it unconditionally ends with new_pipeline.to(dtype=...), which torchao's
     # fp8-quantized transformer rejects.)
-    "inpaint_pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_INPAINT_PIPELINE_GIB", "0.5")),
+    "inpaint_pipeline": float(
+        os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_INPAINT_PIPELINE_GIB", "0.5")
+    ),
 }
 SAFETY_MARGIN_GIB = float(os.environ.get("QWEN_IMAGE_EDIT_SAFETY_MARGIN_GIB", "4"))
 
@@ -74,11 +82,13 @@ EDIT_LATENCY = Histogram(
     "qwen_image_edit_inference_seconds", "Time spent running one edit inference"
 )
 INPAINT_LATENCY = Histogram(
-    "qwen_image_edit_inpaint_inference_seconds", "Time spent running one inpaint/outpaint inference"
+    "qwen_image_edit_inpaint_inference_seconds",
+    "Time spent running one inpaint/outpaint inference",
 )
 
 CUDA_ALLOCATED = Gauge(
-    "qwen_image_edit_cuda_memory_allocated_bytes", "CUDA memory allocated by this process"
+    "qwen_image_edit_cuda_memory_allocated_bytes",
+    "CUDA memory allocated by this process",
 )
 CUDA_RESERVED = Gauge(
     "qwen_image_edit_cuda_memory_reserved_bytes", "CUDA memory reserved by this process"
@@ -99,14 +109,36 @@ def update_cuda_metrics():
     except Exception:
         pass
 
-MAX_CANVAS_DIMENSION = int(os.environ.get("QWEN_IMAGE_EDIT_MAX_CANVAS_DIMENSION", "4096"))
+MAX_CANVAS_DIMENSION = int(
+    os.environ.get("QWEN_IMAGE_EDIT_MAX_CANVAS_DIMENSION", "4096")
+)
 PROTOCOL_VERSION = "1"
-MAX_ATTACHMENT_BYTES = int(os.environ.get("MODEL_RPC_MAX_ATTACHMENT_BYTES", str(64 * 1024 * 1024)))
+MAX_ATTACHMENT_BYTES = int(
+    os.environ.get("MODEL_RPC_MAX_ATTACHMENT_BYTES", str(64 * 1024 * 1024))
+)
 
 app = FastAPI(title="ai-vllm Qwen-Image-Edit API", version="1.0.0")
 _pipeline = None
 _inpaint_pipeline = None
 _pipeline_lock = threading.Lock()
+
+# Per-request diffusion-step progress, keyed by the RPC manifest's request_id (see
+# rpc.py's WorkerClient.invoke, which generates this id before POSTing). Lets a
+# caller poll GET /v1/invoke/{request_id}/progress while the single long-running
+# /v1/invoke call is still in flight, mirroring the _LoadStatus file-based progress
+# pattern above but held in memory since this is per-request, not per-process-load.
+_invoke_progress: dict[str, dict] = {}
+_invoke_progress_lock = threading.Lock()
+
+
+def _make_step_callback(request_id: str | None, total_steps: int):
+    def _on_step_end(pipe, step: int, timestep, callback_kwargs: dict) -> dict:
+        with _invoke_progress_lock:
+            _invoke_progress[request_id] = {
+                "step": step + 1, "total": total_steps, "updated_at": time.time(),
+            }
+        return callback_kwargs
+    return _on_step_end
 
 
 def _mem_available_gib():
@@ -205,7 +237,9 @@ def _load_transformer_cached(status):
         # torchao's Float8WeightOnlyConfig tensor-subclass format isn't safetensors-
         # compatible yet, hence safe_serialization=False -- persists actual fp8
         # tensors so the next startup can load them directly (see comment above).
-        transformer.save_pretrained(QUANTIZED_TRANSFORMER_PATH, safe_serialization=False)
+        transformer.save_pretrained(
+            QUANTIZED_TRANSFORMER_PATH, safe_serialization=False
+        )
     return transformer, time.time() - t0
 
 
@@ -269,7 +303,9 @@ def startup():
         print(f"qwen-image-edit: {error}", flush=True)
 
 
-_DATA_URI_RE = re.compile(r"^data:image/[a-zA-Z0-9.+-]+;base64,(?P<payload>.+)$", re.DOTALL)
+_DATA_URI_RE = re.compile(
+    r"^data:image/[a-zA-Z0-9.+-]+;base64,(?P<payload>.+)$", re.DOTALL
+)
 
 
 def _decode_image_bytes(raw: bytes, mode: str = "RGB") -> Image.Image:
@@ -345,11 +381,14 @@ async def edit(
     true_cfg_scale: float = Form(4.0),
     seed: int = Form(0),
     reference_files: list[UploadFile] | None = File(None),
+    request_id: str | None = None,
 ):
     """Whole-image, prompt-driven edit: text editing, object add/remove/move, pose
     changes, style transfer, detail enhancement. Pass 1-2 `reference_files` to fuse
     elements from additional images into the edit, per Qwen-Image-Edit-Plus's
-    multi-image fusion support (up to 3 images total, including `file`)."""
+    multi-image fusion support (up to 3 images total, including `file`). `request_id`
+    (if given) is the /v1/invoke manifest's request_id, used as the correlation key
+    for GET /v1/invoke/{request_id}/progress step polling."""
     if _pipeline is None:
         raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
@@ -364,19 +403,28 @@ async def edit(
         raise HTTPException(400, "at most 3 images total (file + 2 reference_files)")
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
+    callback = (
+        _make_step_callback(request_id, num_inference_steps) if request_id else None
+    )
 
     def _run():
         with _pipeline_lock, torch.inference_mode(), EDIT_LATENCY.time():
-            out = _pipeline(
-                image=images if len(images) > 1 else images[0],
-                prompt=prompt,
-                negative_prompt=negative_prompt or None,
-                num_inference_steps=num_inference_steps,
-                true_cfg_scale=true_cfg_scale,
-                generator=generator,
-            ).images[0]
-            update_cuda_metrics()
-            return out
+            try:
+                out = _pipeline(
+                    image=images if len(images) > 1 else images[0],
+                    prompt=prompt,
+                    negative_prompt=negative_prompt or None,
+                    num_inference_steps=num_inference_steps,
+                    true_cfg_scale=true_cfg_scale,
+                    generator=generator,
+                    **({"callback_on_step_end": callback} if callback else {}),
+                ).images[0]
+                update_cuda_metrics()
+                return out
+            finally:
+                if request_id:
+                    with _invoke_progress_lock:
+                        _invoke_progress.pop(request_id, None)
 
     result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
@@ -392,13 +440,16 @@ async def inpaint(
     true_cfg_scale: float = Form(4.0),
     seed: int = Form(0),
     padding_mask_crop: int | None = Form(None),
+    request_id: str | None = None,
 ):
     """Mask-guided region edit: repaint only the masked area (e.g. a SAM-selected
     region) per `prompt`, leaving the rest of the image untouched. `mask` is a
     `data:image/png;base64,...` string -- SAM3's /v1/segment mask field can be
     passed through as-is. `strength` (0-1) controls how strongly the masked region
     is regenerated; 1.0 fully replaces it, matching Alibaba's "add/remove/move
-    objects" edit but constrained to a specific region instead of the whole image."""
+    objects" edit but constrained to a specific region instead of the whole image.
+    `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
+    correlation key for GET /v1/invoke/{request_id}/progress step polling."""
     if _pipeline is None or _inpaint_pipeline is None:
         raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
@@ -411,34 +462,47 @@ async def inpaint(
     strength = max(0.0, min(strength, 1.0))
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
+    callback = (
+        _make_step_callback(request_id, num_inference_steps) if request_id else None
+    )
 
     def _run():
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
-            out = _inpaint_pipeline(
-                image=image,
-                mask_image=mask_image,
-                prompt=prompt,
-                negative_prompt=negative_prompt or None,
-                strength=strength,
-                num_inference_steps=num_inference_steps,
-                true_cfg_scale=true_cfg_scale,
-                padding_mask_crop=padding_mask_crop,
-                generator=generator,
-            ).images[0]
-            update_cuda_metrics()
-            return out
+            try:
+                out = _inpaint_pipeline(
+                    image=image,
+                    mask_image=mask_image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt or None,
+                    strength=strength,
+                    num_inference_steps=num_inference_steps,
+                    true_cfg_scale=true_cfg_scale,
+                    padding_mask_crop=padding_mask_crop,
+                    generator=generator,
+                    **({"callback_on_step_end": callback} if callback else {}),
+                ).images[0]
+                update_cuda_metrics()
+                return out
+            finally:
+                if request_id:
+                    with _invoke_progress_lock:
+                        _invoke_progress.pop(request_id, None)
 
     result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
 
 
-def _outpaint_canvas(image: Image.Image, target_width: int, target_height: int, anchor: str):
+def _outpaint_canvas(
+    image: Image.Image, target_width: int, target_height: int, anchor: str
+):
     """Paste `image` onto a new `target_width` x `target_height` canvas positioned by
     `anchor`, and build the companion mask: black (preserve) over the original image,
     white (repaint) over the newly exposed border. Returns (canvas, mask)."""
     src_w, src_h = image.size
     if target_width < src_w or target_height < src_h:
-        raise HTTPException(400, "target dimensions must be >= the source image dimensions")
+        raise HTTPException(
+            400, "target dimensions must be >= the source image dimensions"
+        )
 
     anchors = {
         "center": ((target_width - src_w) // 2, (target_height - src_h) // 2),
@@ -474,15 +538,20 @@ async def outpaint(
     num_inference_steps: int = Form(20),
     true_cfg_scale: float = Form(4.0),
     seed: int = Form(0),
+    request_id: str | None = None,
 ):
     """Expand the canvas: place the source image at `anchor` within a new
     `target_width` x `target_height` canvas and fill the newly exposed border via
     masked inpainting (strength fixed at 1.0, since the border starts blank).
-    `prompt` should describe the extended scene (e.g. "extend the beach and sky")."""
+    `prompt` should describe the extended scene (e.g. "extend the beach and sky").
+    `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
+    correlation key for GET /v1/invoke/{request_id}/progress step polling."""
     if _pipeline is None or _inpaint_pipeline is None:
         raise HTTPException(503, "model is not loaded")
     if target_width > MAX_CANVAS_DIMENSION or target_height > MAX_CANVAS_DIMENSION:
-        raise HTTPException(400, f"target dimensions must be <= {MAX_CANVAS_DIMENSION}px")
+        raise HTTPException(
+            400, f"target dimensions must be <= {MAX_CANVAS_DIMENSION}px"
+        )
     image = await _read_upload_image(file)
     if not prompt.strip():
         raise HTTPException(400, "prompt must not be empty")
@@ -491,21 +560,30 @@ async def outpaint(
     canvas, mask_image = _outpaint_canvas(image, target_width, target_height, anchor)
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
+    callback = (
+        _make_step_callback(request_id, num_inference_steps) if request_id else None
+    )
 
     def _run():
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
-            out = _inpaint_pipeline(
-                image=canvas,
-                mask_image=mask_image,
-                prompt=prompt,
-                negative_prompt=negative_prompt or None,
-                strength=1.0,
-                num_inference_steps=num_inference_steps,
-                true_cfg_scale=true_cfg_scale,
-                generator=generator,
-            ).images[0]
-            update_cuda_metrics()
-            return out
+            try:
+                out = _inpaint_pipeline(
+                    image=canvas,
+                    mask_image=mask_image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt or None,
+                    strength=1.0,
+                    num_inference_steps=num_inference_steps,
+                    true_cfg_scale=true_cfg_scale,
+                    generator=generator,
+                    **({"callback_on_step_end": callback} if callback else {}),
+                ).images[0]
+                update_cuda_metrics()
+                return out
+            finally:
+                if request_id:
+                    with _invoke_progress_lock:
+                        _invoke_progress.pop(request_id, None)
 
     result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
@@ -531,7 +609,11 @@ async def transform(
     crop_fields = (crop_left, crop_top, crop_width, crop_height)
     if any(value is not None for value in crop_fields):
         if any(value is None for value in crop_fields):
-            raise HTTPException(400, "crop requires crop_left, crop_top, crop_width, and crop_height together")
+            raise HTTPException(
+                400,
+                "crop requires crop_left, crop_top, crop_width, and crop_height "
+                "together",
+            )
         left, top, width, height = (int(value) for value in crop_fields)
         if width <= 0 or height <= 0:
             raise HTTPException(400, "crop_width and crop_height must be positive")
@@ -541,7 +623,9 @@ async def transform(
         image = image.crop(box)
 
     if rotate_degrees % 360 != 0:
-        image = image.rotate(-rotate_degrees, expand=expand_canvas, resample=Image.Resampling.BICUBIC)
+        image = image.rotate(
+            -rotate_degrees, expand=expand_canvas, resample=Image.Resampling.BICUBIC
+        )
 
     return _encode_image_response(image)
 
@@ -555,12 +639,26 @@ def capabilities():
         "operations": {
             "edit": {
                 "inputs": ["image", "reference:*"],
-                "parameters": ["prompt", "negative_prompt", "num_inference_steps", "true_cfg_scale", "seed"],
+                "parameters": [
+                    "prompt",
+                    "negative_prompt",
+                    "num_inference_steps",
+                    "true_cfg_scale",
+                    "seed",
+                ],
                 "outputs": ["image"],
             },
             "inpaint": {
                 "inputs": ["image", "mask"],
-                "parameters": ["prompt", "negative_prompt", "strength", "num_inference_steps", "true_cfg_scale", "seed", "padding_mask_crop"],
+                "parameters": [
+                    "prompt",
+                    "negative_prompt",
+                    "strength",
+                    "num_inference_steps",
+                    "true_cfg_scale",
+                    "seed",
+                    "padding_mask_crop",
+                ],
                 "outputs": ["image"],
             },
         },
@@ -575,17 +673,23 @@ async def _rpc_attachments(request, files):
     for descriptor, upload in zip(descriptors, files):
         name = descriptor.get("name")
         if not isinstance(name, str) or not name or name in result:
-            raise HTTPException(400, "attachment names must be unique non-empty strings")
+            raise HTTPException(
+                400, "attachment names must be unique non-empty strings"
+            )
         payload = await upload.read(MAX_ATTACHMENT_BYTES + 1)
         if len(payload) > MAX_ATTACHMENT_BYTES:
             raise HTTPException(413, f"attachment '{name}' is too large")
-        result[name] = (payload, descriptor.get("media_type", "application/octet-stream"))
+        result[name] = (
+            payload, descriptor.get("media_type", "application/octet-stream")
+        )
     return result
 
 
 def _upload(name, item):
     payload, media_type = item
-    return UploadFile(filename=name, file=io.BytesIO(payload), headers={"content-type": media_type})
+    return UploadFile(
+        filename=name, file=io.BytesIO(payload), headers={"content-type": media_type}
+    )
 
 
 def _rpc_result(request, result, started):
@@ -621,8 +725,13 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
         raise HTTPException(400, "image attachment is required")
     parameters = request.get("parameters", {})
     image = _upload("image", uploaded["image"])
+    request_id = request.get("request_id")
     if operation == "edit":
-        references = [_upload(name, item) for name, item in sorted(uploaded.items()) if name.startswith("reference:")]
+        references = [
+            _upload(name, item)
+            for name, item in sorted(uploaded.items())
+            if name.startswith("reference:")
+        ]
         result = await edit(
             file=image,
             prompt=str(parameters.get("prompt", "")),
@@ -631,6 +740,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
             true_cfg_scale=float(parameters.get("true_cfg_scale", 4.0)),
             seed=int(parameters.get("seed", 0)),
             reference_files=references,
+            request_id=request_id,
         )
     else:
         if "mask" not in uploaded:
@@ -647,5 +757,19 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
             true_cfg_scale=float(parameters.get("true_cfg_scale", 4.0)),
             seed=int(parameters.get("seed", 0)),
             padding_mask_crop=int(padding) if padding is not None else None,
+            request_id=request_id,
         )
     return _rpc_result(request, result, started)
+
+
+@app.get("/v1/invoke/{request_id}/progress")
+def invoke_progress(request_id: str):
+    with _invoke_progress_lock:
+        progress = _invoke_progress.get(request_id)
+    if progress is None:
+        raise HTTPException(
+            404,
+            "no progress recorded for this request_id (unknown, not yet started, "
+            "or already finished)",
+        )
+    return {"step": progress["step"], "total": progress["total"]}

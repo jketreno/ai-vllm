@@ -55,7 +55,9 @@ sys.modules.setdefault("diffusers", diffusers_stub)
 
 torchao_stub = types.ModuleType("torchao")
 torchao_quantization_stub = types.ModuleType("torchao.quantization")
-torchao_quantization_stub.Float8WeightOnlyConfig = type("Float8WeightOnlyConfig", (), {})
+torchao_quantization_stub.Float8WeightOnlyConfig = type(
+    "Float8WeightOnlyConfig", (), {}
+)
 torchao_stub.quantization = torchao_quantization_stub
 sys.modules.setdefault("torchao", torchao_stub)
 sys.modules.setdefault("torchao.quantization", torchao_quantization_stub)
@@ -77,7 +79,16 @@ class _FakeHistogram:
         return _FakeInferenceMode()
 
 
+class _FakeGauge:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def set(self, value):
+        pass
+
+
 prometheus_stub.Histogram = _FakeHistogram
+prometheus_stub.Gauge = _FakeGauge
 prometheus_stub.start_http_server = lambda *args, **kwargs: None
 sys.modules.setdefault("prometheus_client", prometheus_stub)
 
@@ -158,7 +169,9 @@ class OutpaintCanvasTests(unittest.TestCase):
         canvas, mask = api._outpaint_canvas(source, 20, 20, "center")
 
         left, top = 5, 5
-        self.assertEqual(canvas.crop((left, top, left + 10, top + 10)).tobytes(), source.tobytes())
+        self.assertEqual(
+            canvas.crop((left, top, left + 10, top + 10)).tobytes(), source.tobytes()
+        )
         mask_array = np.asarray(mask)
         self.assertTrue(np.all(mask_array[top : top + 10, left : left + 10] == 0))
 
@@ -191,6 +204,38 @@ class ClampStepsTests(unittest.TestCase):
         self.assertEqual(api._clamp_steps(0), 1)
         self.assertEqual(api._clamp_steps(500), 100)
         self.assertEqual(api._clamp_steps(50), 50)
+
+
+class InvokeProgressTests(unittest.TestCase):
+    def setUp(self):
+        api._invoke_progress.clear()
+
+    def tearDown(self):
+        api._invoke_progress.clear()
+
+    def test_step_callback_progress_is_monotonically_increasing_within_a_request(self):
+        callback = api._make_step_callback("req-1", total_steps=10)
+        seen_steps = []
+        for step in range(10):
+            callback(None, step, None, {})
+            seen_steps.append(api._invoke_progress["req-1"]["step"])
+
+        self.assertEqual(seen_steps, sorted(seen_steps))
+        self.assertEqual(seen_steps, list(range(1, 11)))
+
+    def test_invoke_progress_endpoint_returns_404_once_request_completes(self):
+        callback = api._make_step_callback("req-2", total_steps=5)
+        callback(None, 0, None, {})
+        self.assertEqual(api.invoke_progress("req-2"), {"step": 1, "total": 5})
+
+        api._invoke_progress.pop("req-2", None)
+
+        with self.assertRaises(api.HTTPException):
+            api.invoke_progress("req-2")
+
+    def test_invoke_progress_endpoint_raises_for_unknown_request_id(self):
+        with self.assertRaises(api.HTTPException):
+            api.invoke_progress("never-seen")
 
 
 if __name__ == "__main__":

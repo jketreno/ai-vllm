@@ -29,15 +29,27 @@ class WorkerClient:
         except httpx.HTTPError:
             return False
 
-    async def invoke(self, operation: str, parameters: dict, attachments: list[tuple[str, bytes, str]]) -> dict:
+    async def invoke(
+        self,
+        operation: str,
+        parameters: dict,
+        attachments: list[tuple[str, bytes, str]],
+        request_id: str | None = None,
+    ) -> dict:
         manifest = {
             "protocol_version": PROTOCOL_VERSION,
-            "request_id": str(uuid.uuid4()),
+            "request_id": request_id or str(uuid.uuid4()),
             "operation": operation,
             "parameters": parameters,
-            "attachments": [{"name": name, "media_type": media_type} for name, _, media_type in attachments],
+            "attachments": [
+                {"name": name, "media_type": media_type}
+                for name, _, media_type in attachments
+            ],
         }
-        files = [("attachments", (name, payload, media_type)) for name, payload, media_type in attachments]
+        files = [
+            ("attachments", (name, payload, media_type))
+            for name, payload, media_type in attachments
+        ]
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -50,8 +62,26 @@ class WorkerClient:
         if response.status_code == 503:
             raise HTTPException(503, "model capability is not ready")
         if response.status_code >= 400:
-            raise HTTPException(502, f"model worker rejected request: {response.text[:500]}")
+            raise HTTPException(
+                502, f"model worker rejected request: {response.text[:500]}"
+            )
         result = response.json()
-        if result.get("protocol_version") != PROTOCOL_VERSION or result.get("status") != "ok":
+        if (
+            result.get("protocol_version") != PROTOCOL_VERSION
+            or result.get("status") != "ok"
+        ):
             raise HTTPException(502, "invalid model worker response")
         return result
+
+    async def invoke_progress(self, request_id: str) -> dict:
+        """Poll step progress for an in-flight /v1/invoke call. Raises
+        HTTPException(404) if the worker has no progress recorded (unknown, not
+        yet started, or finished)."""
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{self.base_url}/v1/invoke/{request_id}/progress"
+            )
+        if response.status_code == 404:
+            raise HTTPException(404, "no progress recorded for this request_id")
+        response.raise_for_status()
+        return response.json()
