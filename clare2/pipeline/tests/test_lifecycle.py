@@ -13,6 +13,62 @@ import app.metrics as metrics
 from app.registry import AdapterRegistry
 
 
+class ImageEditLeaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.temp.name)
+        patch.object(lifecycle, "STATE_ROOT", root).start()
+        patch.object(lifecycle, "STATE_PATH", root / "lifecycle.json").start()
+        patch.object(lifecycle, "LOCK_PATH", root / "lifecycle.lock").start()
+        patch.object(lifecycle, "maintenance").start()
+        patch.object(lifecycle, "_container").start()
+        patch.object(lifecycle, "_wait_for_vllm").start()
+        patch.object(lifecycle, "_wait_for_image_memory", return_value=24.0).start()
+        patch.object(lifecycle, "DRAIN_TIMEOUT", 0).start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def test_acquire_stops_vllm_and_records_exclusive_lease(self):
+        result = lifecycle.acquire_image_edit_lease("request-1")
+
+        self.assertEqual(result["phase"], "image_edit")
+        self.assertEqual(result["request_id"], "request-1")
+        self.assertEqual(result["mem_available_gib"], 24.0)
+        lifecycle.maintenance.enter.assert_called_once()
+        lifecycle._container.assert_called_once_with("stop", lifecycle.VLLM_CONTAINER)
+
+    def test_release_restarts_vllm_and_is_idempotent(self):
+        lease = lifecycle.acquire_image_edit_lease("request-1")
+        lifecycle._container.reset_mock()
+
+        released = lifecycle.release_image_edit_lease(lease["lease_id"])
+        repeated = lifecycle.release_image_edit_lease(lease["lease_id"])
+
+        self.assertEqual(released["status"], "released")
+        self.assertEqual(repeated["status"], "already_released")
+        lifecycle._container.assert_called_once_with("start", lifecycle.VLLM_CONTAINER)
+        lifecycle._wait_for_vllm.assert_called_once()
+        lifecycle.maintenance.exit.assert_called_once()
+
+    def test_second_acquire_times_out_while_lease_is_active(self):
+        lifecycle.acquire_image_edit_lease("request-1")
+
+        with self.assertRaisesRegex(RuntimeError, "timed out waiting"):
+            lifecycle.acquire_image_edit_lease("request-2")
+
+    def test_failed_restore_keeps_maintenance_and_schedules_ttl_retry(self):
+        lease = lifecycle.acquire_image_edit_lease("request-1")
+        lifecycle._wait_for_vllm.side_effect = RuntimeError("not healthy")
+
+        with self.assertRaisesRegex(RuntimeError, "not healthy"):
+            lifecycle.release_image_edit_lease(lease["lease_id"])
+
+        self.assertEqual(lifecycle.status()["phase"], "image_edit")
+        lifecycle.maintenance.exit.assert_not_called()
+
+
 class CompleteTrainingSkippedTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -125,7 +181,10 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         patch.object(lifecycle, "notify").start()
         patch.object(lifecycle, "corpus").start()
         patch.object(lifecycle, "_container").start()
-        patch.object(lifecycle, "_container_exists", return_value=True).start()
+        self.container_exists_patch = patch.object(
+            lifecycle, "_container_exists", return_value=True
+        )
+        self.container_exists_patch.start()
         patch.object(lifecycle.time, "sleep").start()
 
     def tearDown(self):
@@ -197,6 +256,7 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         self.assertTrue(lifecycle.status()["trainer_start_requested"])
 
     def test_container_existence_maps_not_found_to_false(self):
+        self.container_exists_patch.stop()
         response = unittest.mock.Mock(status_code=404)
         with patch.object(lifecycle.httpx, "get", return_value=response):
             self.assertFalse(lifecycle._container_exists(lifecycle.TRAIN_CONTAINER))

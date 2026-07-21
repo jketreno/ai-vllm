@@ -207,6 +207,19 @@ curl -s http://127.0.0.1:8005/v1/images/edit \
 port `9093` (job `qwen_image_edit`), following the same pattern as the SAM3
 services' `9092`.
 
+Image inference is admitted only when host `MemAvailable` is at least
+`QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB` (16 GiB by default). The Image API
+acquires an authenticated CLARE2 resource lease before edit/inpaint/outpaint:
+CLARE2 drains and stops `vllm-engine`, grants the lease once memory is safe,
+then restarts vLLM when the request finishes. Concurrent image requests queue
+behind the active lease, and an expired lease is reconciled automatically.
+
+`QWEN_IMAGE_EDIT_PROFILE=base` is the production default (20 steps, CFG 4).
+The optional `lightning` profile loads the configured LightX2V four-step FP32
+LoRA, installs its required FlowMatch scheduler, and enforces 4 steps with CFG
+1. Enable it only after an isolated quality/latency benchmark; it is not an
+official Qwen checkpoint and is deliberately not enabled by default.
+
 ### Image API
 
 Alibaba's hosted Qwen-Image-Edit API (see
@@ -234,7 +247,10 @@ to a new dtype is unsupported`.)
   black pixels are preserved — exactly the format returned by
   `/v1/images/segment`, so a SAM mask can be forwarded unmodified. `strength`
   (0.0-1.0, default 1.0) controls how strongly the masked region is
-  regenerated.
+  regenerated. When `padding_mask_crop` is set, the worker crops the image and
+  mask together, runs Diffusers without its incompatible overlay path, and
+  composites the generated region back onto the exact source canvas. Output
+  dimensions always match the input and unmasked pixels are preserved.
 - `POST /v1/images/outpaint` — canvas expansion ("expand image"). Give a
   `target_width`/`target_height` and an `anchor`
   (`center`/`top`/`bottom`/`left`/`right`/`top-left`/`top-right`/`bottom-left`/`bottom-right`);

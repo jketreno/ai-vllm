@@ -46,6 +46,7 @@ diffusers_stub = types.ModuleType("diffusers")
 for name in (
     "AutoModel",
     "DiffusionPipeline",
+    "FlowMatchEulerDiscreteScheduler",
     "QwenImageEditInpaintPipeline",
     "QwenImageEditPlusPipeline",
     "TorchAoConfig",
@@ -78,6 +79,12 @@ class _FakeHistogram:
     def time(self):
         return _FakeInferenceMode()
 
+    def labels(self, *args, **kwargs):
+        return self
+
+    def observe(self, value):
+        pass
+
 
 class _FakeGauge:
     def __init__(self, *args, **kwargs):
@@ -86,9 +93,16 @@ class _FakeGauge:
     def set(self, value):
         pass
 
+    def labels(self, *args, **kwargs):
+        return self
+
+    def inc(self):
+        pass
+
 
 prometheus_stub.Histogram = _FakeHistogram
 prometheus_stub.Gauge = _FakeGauge
+prometheus_stub.Counter = _FakeGauge
 prometheus_stub.start_http_server = lambda *args, **kwargs: None
 sys.modules.setdefault("prometheus_client", prometheus_stub)
 
@@ -206,6 +220,67 @@ class ClampStepsTests(unittest.TestCase):
         self.assertEqual(api._clamp_steps(50), 50)
 
 
+class InpaintCompositionTests(unittest.TestCase):
+    def test_portrait_crop_keeps_image_and_mask_dimensions_aligned(self):
+        source = _make_image(1204, 1599, color=(10, 20, 30))
+        mask = Image.new("L", source.size, 0)
+        mask.paste(255, (500, 700, 620, 840))
+
+        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 64)
+
+        self.assertEqual(cropped_image.size, cropped_mask.size)
+        self.assertEqual(box, (436, 636, 684, 904))
+
+    def test_composite_preserves_every_unmasked_source_pixel(self):
+        source = _make_image(80, 120, color=(10, 20, 30))
+        mask = Image.new("L", source.size, 0)
+        mask.paste(255, (20, 30, 40, 50))
+        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 8)
+        generated = _make_image(1024, 1024, color=(200, 100, 50))
+
+        result = api._composite_generated_region(source, mask, generated, box)
+
+        result_pixels = np.asarray(result)
+        source_pixels = np.asarray(source)
+        mask_pixels = np.asarray(mask)
+        np.testing.assert_array_equal(
+            result_pixels[mask_pixels == 0], source_pixels[mask_pixels == 0]
+        )
+        self.assertEqual(result.size, source.size)
+
+    def test_empty_mask_uses_full_canvas_without_changing_dimensions(self):
+        source = _make_image(1204, 1599)
+        mask = Image.new("L", source.size, 0)
+
+        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 64)
+
+        self.assertEqual(cropped_image.size, source.size)
+        self.assertEqual(cropped_mask.size, source.size)
+        self.assertEqual(box, (0, 0, 1204, 1599))
+
+    def test_landscape_edge_touching_mask_is_clamped_to_canvas(self):
+        source = _make_image(1599, 1204)
+        mask = Image.new("L", source.size, 0)
+        mask.paste(255, (0, 100, 20, 300))
+
+        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 64)
+
+        self.assertEqual(box, (0, 36, 84, 364))
+        self.assertEqual(cropped_image.size, cropped_mask.size)
+
+    def test_full_mask_and_multi_object_mask_preserve_source_dimensions(self):
+        source = _make_image(320, 180, color=(1, 2, 3))
+        generated = _make_image(512, 512, color=(9, 8, 7))
+        masks = [Image.new("L", source.size, 255), Image.new("L", source.size, 0)]
+        masks[1].paste(255, (10, 10, 30, 30))
+        masks[1].paste(255, (250, 120, 300, 160))
+
+        for mask in masks:
+            _, _, box = api._inpaint_region(source, mask, 64)
+            result = api._composite_generated_region(source, mask, generated, box)
+            self.assertEqual(result.size, source.size)
+
+
 class InvokeProgressTests(unittest.TestCase):
     def setUp(self):
         api._invoke_progress.clear()
@@ -223,19 +298,28 @@ class InvokeProgressTests(unittest.TestCase):
         self.assertEqual(seen_steps, sorted(seen_steps))
         self.assertEqual(seen_steps, list(range(1, 11)))
 
-    def test_invoke_progress_endpoint_returns_404_once_request_completes(self):
+    def test_invoke_progress_endpoint_retains_terminal_state(self):
         callback = api._make_step_callback("req-2", total_steps=5)
         callback(None, 0, None, {})
-        self.assertEqual(api.invoke_progress("req-2"), {"step": 1, "total": 5})
+        api._finish_progress("req-2", "succeeded")
 
-        api._invoke_progress.pop("req-2", None)
-
-        with self.assertRaises(api.HTTPException):
-            api.invoke_progress("req-2")
+        progress = api.invoke_progress("req-2")
+        self.assertEqual(progress["status"], "succeeded")
+        self.assertEqual(progress["step"], 1)
+        self.assertEqual(progress["total"], 5)
 
     def test_invoke_progress_endpoint_raises_for_unknown_request_id(self):
         with self.assertRaises(api.HTTPException):
             api.invoke_progress("never-seen")
+
+    def test_expired_progress_is_pruned(self):
+        api._invoke_progress["expired"] = {
+            "status": "succeeded", "updated_at": 1,
+        }
+
+        api._prune_progress(now=api.PROGRESS_RETENTION_SECONDS + 2)
+
+        self.assertNotIn("expired", api._invoke_progress)
 
 
 if __name__ == "__main__":

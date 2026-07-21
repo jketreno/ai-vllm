@@ -26,6 +26,9 @@ x-clare2-env: &clare2-env
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
   CLARE2_CALLBACK_SECRET_FILE: /run/secrets/clare2_callback_secret
   CLARE2_CORPUS_SYNC_KEY_FILE: /run/secrets/clare2_corpus_sync_key
+  CLARE2_IMAGE_LEASE_TTL: ${CLARE2_IMAGE_LEASE_TTL:-3600}
+  CLARE2_IMAGE_LEASE_MIN_AVAILABLE_GIB: ${CLARE2_IMAGE_LEASE_MIN_AVAILABLE_GIB:-16}
+  CLARE2_IMAGE_LEASE_MEMORY_TIMEOUT: ${CLARE2_IMAGE_LEASE_MEMORY_TIMEOUT:-120}
 
 services:
   mlflow:
@@ -263,6 +266,11 @@ services:
     restart: unless-stopped
     environment:
       HF_TOKEN_FILE: /run/secrets/huggingface_token
+      QWEN_IMAGE_EDIT_PROFILE: ${QWEN_IMAGE_EDIT_PROFILE:-base}
+      QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB: ${QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB:-16}
+      QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS: ${QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS:-86400}
+      QWEN_IMAGE_EDIT_LIGHTNING_REPO: ${QWEN_IMAGE_EDIT_LIGHTNING_REPO:-lightx2v/Qwen-Image-Edit-2511-Lightning}
+      QWEN_IMAGE_EDIT_LIGHTNING_WEIGHT: ${QWEN_IMAGE_EDIT_LIGHTNING_WEIGHT:-Qwen-Image-Edit-2511-Lightning-4steps-V1.0-fp32.safetensors}
     secrets:
       - huggingface_token
     ulimits:
@@ -293,10 +301,13 @@ services:
       IMAGE_API_POLICY_URL: http://clare2-policy:8000/v1
       IMAGE_API_POLICY_HEALTH_URL: http://clare2-policy:8000/health
       IMAGE_API_POLICY_TOKEN_FILE: /run/secrets/clare2_proxy_token
+      IMAGE_API_RESOURCE_LEASE_URL: http://clare2-policy:8000/operator/resource-leases/image-edit
+      IMAGE_API_RESOURCE_LEASE_TOKEN_FILE: /run/secrets/clare2_operator_token
       IMAGE_API_VISION_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
       IMAGE_API_MAX_UPLOAD_BYTES: ${IMAGE_API_MAX_UPLOAD_BYTES:-52428800}
     secrets:
       - clare2_proxy_token
+      - clare2_operator_token
     ports:
       - "${IMAGE_API_BIND_ADDRESS:-127.0.0.1}:${IMAGE_API_PORT:-8005}:8000"
     depends_on:

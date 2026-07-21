@@ -114,6 +114,16 @@ maintenance_duration = Histogram(
 lifecycle_outcomes = Counter(
     "clare2_lifecycle_outcomes_total", "Lifecycle outcomes", ["outcome"]
 )
+image_lease_active = Gauge(
+    "clare2_image_edit_lease_active", "Whether an image-edit resource lease is active"
+)
+image_lease_duration = Histogram(
+    "clare2_image_edit_lease_duration_seconds", "Image-edit resource lease duration",
+    buckets=(10, 30, 60, 120, 300, 600, 900, 1200, 1800, 3600),
+)
+image_lease_outcomes = Counter(
+    "clare2_image_edit_lease_outcomes_total", "Image-edit lease outcomes", ["outcome"]
+)
 notification_sent = Counter(
     "clare2_notification_sent_total", "Run notification emails sent", ["outcome", "status"]
 )

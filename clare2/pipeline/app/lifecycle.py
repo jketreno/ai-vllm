@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 import httpx
@@ -33,6 +33,13 @@ ACTIVE_INFERENCE_QUERY = os.environ.get(
     "CLARE2_ACTIVE_INFERENCE_QUERY", "sum(vllm:num_requests_running)"
 )
 TRAINING_RETRY_INTERVAL = float(os.environ.get("CLARE2_TRAINING_RETRY_INTERVAL", "30"))
+IMAGE_LEASE_TTL = float(os.environ.get("CLARE2_IMAGE_LEASE_TTL", "3600"))
+IMAGE_LEASE_MIN_AVAILABLE_GIB = float(
+    os.environ.get("CLARE2_IMAGE_LEASE_MIN_AVAILABLE_GIB", "16")
+)
+IMAGE_LEASE_MEMORY_TIMEOUT = float(
+    os.environ.get("CLARE2_IMAGE_LEASE_MEMORY_TIMEOUT", "120")
+)
 
 PHASES = {
     "idle",
@@ -48,6 +55,7 @@ PHASES = {
     "promoting",
     "recovering",
     "failed",
+    "image_edit",
 }
 
 TERMINAL_OUTCOMES = {"promoted", "rejected", "skipped_no_new_content", "batch_complete"}
@@ -57,6 +65,141 @@ def status() -> dict[str, Any]:
     if not STATE_PATH.exists():
         return {"phase": "idle", "run_id": None}
     return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+
+
+def _mem_available_gib() -> float:
+    with open("/proc/meminfo", encoding="utf-8") as meminfo:
+        for line in meminfo:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)
+    raise RuntimeError("MemAvailable not found")
+
+
+def _wait_for_image_memory() -> float:
+    deadline = time.monotonic() + IMAGE_LEASE_MEMORY_TIMEOUT
+    while time.monotonic() < deadline:
+        available = _mem_available_gib()
+        if available >= IMAGE_LEASE_MIN_AVAILABLE_GIB:
+            return available
+        time.sleep(2)
+    raise TimeoutError(
+        f"image inference needs {IMAGE_LEASE_MIN_AVAILABLE_GIB:.1f} GiB MemAvailable"
+    )
+
+
+def _acquire_image_edit_lease_once(request_id: str) -> dict[str, Any]:
+    """Drain and stop vLLM, then grant exclusive access to unified GPU memory."""
+    with single_run():
+        state = reconcile_terminal_state()
+        if state.get("phase") not in {"idle", "failed"}:
+            phase = state.get("phase")
+            raise RuntimeError(f"resources busy in lifecycle phase {phase}")
+        lease_id = uuid.uuid4().hex
+        maintenance.enter()
+        stopped = False
+        try:
+            if not maintenance.wait_for_drain(DRAIN_TIMEOUT):
+                raise TimeoutError("timed out waiting for in-flight inference")
+            _container("stop", VLLM_CONTAINER)
+            stopped = True
+            available = _wait_for_image_memory()
+            expires_at = datetime.now(tz=timezone.utc) + timedelta(
+                seconds=IMAGE_LEASE_TTL
+            )
+            _set_state(
+                "image_edit", reset=True, lease_id=lease_id,
+                request_id=request_id, expires_at=expires_at.isoformat(),
+                mem_available_gib=round(available, 2),
+                acquired_monotonic=time.monotonic(),
+            )
+            metrics.image_lease_active.set(1)
+            metrics.image_lease_outcomes.labels(outcome="acquired").inc()
+            return status()
+        except Exception as acquire_error:
+            if stopped:
+                try:
+                    _container("start", VLLM_CONTAINER)
+                    _wait_for_vllm()
+                except Exception as restore_error:
+                    _set_state(
+                        "image_edit", reset=True, lease_id=lease_id,
+                        request_id=request_id,
+                        expires_at=datetime.now(tz=timezone.utc).isoformat(),
+                        error=f"vLLM restoration failed: {restore_error}",
+                    )
+                    metrics.image_lease_active.set(1)
+                    metrics.image_lease_outcomes.labels(
+                        outcome="restore_failure"
+                    ).inc()
+                    raise acquire_error from restore_error
+            maintenance.exit()
+            _set_state("failed", reset=True, error="image lease acquisition failed")
+            raise
+
+
+def acquire_image_edit_lease(request_id: str) -> dict[str, Any]:
+    """Queue behind another image lease while rejecting unrelated lifecycle work."""
+    deadline = time.monotonic() + DRAIN_TIMEOUT
+    while True:
+        try:
+            return _acquire_image_edit_lease_once(request_id)
+        except RuntimeError as error:
+            phase = status().get("phase")
+            lock_race = "another lifecycle operation" in str(error)
+            if phase != "image_edit" and not lock_race:
+                raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "timed out waiting for the active image lease"
+                ) from error
+            time.sleep(2)
+
+
+def release_image_edit_lease(lease_id: str) -> dict[str, Any]:
+    """Idempotently restore vLLM and leave maintenance mode."""
+    with single_run():
+        state = status()
+        if state.get("phase") != "image_edit":
+            return {"status": "already_released"}
+        if state.get("lease_id") != lease_id:
+            raise RuntimeError("image lease id does not match the active lease")
+        acquired = float(state.get("acquired_monotonic", time.monotonic()))
+        _set_state("restarting", lease_id=lease_id)
+        try:
+            _container("start", VLLM_CONTAINER)
+            _wait_for_vllm()
+        except Exception as error:
+            _set_state(
+                "image_edit", reset=True, lease_id=lease_id,
+                request_id=state.get("request_id"),
+                expires_at=datetime.now(tz=timezone.utc).isoformat(),
+                acquired_monotonic=acquired,
+                error=f"vLLM restoration failed: {error}",
+            )
+            metrics.image_lease_outcomes.labels(outcome="restore_failure").inc()
+            raise
+        maintenance.exit()
+        try:
+            metrics.image_lease_active.set(0)
+            metrics.image_lease_duration.observe(max(0, time.monotonic() - acquired))
+            metrics.image_lease_outcomes.labels(outcome="released").inc()
+        finally:
+            _set_state("idle", reset=True)
+        return {"status": "released", "lease_id": lease_id}
+
+
+def reconcile_image_edit_lease() -> dict[str, Any]:
+    state = status()
+    if state.get("phase") != "image_edit":
+        return state
+    maintenance.enter()
+    try:
+        expires_at = datetime.fromisoformat(state["expires_at"])
+    except (KeyError, ValueError):
+        expires_at = datetime.now(tz=timezone.utc)
+    if expires_at <= datetime.now(tz=timezone.utc):
+        return release_image_edit_lease(str(state.get("lease_id", "")))
+    return state
 
 
 def reconcile_terminal_state() -> dict[str, Any]:

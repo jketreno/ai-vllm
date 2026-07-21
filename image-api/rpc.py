@@ -11,7 +11,7 @@ PROTOCOL_VERSION = "1"
 
 
 class WorkerClient:
-    def __init__(self, base_url: str, timeout: float = 900):
+    def __init__(self, base_url: str, timeout: float = 1800):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 

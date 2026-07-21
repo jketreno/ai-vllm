@@ -3,8 +3,10 @@
 import base64
 import io
 import json
+import logging
 import os
 import re
+import uuid
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -19,9 +21,11 @@ from image_ops import (
     transform_image,
 )
 from rpc import WorkerClient
+from resource_lease import image_edit_lease
 
 
 app = FastAPI(title="ai-vllm Image API", version="1.0.0")
+log = logging.getLogger("image_api")
 sam = WorkerClient(os.environ.get("SAM3_WORKER_URL", "http://sam3-worker:8004"))
 editor = WorkerClient(
     os.environ.get("QWEN_IMAGE_EDIT_WORKER_URL", "http://qwen-image-edit-worker:8006")
@@ -154,6 +158,7 @@ async def capabilities():
     sam_ready = await sam.ready()
     edit_ready = await editor.ready()
     vision_ready = await policy_ready()
+    edit_profile = await editor.capabilities() if edit_ready else None
     return {"api_version": "1", "capabilities": {
         "analyze": "ready" if sam_ready and vision_ready else "unavailable",
         "segment": "ready" if sam_ready else "unavailable",
@@ -161,7 +166,7 @@ async def capabilities():
         "inpaint": "ready" if edit_ready else "unavailable",
         "outpaint": "ready" if edit_ready else "unavailable",
         "transform": "ready",
-    }}
+    }, "image_edit": edit_profile}
 
 
 async def run_segment(payload, media_type, image, prompts, threshold, fields):
@@ -214,8 +219,23 @@ async def segment(
 async def invoke_edit(
     operation, image, media_type, params, extras=None, request_id=None
 ):
+    request_id = request_id or str(uuid.uuid4())
     attachments = [("image", png_bytes(image), media_type), *(extras or [])]
-    result = await editor.invoke(operation, params, attachments, request_id=request_id)
+    log.info("request_id=%s operation=%s stage=resource_wait", request_id, operation)
+    try:
+        async with image_edit_lease(request_id):
+            log.info(
+                "request_id=%s operation=%s stage=lease_acquired",
+                request_id,
+                operation,
+            )
+            result = await editor.invoke(
+                operation, params, attachments, request_id=request_id
+            )
+    except Exception:
+        log.exception("request_id=%s operation=%s stage=failed", request_id, operation)
+        raise
+    log.info("request_id=%s operation=%s stage=succeeded", request_id, operation)
     return image_response(rpc_image(result))
 
 

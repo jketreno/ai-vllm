@@ -7,10 +7,12 @@ not just what the current implementation happens to return.
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import app
+import resource_lease
 
 
 def _chat_response(payload: dict) -> AsyncMock:
@@ -62,6 +64,56 @@ class ConceptsCaptionTests(unittest.IsolatedAsyncioTestCase):
             )
             with self.assertRaises(app.HTTPException):
                 await app.concepts(b"fake-image-bytes", "image/png")
+
+
+class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lease_is_released_when_inference_fails(self):
+        response = unittest.mock.Mock(status_code=200)
+        response.json.return_value = {"lease_id": "lease-1"}
+        response.raise_for_status.return_value = None
+        with patch.object(resource_lease, "_token", return_value="token"), patch.object(
+            resource_lease.httpx, "AsyncClient"
+        ) as client_class:
+            client = client_class.return_value.__aenter__.return_value
+            client.post = AsyncMock(return_value=response)
+            client.delete = AsyncMock()
+
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                async with resource_lease.image_edit_lease("request-1"):
+                    raise RuntimeError("inference failed")
+
+        client.delete.assert_awaited_once()
+        self.assertTrue(client.delete.call_args.args[0].endswith("/lease-1"))
+
+    async def test_edit_invocation_holds_resource_lease_and_preserves_request_id(self):
+        events = []
+
+        @asynccontextmanager
+        async def lease(request_id):
+            events.append(("acquire", request_id))
+            try:
+                yield
+            finally:
+                events.append(("release", request_id))
+
+        rpc_result = {
+            "protocol_version": "1", "status": "ok",
+            "data": {"width": 1, "height": 1},
+            "attachments": [{
+                "name": "image", "media_type": "image/png",
+                "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            }],
+        }
+        image = app.Image.new("RGB", (1, 1))
+        with patch.object(app, "image_edit_lease", lease), patch.object(
+            app.editor, "invoke", new_callable=AsyncMock, return_value=rpc_result
+        ) as invoke:
+            await app.invoke_edit(
+                "inpaint", image, "image/png", {}, request_id="request-1"
+            )
+
+        self.assertEqual(events, [("acquire", "request-1"), ("release", "request-1")])
+        self.assertEqual(invoke.call_args.kwargs["request_id"], "request-1")
 
     async def test_concepts_raises_if_sam3_prompts_missing_from_model_response(self):
         payload = {"caption": "A red bicycle leaning against a brick wall."}

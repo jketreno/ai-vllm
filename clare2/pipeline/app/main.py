@@ -69,6 +69,10 @@ class DreamTrainingStartPayload(BaseModel):
     run_id: str
 
 
+class ImageLeasePayload(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 def sync_distill_and_assemble() -> dict:
     sync_result = corpus_sync.sync_all()
     distill_result = distiller.run_daily()
@@ -89,9 +93,14 @@ def startup() -> None:
     scheduler.add_job(summarizer.run_scheduled, "cron", hour=22, minute=30, id="summarize")
     scheduler.add_job(corpus.assemble, "cron", hour=23, minute=30, id="corpus_assemble")
     scheduler.add_job(lifecycle.run_nightly_training, "cron", hour=0, minute=0, id="train")
+    scheduler.add_job(
+        lifecycle.reconcile_image_edit_lease, "interval", minutes=1,
+        id="image_lease_reconcile",
+    )
     scheduler.start()
     try:
         lifecycle.reconcile_terminal_state()
+        lifecycle.reconcile_image_edit_lease()
         controller.reconcile()
     except Exception:
         log.exception("Initial vLLM reconciliation failed")
@@ -235,6 +244,27 @@ def set_maintenance(action: str) -> dict:
     else:
         raise HTTPException(status_code=400, detail="action must be enter or exit")
     return {"maintenance": maintenance.enabled}
+
+
+@app.post(
+    "/operator/resource-leases/image-edit", dependencies=[Depends(operator_auth)]
+)
+def acquire_image_edit_lease(payload: ImageLeasePayload) -> dict:
+    try:
+        return lifecycle.acquire_image_edit_lease(payload.request_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete(
+    "/operator/resource-leases/image-edit/{lease_id}",
+    dependencies=[Depends(operator_auth)],
+)
+def release_image_edit_lease(lease_id: str) -> dict:
+    try:
+        return lifecycle.release_image_edit_lease(lease_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/operator/training/dream/start", dependencies=[Depends(operator_auth)])

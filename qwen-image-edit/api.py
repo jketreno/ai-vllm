@@ -17,6 +17,8 @@ import base64
 import binascii
 import io
 import json
+import logging
+import math
 import os
 import re
 import threading
@@ -26,14 +28,14 @@ import uuid
 import torch
 from diffusers import (
     AutoModel,
-    DiffusionPipeline,
+    FlowMatchEulerDiscreteScheduler,
     QwenImageEditInpaintPipeline,
     QwenImageEditPlusPipeline,
     TorchAoConfig,
 )
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
-from prometheus_client import Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from torchao.quantization import Float8WeightOnlyConfig
 from transformers import Qwen2_5_VLForConditionalGeneration
 
@@ -77,13 +79,49 @@ REQUIRED_GIB = {
     ),
 }
 SAFETY_MARGIN_GIB = float(os.environ.get("QWEN_IMAGE_EDIT_SAFETY_MARGIN_GIB", "4"))
+INFERENCE_REQUIRED_GIB = float(
+    os.environ.get("QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB", "16")
+)
+PROFILE = os.environ.get("QWEN_IMAGE_EDIT_PROFILE", "base").strip().lower()
+LIGHTNING_REPO = os.environ.get(
+    "QWEN_IMAGE_EDIT_LIGHTNING_REPO", "lightx2v/Qwen-Image-Edit-2511-Lightning"
+)
+LIGHTNING_WEIGHT = os.environ.get(
+    "QWEN_IMAGE_EDIT_LIGHTNING_WEIGHT",
+    "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-fp32.safetensors",
+)
+log = logging.getLogger("qwen_image_edit")
+PROGRESS_RETENTION_SECONDS = int(
+    os.environ.get("QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS", "86400")
+)
+
+LATENCY_BUCKETS = (10, 30, 60, 120, 300, 600, 900, 1200, 1800)
 
 EDIT_LATENCY = Histogram(
-    "qwen_image_edit_inference_seconds", "Time spent running one edit inference"
+    "qwen_image_edit_inference_seconds", "Time spent running one edit inference",
+    buckets=LATENCY_BUCKETS,
 )
 INPAINT_LATENCY = Histogram(
     "qwen_image_edit_inpaint_inference_seconds",
     "Time spent running one inpaint/outpaint inference",
+    buckets=LATENCY_BUCKETS,
+)
+INFERENCE_REQUESTS = Counter(
+    "qwen_image_edit_requests_total", "Inference requests by operation and outcome",
+    ["operation", "outcome", "profile"],
+)
+INFERENCE_MEMORY = Gauge(
+    "qwen_image_edit_inference_mem_available_gib",
+    "Host MemAvailable observed around inference", ["phase", "profile"],
+)
+STEP_LATENCY = Histogram(
+    "qwen_image_edit_step_duration_seconds", "Time between model step callbacks",
+    ["profile"], buckets=(1, 2, 5, 10, 20, 30, 45, 60, 90),
+)
+INFERENCE_DIMENSION = Histogram(
+    "qwen_image_edit_dimension_pixels", "Input dimensions by operation and axis",
+    ["operation", "axis", "profile"],
+    buckets=(256, 512, 768, 1024, 1280, 1600, 2048, 3072, 4096),
 )
 
 CUDA_ALLOCATED = Gauge(
@@ -131,14 +169,55 @@ _invoke_progress: dict[str, dict] = {}
 _invoke_progress_lock = threading.Lock()
 
 
+def _prune_progress(now: float | None = None) -> None:
+    cutoff = (now or time.time()) - PROGRESS_RETENTION_SECONDS
+    with _invoke_progress_lock:
+        expired = [
+            request_id for request_id, progress in _invoke_progress.items()
+            if progress.get("updated_at", 0) < cutoff
+        ]
+        for request_id in expired:
+            del _invoke_progress[request_id]
+
+
+def _set_progress_stage(request_id: str | None, status: str, **details) -> None:
+    if not request_id:
+        return
+    _prune_progress()
+    with _invoke_progress_lock:
+        current = _invoke_progress.get(request_id, {})
+        _invoke_progress[request_id] = {
+            **current, "status": status, "updated_at": time.time(), **details,
+        }
+
+
 def _make_step_callback(request_id: str | None, total_steps: int):
+    last_observed = [time.monotonic()]
+
     def _on_step_end(pipe, step: int, timestep, callback_kwargs: dict) -> dict:
+        now = time.monotonic()
+        STEP_LATENCY.labels(PROFILE).observe(now - last_observed[0])
+        last_observed[0] = now
         with _invoke_progress_lock:
             _invoke_progress[request_id] = {
-                "step": step + 1, "total": total_steps, "updated_at": time.time(),
+                "status": "running", "step": step + 1, "total": total_steps,
+                "profile": PROFILE, "updated_at": time.time(),
             }
         return callback_kwargs
     return _on_step_end
+
+
+def _finish_progress(request_id: str | None, status: str, detail: str | None = None):
+    if not request_id:
+        return
+    with _invoke_progress_lock:
+        current = _invoke_progress.get(request_id, {})
+        _invoke_progress[request_id] = {
+            **current,
+            "status": status,
+            "updated_at": time.time(),
+            **({"detail": detail[:500]} if detail else {}),
+        }
 
 
 def _mem_available_gib():
@@ -147,6 +226,47 @@ def _mem_available_gib():
             if line.startswith("MemAvailable:"):
                 return int(line.split()[1]) / (1024 * 1024)
     raise RuntimeError("MemAvailable not found in /proc/meminfo")
+
+
+def _gate_inference(
+    operation: str, request_id: str | None, total_steps: int
+) -> None:
+    available = _mem_available_gib()
+    INFERENCE_MEMORY.labels("before", PROFILE).set(available)
+    if request_id:
+        with _invoke_progress_lock:
+            _invoke_progress[request_id] = {
+                "status": "resource_check", "step": 0, "total": total_steps,
+                "profile": PROFILE, "mem_available_gib": round(available, 2),
+                "updated_at": time.time(),
+            }
+    if available < INFERENCE_REQUIRED_GIB:
+        INFERENCE_REQUESTS.labels(operation, "rejected", PROFILE).inc()
+        _finish_progress(request_id, "failed", "insufficient memory headroom")
+        raise HTTPException(
+            503,
+            f"image inference needs at least {INFERENCE_REQUIRED_GIB:.1f} GiB "
+            f"MemAvailable; only {available:.1f} GiB is available",
+            headers={"Retry-After": "30"},
+        )
+
+
+def _observe_dimensions(operation: str, image: Image.Image) -> None:
+    INFERENCE_DIMENSION.labels(operation, "width", PROFILE).observe(image.width)
+    INFERENCE_DIMENSION.labels(operation, "height", PROFILE).observe(image.height)
+
+
+def _observe_post_inference_memory() -> None:
+    try:
+        INFERENCE_MEMORY.labels("after", PROFILE).set(_mem_available_gib())
+    except (OSError, RuntimeError):
+        log.exception("failed to observe post-inference memory")
+
+
+def _generation_settings(steps: int, true_cfg_scale: float) -> tuple[int, float]:
+    if PROFILE == "lightning":
+        return 4, 1.0
+    return _clamp_steps(steps), true_cfg_scale
 
 
 def _cuda_mem_gib():
@@ -244,6 +364,8 @@ def _load_transformer_cached(status):
 
 
 def _load_pipeline():
+    if PROFILE not in {"base", "lightning"}:
+        raise RuntimeError("QWEN_IMAGE_EDIT_PROFILE must be 'base' or 'lightning'")
     status = _LoadStatus(STATUS_PATH)
 
     status.gate("transformer")
@@ -265,6 +387,29 @@ def _load_pipeline():
         torch_dtype=torch.bfloat16,
     )
     pipeline.to("cuda")  # only moves the small remaining components (vae, tokenizer)
+    if PROFILE == "lightning":
+        scheduler_config = {
+            "base_image_seq_len": 256,
+            "base_shift": math.log(3),
+            "invert_sigmas": False,
+            "max_image_seq_len": 8192,
+            "max_shift": math.log(3),
+            "num_train_timesteps": 1000,
+            "shift": 1.0,
+            "shift_terminal": None,
+            "stochastic_sampling": False,
+            "time_shift_type": "exponential",
+            "use_beta_sigmas": False,
+            "use_dynamic_shifting": True,
+            "use_exponential_sigmas": False,
+            "use_karras_sigmas": False,
+        }
+        pipeline.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
+            scheduler_config
+        )
+        pipeline.load_lora_weights(LIGHTNING_REPO, weight_name=LIGHTNING_WEIGHT)
+        status.note("profile", PROFILE)
+        status.note("lightning_weight", LIGHTNING_WEIGHT)
     status.record_done("pipeline", time.time() - t0)
 
     status.gate("inpaint_pipeline")
@@ -285,7 +430,7 @@ def _load_pipeline():
     )
     status.record_done("inpaint_pipeline", time.time() - t0)
 
-    status._write({"state": "ready"})
+    status._write({"state": "ready", "profile": PROFILE})
     return pipeline, inpaint_pipeline
 
 
@@ -345,6 +490,45 @@ def _encode_image_response(result: Image.Image) -> dict:
     }
 
 
+def _inpaint_region(
+    image: Image.Image, mask: Image.Image, padding: int | None
+) -> tuple[Image.Image, Image.Image, tuple[int, int, int, int]]:
+    """Crop image and mask together, avoiding Diffusers' mismatched overlay path."""
+    full_box = (0, 0, image.width, image.height)
+    if padding is None:
+        return image, mask, full_box
+    bbox = mask.getbbox()
+    if bbox is None:
+        return image, mask, full_box
+    pad = max(0, int(padding))
+    left, top, right, bottom = bbox
+    box = (
+        max(0, left - pad), max(0, top - pad),
+        min(image.width, right + pad), min(image.height, bottom + pad),
+    )
+    return image.crop(box), mask.crop(box), box
+
+
+def _composite_generated_region(
+    source: Image.Image,
+    source_mask: Image.Image,
+    generated: Image.Image,
+    region_box: tuple[int, int, int, int],
+) -> Image.Image:
+    """Return the source-sized canvas with only masked pixels replaced."""
+    left, top, right, bottom = region_box
+    region_size = (right - left, bottom - top)
+    generated = generated.convert("RGB")
+    if generated.size != region_size:
+        generated = generated.resize(region_size, Image.Resampling.LANCZOS)
+    source_region = source.crop(region_box)
+    mask_region = source_mask.crop(region_box)
+    composited_region = Image.composite(generated, source_region, mask_region)
+    result = source.copy()
+    result.paste(composited_region, (left, top))
+    return result
+
+
 def _clamp_steps(num_inference_steps: int) -> int:
     return max(1, min(num_inference_steps, 100))
 
@@ -365,6 +549,7 @@ def ready():
     }
 
 
+@app.get("/v1/load-status")
 def load_status():
     try:
         with open(STATUS_PATH) as f:
@@ -394,7 +579,11 @@ async def edit(
     image = await _read_upload_image(file)
     if not prompt.strip():
         raise HTTPException(400, "prompt must not be empty")
-    num_inference_steps = _clamp_steps(num_inference_steps)
+    num_inference_steps, true_cfg_scale = _generation_settings(
+        num_inference_steps, true_cfg_scale
+    )
+    _gate_inference("edit", request_id, num_inference_steps)
+    _observe_dimensions("edit", image)
 
     images = [image]
     for reference_file in reference_files or []:
@@ -420,11 +609,15 @@ async def edit(
                     **({"callback_on_step_end": callback} if callback else {}),
                 ).images[0]
                 update_cuda_metrics()
+                INFERENCE_REQUESTS.labels("edit", "success", PROFILE).inc()
+                _finish_progress(request_id, "succeeded")
                 return out
+            except Exception as error:
+                INFERENCE_REQUESTS.labels("edit", "failure", PROFILE).inc()
+                _finish_progress(request_id, "failed", str(error))
+                raise
             finally:
-                if request_id:
-                    with _invoke_progress_lock:
-                        _invoke_progress.pop(request_id, None)
+                _observe_post_inference_memory()
 
     result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
@@ -458,8 +651,15 @@ async def inpaint(
         raise HTTPException(400, "mask dimensions must match the image")
     if not prompt.strip():
         raise HTTPException(400, "prompt must not be empty")
-    num_inference_steps = _clamp_steps(num_inference_steps)
+    num_inference_steps, true_cfg_scale = _generation_settings(
+        num_inference_steps, true_cfg_scale
+    )
     strength = max(0.0, min(strength, 1.0))
+    inference_image, inference_mask, region_box = _inpaint_region(
+        image, mask_image, padding_mask_crop
+    )
+    _gate_inference("inpaint", request_id, num_inference_steps)
+    _observe_dimensions("inpaint", image)
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     callback = (
@@ -470,23 +670,29 @@ async def inpaint(
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
             try:
                 out = _inpaint_pipeline(
-                    image=image,
-                    mask_image=mask_image,
+                    image=inference_image,
+                    mask_image=inference_mask,
                     prompt=prompt,
                     negative_prompt=negative_prompt or None,
                     strength=strength,
                     num_inference_steps=num_inference_steps,
                     true_cfg_scale=true_cfg_scale,
-                    padding_mask_crop=padding_mask_crop,
+                    padding_mask_crop=None,
                     generator=generator,
                     **({"callback_on_step_end": callback} if callback else {}),
                 ).images[0]
+                _set_progress_stage(request_id, "compositing")
+                result = _composite_generated_region(image, mask_image, out, region_box)
                 update_cuda_metrics()
-                return out
+                INFERENCE_REQUESTS.labels("inpaint", "success", PROFILE).inc()
+                _finish_progress(request_id, "succeeded")
+                return result
+            except Exception as error:
+                INFERENCE_REQUESTS.labels("inpaint", "failure", PROFILE).inc()
+                _finish_progress(request_id, "failed", str(error))
+                raise
             finally:
-                if request_id:
-                    with _invoke_progress_lock:
-                        _invoke_progress.pop(request_id, None)
+                _observe_post_inference_memory()
 
     result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
@@ -555,9 +761,13 @@ async def outpaint(
     image = await _read_upload_image(file)
     if not prompt.strip():
         raise HTTPException(400, "prompt must not be empty")
-    num_inference_steps = _clamp_steps(num_inference_steps)
+    num_inference_steps, true_cfg_scale = _generation_settings(
+        num_inference_steps, true_cfg_scale
+    )
 
     canvas, mask_image = _outpaint_canvas(image, target_width, target_height, anchor)
+    _gate_inference("outpaint", request_id, num_inference_steps)
+    _observe_dimensions("outpaint", canvas)
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     callback = (
@@ -578,12 +788,20 @@ async def outpaint(
                     generator=generator,
                     **({"callback_on_step_end": callback} if callback else {}),
                 ).images[0]
+                _set_progress_stage(request_id, "compositing")
+                result = _composite_generated_region(
+                    canvas, mask_image, out, (0, 0, canvas.width, canvas.height)
+                )
                 update_cuda_metrics()
-                return out
+                INFERENCE_REQUESTS.labels("outpaint", "success", PROFILE).inc()
+                _finish_progress(request_id, "succeeded")
+                return result
+            except Exception as error:
+                INFERENCE_REQUESTS.labels("outpaint", "failure", PROFILE).inc()
+                _finish_progress(request_id, "failed", str(error))
+                raise
             finally:
-                if request_id:
-                    with _invoke_progress_lock:
-                        _invoke_progress.pop(request_id, None)
+                _observe_post_inference_memory()
 
     result = await asyncio.to_thread(_run)
     return _encode_image_response(result)
@@ -636,6 +854,12 @@ def capabilities():
         "protocol_version": PROTOCOL_VERSION,
         "worker": "qwen-image-edit",
         "model": MODEL_ID,
+        "profile": PROFILE,
+        "generation_defaults": {
+            "num_inference_steps": 4 if PROFILE == "lightning" else 20,
+            "true_cfg_scale": 1.0 if PROFILE == "lightning" else 4.0,
+            "overrides_enforced": PROFILE == "lightning",
+        },
         "operations": {
             "edit": {
                 "inputs": ["image", "reference:*"],
@@ -726,6 +950,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
     parameters = request.get("parameters", {})
     image = _upload("image", uploaded["image"])
     request_id = request.get("request_id")
+    log.info("request_id=%s operation=%s stage=started", request_id, operation)
     if operation == "edit":
         references = [
             _upload(name, item)
@@ -759,11 +984,14 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
             padding_mask_crop=int(padding) if padding is not None else None,
             request_id=request_id,
         )
-    return _rpc_result(request, result, started)
+    response = _rpc_result(request, result, started)
+    log.info("request_id=%s operation=%s stage=succeeded", request_id, operation)
+    return response
 
 
 @app.get("/v1/invoke/{request_id}/progress")
 def invoke_progress(request_id: str):
+    _prune_progress()
     with _invoke_progress_lock:
         progress = _invoke_progress.get(request_id)
     if progress is None:
@@ -772,4 +1000,4 @@ def invoke_progress(request_id: str):
             "no progress recorded for this request_id (unknown, not yet started, "
             "or already finished)",
         )
-    return {"step": progress["step"], "total": progress["total"]}
+    return progress
