@@ -163,9 +163,9 @@ def _segment(image: Image.Image, prompts: list[str], threshold: float):
     for concept in prompts:
         processor.reset_all_prompts(state)
         output = processor.set_text_prompt(state=state, prompt=concept)
-        scores = output["scores"].detach().cpu().numpy()
-        boxes = output["boxes"].detach().cpu().numpy()
-        masks = output["masks"].detach().cpu().numpy()
+        scores = output["scores"].detach().float().cpu().numpy()
+        boxes = output["boxes"].detach().float().cpu().numpy()
+        masks = output["masks"].detach().float().cpu().numpy()
         for index, score in enumerate(scores):
             if float(score) < threshold:
                 continue
