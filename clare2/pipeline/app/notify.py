@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import json
 import logging
 import os
@@ -29,6 +30,17 @@ OUTCOME_LABELS = {
     "failed": "FAILED",
 }
 
+# Status label -> (background, text) colors for HTML badges/rows.
+_STATUS_COLORS = {
+    "PROMOTED": ("#e6f4ea", "#1e7b34"),
+    "REJECTED": ("#fdecea", "#c5221f"),
+    "NOT TRAINED": ("#f1f3f4", "#5f6368"),
+    "FAILED": ("#fdecea", "#c5221f"),
+    "SKIPPED (no new content)": ("#fff8e1", "#8a6d00"),
+    "POSTPONED (inference active)": ("#fff8e1", "#8a6d00"),
+}
+_DEFAULT_STATUS_COLOR = ("#f1f3f4", "#5f6368")
+
 
 def send_run_notification(outcome: str, **context: Any) -> None:
     """Best-effort notification email for a nightly lifecycle terminal state.
@@ -39,8 +51,8 @@ def send_run_notification(outcome: str, **context: Any) -> None:
     if not NOTIFY_TO:
         return
     try:
-        subject, body = _compose(outcome, context)
-        _send(subject, body)
+        subject, body, html_body = _compose(outcome, context)
+        _send(subject, body, html_body)
     except Exception:
         log.exception("Failed to send run notification for outcome=%s", outcome)
         metrics.notification_sent.labels(outcome=outcome, status="error").inc()
@@ -59,8 +71,8 @@ def send_batch_run_notification(run_id: str, results: list[dict[str, Any]]) -> N
         return
     outcome = "batch_complete"
     try:
-        subject, body = _compose_batch(run_id, results)
-        _send(subject, body)
+        subject, body, html_body = _compose_batch(run_id, results)
+        _send(subject, body, html_body)
     except Exception:
         log.exception("Failed to send batch run notification for run_id=%s", run_id)
         metrics.notification_sent.labels(outcome=outcome, status="error").inc()
@@ -68,7 +80,7 @@ def send_batch_run_notification(run_id: str, results: list[dict[str, Any]]) -> N
     metrics.notification_sent.labels(outcome=outcome, status="ok").inc()
 
 
-def _send(subject: str, body: str) -> None:
+def _send(subject: str, body: str, html_body: str | None = None) -> None:
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = NOTIFY_FROM
@@ -76,6 +88,8 @@ def _send(subject: str, body: str) -> None:
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as smtp:
         smtp.ehlo()
         refused = smtp.send_message(msg)
@@ -83,7 +97,7 @@ def _send(subject: str, body: str) -> None:
             raise smtplib.SMTPRecipientsRefused(refused)
 
 
-def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str]:
+def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str, str]:
     has_project = outcome in ("promoted", "rejected")
     project = context.get("project", "unknown") if has_project else None
     label = OUTCOME_LABELS.get(outcome, outcome.upper())
@@ -97,38 +111,105 @@ def _compose(outcome: str, context: dict[str, Any]) -> tuple[str, str]:
         lines.append(f"Project: {project}")
     lines.append(f"Run ID: {context.get('run_id', 'unknown')}")
     lines.append("")
-
     lines.append("DISTILLATION")
     lines.extend(_distillation_lines())
     lines.append("")
+    lines.extend(_outcome_body_lines(outcome, project, label, context))
+    body = "\n".join(lines) + "\n"
 
+    html_sections = [
+        _html_meta_table(
+            [("Outcome", label)]
+            + ([("Project", project)] if project else [])
+            + [("Run ID", context.get("run_id", "unknown"))]
+        ),
+        _html_section("Distillation", _html_distillation_table(_project_summaries())),
+    ]
+    html_sections.extend(_outcome_html_sections(outcome, project, label, context))
+    html = _html_wrap(subject, "".join(html_sections))
+
+    return subject, body, html
+
+
+def _outcome_body_lines(
+    outcome: str, project: str | None, label: str, context: dict[str, Any]
+) -> list[str]:
     if outcome in ("promoted", "rejected"):
-        lines.append("TRAINING / EVALUATION")
-        lines.extend(_evaluation_lines(context))
-    elif outcome == "skipped_no_new_content":
-        lines.append("TRAINING")
+        return ["TRAINING / EVALUATION", *_evaluation_lines(context)]
+    if outcome == "skipped_no_new_content":
         summaries = _project_summaries()
-        if summaries:
-            for skipped_project, summary in summaries.items():
-                lines.append(f"  {skipped_project}: {_not_trained_reason(summary)}")
-        else:
-            lines.append("  No projects were discovered; run skipped.")
-    elif outcome == "postponed":
-        lines.append("TRAINING")
-        lines.append(
+        if not summaries:
+            return ["TRAINING", "  No projects were discovered; run skipped."]
+        lines = ["TRAINING"]
+        for skipped_project, summary in summaries.items():
+            lines.append(f"  {skipped_project}: {_not_trained_reason(summary)}")
+            lines.append("")
+        lines.pop()
+        return lines
+    if outcome == "postponed":
+        return [
+            "TRAINING",
             f"  Postponed because {context.get('active_sessions', 'unknown')} "
-            "inference request(s) are active."
-        )
-        lines.append("  Active inference will be checked again every 30 seconds.")
-    elif outcome == "failed":
-        lines.append("FAILURE")
-        lines.append(f"  adapter_id: {context.get('adapter_id') or 'n/a'}")
-        lines.append(f"  error: {context.get('error')}")
+            "inference request(s) are active.",
+            "  Active inference will be checked again every 30 seconds.",
+        ]
+    if outcome == "failed":
+        return [
+            "FAILURE",
+            f"  adapter_id: {context.get('adapter_id') or 'n/a'}",
+            f"  error: {context.get('error')}",
+        ]
+    return []
 
-    return subject, "\n".join(lines) + "\n"
+
+def _outcome_html_sections(
+    outcome: str, project: str | None, label: str, context: dict[str, Any]
+) -> list[str]:
+    if outcome in ("promoted", "rejected"):
+        return [
+            _html_section(
+                "Training / Evaluation",
+                _html_evaluation_table([(project or "unknown", label, context, {})]),
+            )
+        ]
+    if outcome == "skipped_no_new_content":
+        return [_html_section("Training", _html_skipped_reasons_table(_project_summaries()))]
+    if outcome == "postponed":
+        return [
+            _html_section(
+                "Training",
+                f"<p>Postponed because "
+                f"<strong>{_esc(context.get('active_sessions', 'unknown'))}</strong> "
+                "inference request(s) are active.</p>"
+                "<p>Active inference will be checked again every 30 seconds.</p>",
+            )
+        ]
+    if outcome == "failed":
+        return [
+            _html_section(
+                "Failure",
+                f'<p><span class="badge badge-fail">FAILED</span></p>'
+                f"<p><strong>adapter_id:</strong> {_esc(context.get('adapter_id') or 'n/a')}</p>"
+                f"<p><strong>error:</strong> {_esc(context.get('error'))}</p>",
+            )
+        ]
+    return []
 
 
-def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str]:
+def _html_skipped_reasons_table(summaries: dict[str, dict[str, Any]]) -> str:
+    if not summaries:
+        return "<p>No projects were discovered; run skipped.</p>"
+    rows = "".join(
+        f"<tr><td>{_esc(p)}</td><td>{_esc(_not_trained_reason(s))}</td></tr>"
+        for p, s in summaries.items()
+    )
+    return (
+        '<table class="data"><thead><tr><th>Project</th><th>Reason</th></tr>'
+        f"</thead><tbody>{rows}</tbody></table>"
+    )
+
+
+def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str, str]:
     result_by_project = {r.get("project", "unknown"): r for r in results}
     project_summaries = _project_summaries(set(result_by_project))
     projects = sorted(result_by_project)
@@ -149,6 +230,7 @@ def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str
     lines.extend(_distillation_lines(set(result_by_project)))
     lines.append("")
 
+    eval_entries: list[tuple[str, str, dict[str, Any] | None, dict[str, Any]]] = []
     for project, summary in project_summaries.items():
         result = result_by_project.get(project)
         if result:
@@ -156,11 +238,32 @@ def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str
             lines.append(f"TRAINING / EVALUATION — {project} ({label})")
             lines.extend(_evaluation_lines(result))
         else:
+            label = "NOT TRAINED"
             lines.append(f"TRAINING / EVALUATION — {project} (NOT TRAINED)")
             lines.append(f"  reason: {_not_trained_reason(summary)}")
+        eval_entries.append((project, label, result, summary))
         lines.append("")
 
-    return subject, "\n".join(lines) + "\n"
+    body = "\n".join(lines) + "\n"
+
+    html_sections = [
+        _html_meta_table(
+            [
+                ("Run ID", run_id),
+                ("Projects trained", ", ".join(projects) if projects else "none"),
+            ]
+        ),
+        _html_section("Distillation", _html_distillation_table(project_summaries)),
+        _html_section(
+            "Training / Evaluation",
+            _html_evaluation_table(
+                [(project, label, result, summary) for project, label, result, summary in eval_entries]
+            ),
+        ),
+    ]
+    html = _html_wrap(subject, "".join(html_sections))
+
+    return subject, body, html
 
 
 def _distillation_lines(extra_projects: set[str] | None = None) -> list[str]:
@@ -184,6 +287,9 @@ def _distillation_lines(extra_projects: set[str] | None = None) -> list[str]:
             f"{summary['sft_pairs']} SFT pair(s), ~{summary['tokens']} tokens; "
             f"last updated: {summary['corpus_updated']}"
         )
+        lines.append("")
+    if lines and lines[-1] == "":
+        lines.pop()
     return lines
 
 
@@ -268,3 +374,227 @@ def _evaluation_lines(context: dict[str, Any]) -> list[str]:
         lines.append(f"  no_category_regression: {report.get('no_category_regression')}")
         lines.append(f"  approved: {report.get('approved')}")
     return lines
+
+
+def _esc(value: Any) -> str:
+    return html_lib.escape(str(value), quote=True)
+
+
+def _badge(label: str) -> str:
+    background, color = _STATUS_COLORS.get(label, _DEFAULT_STATUS_COLOR)
+    return (
+        f'<span class="badge" style="background:{background};color:{color};">'
+        f"{_esc(label)}</span>"
+    )
+
+
+def _bool_cell(value: Any) -> str:
+    if value is True:
+        return '<span style="color:#1e7b34;font-weight:600;">&#10003;</span>'
+    if value is False:
+        return '<span style="color:#c5221f;font-weight:600;">&#10007;</span>'
+    return "&mdash;"
+
+
+def _html_wrap(title: str, sections_html: str) -> str:
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_esc(title)}</title>
+<style>
+  body {{
+    margin: 0;
+    padding: 0;
+    background: #f4f5f7;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #202124;
+  }}
+  .wrapper {{
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 24px 16px;
+  }}
+  .card {{
+    background: #ffffff;
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }}
+  .header {{
+    background: #202940;
+    color: #ffffff;
+    border-radius: 8px 8px 0 0;
+    padding: 20px 24px;
+    margin: -24px -24px 20px -24px;
+  }}
+  .header h1 {{
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+  }}
+  h2 {{
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #5f6368;
+    border-bottom: 2px solid #e8eaed;
+    padding-bottom: 6px;
+    margin: 28px 0 12px 0;
+  }}
+  h2:first-of-type {{ margin-top: 0; }}
+  table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }}
+  table.meta td {{
+    padding: 4px 8px 4px 0;
+    vertical-align: top;
+  }}
+  table.meta td.label {{
+    color: #5f6368;
+    white-space: nowrap;
+    width: 1%;
+  }}
+  table.data th {{
+    text-align: left;
+    background: #f1f3f4;
+    color: #3c4043;
+    padding: 8px 10px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }}
+  table.data td {{
+    padding: 8px 10px;
+    border-bottom: 1px solid #eceff1;
+    vertical-align: top;
+  }}
+  table.data tr:nth-child(even) td {{
+    background: #fafbfc;
+  }}
+  .badge {{
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }}
+  .mono {{
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    color: #3c4043;
+  }}
+  .muted {{ color: #80868b; }}
+  p {{ font-size: 13px; line-height: 1.5; }}
+  @media (prefers-color-scheme: dark) {{
+    body {{ background: #16181d; color: #e8eaed; }}
+    .card {{ background: #24262b; box-shadow: none; }}
+    h2 {{ color: #9aa0a6; border-bottom-color: #3c4043; }}
+    table.data th {{ background: #2f3136; color: #c8ccd0; }}
+    table.data td {{ border-bottom-color: #33353a; }}
+    table.data tr:nth-child(even) td {{ background: #2a2c31; }}
+    table.meta td.label {{ color: #9aa0a6; }}
+    .mono {{ color: #c8ccd0; }}
+  }}
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="card">
+    <div class="header"><h1>{_esc(title)}</h1></div>
+    {sections_html}
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
+def _html_section(title: str, inner_html: str) -> str:
+    return f"<h2>{_esc(title)}</h2>{inner_html}"
+
+
+def _html_meta_table(rows: list[tuple[str, Any]]) -> str:
+    body_rows = "".join(
+        f'<tr><td class="label">{_esc(label)}</td><td class="mono">{_esc(value)}</td></tr>'
+        for label, value in rows
+    )
+    return f'<table class="meta"><tbody>{body_rows}</tbody></table>'
+
+
+def _html_distillation_table(summaries: dict[str, dict[str, Any]]) -> str:
+    if not summaries:
+        return '<p class="muted">No projects discovered.</p>'
+    rows = []
+    for project, summary in summaries.items():
+        episodes = summary["episodes"]
+        episode_html = (
+            ", ".join(f"{_esc(category)}: {count}" for category, count in episodes.items())
+            or '<span class="muted">none</span>'
+        )
+        rows.append(
+            "<tr>"
+            f"<td><strong>{_esc(project)}</strong></td>"
+            f"<td>{summary['session_count']} captured<br>"
+            f"{summary['processed_count']} processed<br>"
+            f"{summary['pending_count']} pending</td>"
+            f"<td>{_esc(summary['latest_session'])}</td>"
+            f'<td class="mono">{_esc(summary["last_distillation"])}</td>'
+            f"<td>{episode_html}</td>"
+            f"<td>{summary['sft_pairs']} pair(s)<br>~{summary['tokens']} tokens<br>"
+            f'<span class="muted">{_esc(summary["corpus_updated"])}</span></td>'
+            "</tr>"
+        )
+    return (
+        '<table class="data"><thead><tr>'
+        "<th>Project</th><th>Sessions</th><th>Latest</th>"
+        "<th>Last Distillation</th><th>Episode Patterns</th><th>Corpus</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _html_evaluation_table(
+    entries: list[tuple[str, str, dict[str, Any] | None, dict[str, Any]]],
+) -> str:
+    if not entries:
+        return '<p class="muted">No training results for this run.</p>'
+    rows = []
+    for project, label, result, summary in entries:
+        badge = _badge(label)
+        if result:
+            report = result.get("report") or {}
+            candidate = report.get("candidate", {})
+            baseline = report.get("baseline", {})
+            rows.append(
+                "<tr>"
+                f"<td><strong>{_esc(project)}</strong><br>{badge}</td>"
+                f'<td class="mono">{_esc(result.get("adapter_id", "unknown"))}</td>'
+                f'<td class="mono">{_esc(result.get("mlflow_run_id") or "n/a")}</td>'
+                f"<td>{_esc(candidate.get('pass_rate', 'n/a'))} "
+                f"({_esc(candidate.get('passed', '?'))}/{_esc(candidate.get('total', '?'))})</td>"
+                f"<td>{_esc(baseline.get('pass_rate', 'n/a'))} "
+                f"({_esc(baseline.get('passed', '?'))}/{_esc(baseline.get('total', '?'))})</td>"
+                f"<td>{_bool_cell(report.get('mandatory_pass'))}</td>"
+                f"<td>{_bool_cell(report.get('no_category_regression'))}</td>"
+                f"<td>{_bool_cell(report.get('approved'))}</td>"
+                "</tr>"
+            )
+        else:
+            reason = _not_trained_reason(summary) if summary else "n/a"
+            rows.append(
+                "<tr>"
+                f"<td><strong>{_esc(project)}</strong><br>{badge}</td>"
+                f'<td class="muted" colspan="6">{_esc(reason)}</td>'
+                "</tr>"
+            )
+    return (
+        '<table class="data"><thead><tr>'
+        "<th>Project</th><th>Adapter</th><th>MLflow Run</th>"
+        "<th>Candidate</th><th>Baseline</th><th>Mandatory</th>"
+        "<th>No Regression</th><th>Approved</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )

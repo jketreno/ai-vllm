@@ -12,6 +12,15 @@ import app.metrics as metrics
 import app.notify as notify
 
 
+def _text_body(msg):
+    return msg.get_body(preferencelist=("plain",)).get_content()
+
+
+def _html_body(msg):
+    part = msg.get_body(preferencelist=("html",))
+    return part.get_content() if part else None
+
+
 class SendRunNotificationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -113,7 +122,7 @@ class SendRunNotificationTests(unittest.TestCase):
         notify.send_run_notification("postponed", run_id="run-1", active_sessions=2)
         sent_msg = self.smtp_instance.send_message.call_args[0][0]
         self.assertIn("POSTPONED", sent_msg["Subject"])
-        self.assertIn("2 inference request(s) are active", sent_msg.get_content())
+        self.assertIn("2 inference request(s) are active", _text_body(sent_msg))
 
     def test_distillation_lines_report_every_project(self):
         stats_path = self.corpus_root / "meta" / "corpus_stats.json"
@@ -134,7 +143,7 @@ class SendRunNotificationTests(unittest.TestCase):
             encoding="utf-8",
         )
         notify.send_run_notification("skipped_no_new_content", run_id="run-1")
-        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        body = _text_body(self.smtp_instance.send_message.call_args[0][0])
         self.assertIn("ai-vllm:", body)
         self.assertIn("clare:", body)
         self.assertIn("domain: 25", body)
@@ -145,8 +154,33 @@ class SendRunNotificationTests(unittest.TestCase):
         session_path.parent.mkdir(parents=True)
         session_path.write_text("{}\n")
         notify.send_run_notification("skipped_no_new_content", run_id="run-1")
-        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        body = _text_body(self.smtp_instance.send_message.call_args[0][0])
         self.assertIn("backstory: 1 captured session(s) remain pending distillation", body)
+
+    def test_sends_multipart_message_with_html_alternative(self):
+        self._write_corpus_stats()
+        notify.send_run_notification(
+            "rejected",
+            adapter_id="adapter-1",
+            run_id="run-1",
+            mlflow_run_id="mlflow-1",
+            report={
+                "candidate": {"pass_rate": 0.1, "passed": 2, "total": 20},
+                "baseline": {"pass_rate": 0.1, "passed": 2, "total": 20},
+                "mandatory_pass": False,
+                "no_category_regression": True,
+                "approved": False,
+            },
+            project="ai-vllm",
+        )
+        sent_msg = self.smtp_instance.send_message.call_args[0][0]
+        self.assertTrue(sent_msg.is_multipart())
+        html = _html_body(sent_msg)
+        self.assertIsNotNone(html)
+        self.assertIn("<table", html)
+        self.assertIn("ai-vllm", html)
+        self.assertIn("adapter-1", html)
+        self.assertIn("REJECTED", html)
 
 
 class SendBatchRunNotificationTests(unittest.TestCase):
@@ -241,7 +275,7 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         notify.send_batch_run_notification(run_id="run-1", results=self._results())
         self.smtp_instance.send_message.assert_called_once()
         sent_msg = self.smtp_instance.send_message.call_args[0][0]
-        body = sent_msg.get_content()
+        body = _text_body(sent_msg)
         self.assertIn("ai-vllm", body)
         self.assertIn("clare", body)
         self.assertIn("REJECTED", body)
@@ -250,7 +284,7 @@ class SendBatchRunNotificationTests(unittest.TestCase):
     def test_reports_projects_with_sessions_but_no_corpus_or_training(self):
         self._write_project_inventory()
         notify.send_batch_run_notification(run_id="run-1", results=self._results())
-        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        body = _text_body(self.smtp_instance.send_message.call_args[0][0])
 
         self.assertIn("backstory:", body)
         self.assertIn("1 captured, 1 processed, 0 pending; latest: 2026-07-06", body)
@@ -265,12 +299,41 @@ class SendBatchRunNotificationTests(unittest.TestCase):
     def test_reports_latest_corpus_information(self):
         self._write_project_inventory()
         notify.send_batch_run_notification(run_id="run-1", results=self._results())
-        body = self.smtp_instance.send_message.call_args[0][0].get_content()
+        body = _text_body(self.smtp_instance.send_message.call_args[0][0])
         self.assertIn(
             "current corpus: 15 SFT pair(s), ~4200 tokens; "
             "last updated: 2026-07-18T05:05:00Z",
             body,
         )
+
+    def test_distillation_blocks_are_separated_by_blank_lines(self):
+        self._write_project_inventory()
+        notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        body = _text_body(self.smtp_instance.send_message.call_args[0][0])
+        lines = body.split("\n")
+        project_header_indices = [
+            i for i, line in enumerate(lines) if line.strip().endswith(":") and line.startswith("  ")
+        ]
+        self.assertGreater(len(project_header_indices), 1)
+        for idx in project_header_indices[1:]:
+            self.assertEqual(lines[idx - 1], "")
+
+    def test_sends_multipart_message_with_html_table(self):
+        self._write_project_inventory()
+        notify.send_batch_run_notification(run_id="run-1", results=self._results())
+        sent_msg = self.smtp_instance.send_message.call_args[0][0]
+        self.assertTrue(sent_msg.is_multipart())
+        html = _html_body(sent_msg)
+        self.assertIsNotNone(html)
+        self.assertIn("<table", html)
+        self.assertIn("ai-vllm", html)
+        self.assertIn("clare", html)
+        self.assertIn("backstory", html)
+        self.assertIn("REJECTED", html)
+        self.assertIn("PROMOTED", html)
+        self.assertIn("NOT TRAINED", html)
+        self.assertIn("mlflow-1", html)
+        self.assertIn("run-1", html)
 
     def test_no_op_when_notify_to_empty(self):
         with patch.object(notify, "NOTIFY_TO", ""):
