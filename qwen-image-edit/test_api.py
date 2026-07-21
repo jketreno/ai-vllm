@@ -221,6 +221,29 @@ class ClampStepsTests(unittest.TestCase):
         self.assertEqual(api._clamp_steps(50), 50)
 
 
+class RpcResultTests(unittest.TestCase):
+    def test_includes_pre_composite_image_when_worker_returns_one(self):
+        final = base64.b64encode(b"final").decode("ascii")
+        pre_composite = base64.b64encode(b"generated").decode("ascii")
+
+        response = api._rpc_result(
+            {"request_id": "request-id"},
+            {
+                "width": 4,
+                "height": 4,
+                "image_png_base64": final,
+                "pre_composite_image_png_base64": pre_composite,
+            },
+            api.time.monotonic(),
+        )
+
+        attachments = {item["name"]: item for item in response["attachments"]}
+        self.assertEqual(attachments["image"]["data_base64"], final)
+        self.assertEqual(
+            attachments["pre_composite_image"]["data_base64"], pre_composite
+        )
+
+
 class InpaintCompositionTests(unittest.TestCase):
     def test_portrait_crop_keeps_image_and_mask_dimensions_aligned(self):
         source = _make_image(1204, 1599, color=(10, 20, 30))
@@ -338,7 +361,8 @@ class InvokeProgressTests(unittest.TestCase):
 
     def test_expired_progress_is_pruned(self):
         api._invoke_progress["expired"] = {
-            "status": "succeeded", "updated_at": 1,
+            "status": "succeeded",
+            "updated_at": 1,
         }
 
         api._prune_progress(now=api.PROGRESS_RETENTION_SECONDS + 2)

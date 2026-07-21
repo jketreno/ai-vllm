@@ -15,6 +15,7 @@ instead of guessed size requirements.
 import asyncio
 import base64
 import binascii
+import hashlib
 import io
 import json
 import logging
@@ -98,7 +99,8 @@ PROGRESS_RETENTION_SECONDS = int(
 LATENCY_BUCKETS = (10, 30, 60, 120, 300, 600, 900, 1200, 1800)
 
 EDIT_LATENCY = Histogram(
-    "qwen_image_edit_inference_seconds", "Time spent running one edit inference",
+    "qwen_image_edit_inference_seconds",
+    "Time spent running one edit inference",
     buckets=LATENCY_BUCKETS,
 )
 INPAINT_LATENCY = Histogram(
@@ -107,19 +109,24 @@ INPAINT_LATENCY = Histogram(
     buckets=LATENCY_BUCKETS,
 )
 INFERENCE_REQUESTS = Counter(
-    "qwen_image_edit_requests_total", "Inference requests by operation and outcome",
+    "qwen_image_edit_requests_total",
+    "Inference requests by operation and outcome",
     ["operation", "outcome", "profile"],
 )
 INFERENCE_MEMORY = Gauge(
     "qwen_image_edit_inference_mem_available_gib",
-    "Host MemAvailable observed around inference", ["phase", "profile"],
+    "Host MemAvailable observed around inference",
+    ["phase", "profile"],
 )
 STEP_LATENCY = Histogram(
-    "qwen_image_edit_step_duration_seconds", "Time between model step callbacks",
-    ["profile"], buckets=(1, 2, 5, 10, 20, 30, 45, 60, 90),
+    "qwen_image_edit_step_duration_seconds",
+    "Time between model step callbacks",
+    ["profile"],
+    buckets=(1, 2, 5, 10, 20, 30, 45, 60, 90),
 )
 INFERENCE_DIMENSION = Histogram(
-    "qwen_image_edit_dimension_pixels", "Input dimensions by operation and axis",
+    "qwen_image_edit_dimension_pixels",
+    "Input dimensions by operation and axis",
     ["operation", "axis", "profile"],
     buckets=(256, 512, 768, 1024, 1280, 1600, 2048, 3072, 4096),
 )
@@ -147,6 +154,7 @@ def update_cuda_metrics():
     except Exception:
         pass
 
+
 MAX_CANVAS_DIMENSION = int(
     os.environ.get("QWEN_IMAGE_EDIT_MAX_CANVAS_DIMENSION", "4096")
 )
@@ -173,7 +181,8 @@ def _prune_progress(now: float | None = None) -> None:
     cutoff = (now or time.time()) - PROGRESS_RETENTION_SECONDS
     with _invoke_progress_lock:
         expired = [
-            request_id for request_id, progress in _invoke_progress.items()
+            request_id
+            for request_id, progress in _invoke_progress.items()
             if progress.get("updated_at", 0) < cutoff
         ]
         for request_id in expired:
@@ -187,7 +196,10 @@ def _set_progress_stage(request_id: str | None, status: str, **details) -> None:
     with _invoke_progress_lock:
         current = _invoke_progress.get(request_id, {})
         _invoke_progress[request_id] = {
-            **current, "status": status, "updated_at": time.time(), **details,
+            **current,
+            "status": status,
+            "updated_at": time.time(),
+            **details,
         }
 
 
@@ -203,9 +215,7 @@ def _make_step_callback(request_id: str | None, total_steps: int):
         completed_steps = step + 1
         remaining_steps = max(total_steps - completed_steps, 0)
         average_step_duration = (now - started_at) / completed_steps
-        estimated_seconds_remaining = math.ceil(
-            average_step_duration * remaining_steps
-        )
+        estimated_seconds_remaining = math.ceil(average_step_duration * remaining_steps)
         with _invoke_progress_lock:
             _invoke_progress[request_id] = {
                 "status": "running",
@@ -217,6 +227,7 @@ def _make_step_callback(request_id: str | None, total_steps: int):
                 "updated_at": time.time(),
             }
         return callback_kwargs
+
     return _on_step_end
 
 
@@ -241,16 +252,17 @@ def _mem_available_gib():
     raise RuntimeError("MemAvailable not found in /proc/meminfo")
 
 
-def _gate_inference(
-    operation: str, request_id: str | None, total_steps: int
-) -> None:
+def _gate_inference(operation: str, request_id: str | None, total_steps: int) -> None:
     available = _mem_available_gib()
     INFERENCE_MEMORY.labels("before", PROFILE).set(available)
     if request_id:
         with _invoke_progress_lock:
             _invoke_progress[request_id] = {
-                "status": "resource_check", "step": 0, "total": total_steps,
-                "profile": PROFILE, "mem_available_gib": round(available, 2),
+                "status": "resource_check",
+                "step": 0,
+                "total": total_steps,
+                "profile": PROFILE,
+                "mem_available_gib": round(available, 2),
                 "updated_at": time.time(),
             }
     if available < INFERENCE_REQUIRED_GIB:
@@ -356,14 +368,18 @@ def _load_transformer_cached(status):
     if os.path.exists(marker):
         transformer = AutoModel.from_pretrained(
             QUANTIZED_TRANSFORMER_PATH,
-            torch_dtype=torch.bfloat16, use_safetensors=False, device_map="cuda",
+            torch_dtype=torch.bfloat16,
+            use_safetensors=False,
+            device_map="cuda",
         )
         status.note("transformer_source", "cache")
     else:
         quant_config = TorchAoConfig(quant_type=Float8WeightOnlyConfig())
         transformer = AutoModel.from_pretrained(
-            MODEL_ID, subfolder="transformer",
-            quantization_config=quant_config, torch_dtype=torch.bfloat16,
+            MODEL_ID,
+            subfolder="transformer",
+            quantization_config=quant_config,
+            torch_dtype=torch.bfloat16,
             device_map="cuda",
         )
         status.note("transformer_source", "quantized_fresh")
@@ -388,15 +404,19 @@ def _load_pipeline():
     status.gate("text_encoder")
     t0 = time.time()
     text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        MODEL_ID, subfolder="text_encoder",
-        torch_dtype=torch.bfloat16, device_map="cuda",
+        MODEL_ID,
+        subfolder="text_encoder",
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
     )
     status.record_done("text_encoder", time.time() - t0)
 
     status.gate("pipeline")
     t0 = time.time()
     pipeline = QwenImageEditPlusPipeline.from_pretrained(
-        MODEL_ID, transformer=transformer, text_encoder=text_encoder,
+        MODEL_ID,
+        transformer=transformer,
+        text_encoder=text_encoder,
         torch_dtype=torch.bfloat16,
     )
     pipeline.to("cuda")  # only moves the small remaining components (vae, tokenizer)
@@ -516,8 +536,10 @@ def _inpaint_region(
     pad = max(0, int(padding))
     left, top, right, bottom = bbox
     box = (
-        max(0, left - pad), max(0, top - pad),
-        min(image.width, right + pad), min(image.height, bottom + pad),
+        max(0, left - pad),
+        max(0, top - pad),
+        min(image.width, right + pad),
+        min(image.height, bottom + pad),
     )
     return image.crop(box), mask.crop(box), box
 
@@ -699,7 +721,7 @@ async def inpaint(
                 update_cuda_metrics()
                 INFERENCE_REQUESTS.labels("inpaint", "success", PROFILE).inc()
                 _finish_progress(request_id, "succeeded")
-                return result
+                return result, out
             except Exception as error:
                 INFERENCE_REQUESTS.labels("inpaint", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
@@ -707,8 +729,12 @@ async def inpaint(
             finally:
                 _observe_post_inference_memory()
 
-    result = await asyncio.to_thread(_run)
-    return _encode_image_response(result)
+    result, pre_composite = await asyncio.to_thread(_run)
+    response = _encode_image_response(result)
+    response["pre_composite_image_png_base64"] = _encode_image_response(pre_composite)[
+        "image_png_base64"
+    ]
+    return response
 
 
 def _outpaint_canvas(
@@ -917,7 +943,8 @@ async def _rpc_attachments(request, files):
         if len(payload) > MAX_ATTACHMENT_BYTES:
             raise HTTPException(413, f"attachment '{name}' is too large")
         result[name] = (
-            payload, descriptor.get("media_type", "application/octet-stream")
+            payload,
+            descriptor.get("media_type", "application/octet-stream"),
         )
     return result
 
@@ -931,16 +958,28 @@ def _upload(name, item):
 
 def _rpc_result(request, result, started):
     image_payload = base64.b64decode(result["image_png_base64"])
+    attachments = [
+        {
+            "name": "image",
+            "media_type": "image/png",
+            "data_base64": base64.b64encode(image_payload).decode("ascii"),
+        }
+    ]
+    pre_composite = result.get("pre_composite_image_png_base64")
+    if pre_composite:
+        attachments.append(
+            {
+                "name": "pre_composite_image",
+                "media_type": "image/png",
+                "data_base64": pre_composite,
+            }
+        )
     return {
         "protocol_version": PROTOCOL_VERSION,
         "request_id": request.get("request_id", str(uuid.uuid4())),
         "status": "ok",
         "data": {"width": result["width"], "height": result["height"]},
-        "attachments": [{
-            "name": "image",
-            "media_type": "image/png",
-            "data_base64": base64.b64encode(image_payload).decode("ascii"),
-        }],
+        "attachments": attachments,
         "metadata": {"duration_seconds": round(time.monotonic() - started, 4)},
     }
 
@@ -961,9 +1000,16 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
     if "image" not in uploaded:
         raise HTTPException(400, "image attachment is required")
     parameters = request.get("parameters", {})
+    prompt = str(parameters.get("prompt", ""))
     image = _upload("image", uploaded["image"])
     request_id = request.get("request_id")
-    log.info("request_id=%s operation=%s stage=started", request_id, operation)
+    log.info(
+        "request_id=%s operation=%s stage=started prompt_len=%d prompt_sha256=%s",
+        request_id,
+        operation,
+        len(prompt),
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+    )
     if operation == "edit":
         references = [
             _upload(name, item)
@@ -972,7 +1018,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
         ]
         result = await edit(
             file=image,
-            prompt=str(parameters.get("prompt", "")),
+            prompt=prompt,
             negative_prompt=str(parameters.get("negative_prompt", "")),
             num_inference_steps=int(parameters.get("num_inference_steps", 20)),
             true_cfg_scale=float(parameters.get("true_cfg_scale", 4.0)),
@@ -988,7 +1034,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
         result = await inpaint(
             file=image,
             mask=f"data:image/png;base64,{mask_payload}",
-            prompt=str(parameters.get("prompt", "")),
+            prompt=prompt,
             negative_prompt=str(parameters.get("negative_prompt", "")),
             strength=float(parameters.get("strength", 1.0)),
             num_inference_steps=int(parameters.get("num_inference_steps", 20)),

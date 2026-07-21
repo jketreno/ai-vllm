@@ -1,6 +1,7 @@
 """Unified public API for image analysis and editing."""
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -14,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 
 from image_ops import (
     image_response,
+    optional_rpc_image,
     outpaint_canvas,
     png_bytes,
     rpc_image,
@@ -45,8 +47,8 @@ VISION_MODEL = os.environ.get("IMAGE_API_VISION_MODEL", "Qwen/Qwen3.6-27B-FP8")
 CONCEPT_PROMPT = (
     "Identify concrete visibly segmentable regions and write a one-sentence "
     "caption of the image. Return only JSON: "
-    "{\"caption\":\"one-sentence description\","
-    "\"sam3_prompts\":[\"specific object\"]}. "
+    '{"caption":"one-sentence description",'
+    '"sam3_prompts":["specific object"]}. '
     "Avoid synonyms and cap sam3_prompts at 24 prompts."
 )
 
@@ -90,16 +92,28 @@ async def concepts(payload: bytes, media_type: str) -> dict:
         with open(POLICY_TOKEN_FILE, encoding="utf-8") as token_file:
             token = token_file.read().strip()
         request = {
-            "model": VISION_MODEL, "temperature": 0.1, "max_tokens": 700,
+            "model": VISION_MODEL,
+            "temperature": 0.1,
+            "max_tokens": 700,
             "response_format": {"type": "json_object"},
             "chat_template_kwargs": {"enable_thinking": False},
-            "messages": [{"role": "user", "content": [
-                {"type": "text", "text": CONCEPT_PROMPT},
-                {"type": "image_url", "image_url": {"url": (
-                    f"data:{media_type};base64,"
-                    f"{base64.b64encode(payload).decode('ascii')}"
-                )}},
-            ]}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": CONCEPT_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": (
+                                    f"data:{media_type};base64,"
+                                    f"{base64.b64encode(payload).decode('ascii')}"
+                                )
+                            },
+                        },
+                    ],
+                }
+            ],
         }
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(
@@ -116,16 +130,23 @@ async def concepts(payload: bytes, media_type: str) -> dict:
         values = parsed.get("sam3_prompts", [])
         if not isinstance(caption, str) or not caption.strip():
             raise ValueError("no caption returned")
-        result = list(dict.fromkeys(
-            value.strip()
-            for value in values
-            if isinstance(value, str) and value.strip()
-        ))[:24]
+        result = list(
+            dict.fromkeys(
+                value.strip()
+                for value in values
+                if isinstance(value, str) and value.strip()
+            )
+        )[:24]
         if not result:
             raise ValueError("no concepts returned")
         return {"caption": caption.strip(), "concepts": result}
     except (
-        OSError, httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError
+        OSError,
+        httpx.HTTPError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
     ) as error:
         raise HTTPException(
             503, f"vision concept extraction unavailable: {error}"
@@ -159,14 +180,18 @@ async def capabilities():
     edit_ready = await editor.ready()
     vision_ready = await policy_ready()
     edit_profile = await editor.capabilities() if edit_ready else None
-    return {"api_version": "1", "capabilities": {
-        "analyze": "ready" if sam_ready and vision_ready else "unavailable",
-        "segment": "ready" if sam_ready else "unavailable",
-        "edit": "ready" if edit_ready else "unavailable",
-        "inpaint": "ready" if edit_ready else "unavailable",
-        "outpaint": "ready" if edit_ready else "unavailable",
-        "transform": "ready",
-    }, "image_edit": edit_profile}
+    return {
+        "api_version": "1",
+        "capabilities": {
+            "analyze": "ready" if sam_ready and vision_ready else "unavailable",
+            "segment": "ready" if sam_ready else "unavailable",
+            "edit": "ready" if edit_ready else "unavailable",
+            "inpaint": "ready" if edit_ready else "unavailable",
+            "outpaint": "ready" if edit_ready else "unavailable",
+            "transform": "ready",
+        },
+        "image_edit": edit_profile,
+    }
 
 
 async def run_segment(payload, media_type, image, prompts, threshold, fields):
@@ -187,7 +212,11 @@ async def analyze(
     payload, media_type, image = await read_image(file)
     vision = await concepts(payload, media_type)
     result = await run_segment(
-        payload, media_type, image, vision["concepts"], threshold,
+        payload,
+        media_type,
+        image,
+        vision["concepts"],
+        threshold,
         set(fields.split(",")),
     )
     return {"caption": vision["caption"], "concepts": vision["concepts"], **result}
@@ -221,7 +250,15 @@ async def invoke_edit(
 ):
     request_id = request_id or str(uuid.uuid4())
     attachments = [("image", png_bytes(image), media_type), *(extras or [])]
-    log.info("request_id=%s operation=%s stage=resource_wait", request_id, operation)
+    prompt = str(params.get("prompt", ""))
+    log.info(
+        "request_id=%s operation=%s stage=resource_wait prompt_len=%d "
+        "prompt_sha256=%s",
+        request_id,
+        operation,
+        len(prompt),
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+    )
     try:
         async with image_edit_lease(request_id):
             log.info(
@@ -236,7 +273,13 @@ async def invoke_edit(
         log.exception("request_id=%s operation=%s stage=failed", request_id, operation)
         raise
     log.info("request_id=%s operation=%s stage=succeeded", request_id, operation)
-    return image_response(rpc_image(result))
+    response = image_response(rpc_image(result))
+    pre_composite = optional_rpc_image(result, "pre_composite_image")
+    if pre_composite is not None:
+        response["pre_composite_image_png_base64"] = image_response(pre_composite)[
+            "image_png_base64"
+        ]
+    return response
 
 
 def edit_params(prompt, negative_prompt, steps, scale, seed, **extra):
@@ -358,9 +401,11 @@ async def transform(
     expand_canvas: bool = Form(True),
 ):
     _, _, image = await read_image(file)
-    return image_response(transform_image(
-        image,
-        (crop_left, crop_top, crop_width, crop_height),
-        rotate_degrees,
-        expand_canvas,
-    ))
+    return image_response(
+        transform_image(
+            image,
+            (crop_left, crop_top, crop_width, crop_height),
+            rotate_degrees,
+            expand_canvas,
+        )
+    )
