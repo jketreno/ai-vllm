@@ -11,6 +11,7 @@ import io
 import sys
 import types
 import unittest
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -297,6 +298,29 @@ class InvokeProgressTests(unittest.TestCase):
 
         self.assertEqual(seen_steps, sorted(seen_steps))
         self.assertEqual(seen_steps, list(range(1, 11)))
+
+    def test_step_callback_estimates_remaining_wall_time(self):
+        with mock.patch.object(
+            api.time, "monotonic", side_effect=[100.0, 104.0, 110.0, 115.0]
+        ):
+            callback = api._make_step_callback("req-eta", total_steps=4)
+
+            callback(None, 0, None, {})
+            self.assertEqual(
+                api._invoke_progress["req-eta"]["estimated_seconds_remaining"],
+                12,
+            )
+
+            callback(None, 1, None, {})
+            progress = api._invoke_progress["req-eta"]
+            self.assertEqual(progress["step_duration_seconds"], 6.0)
+            self.assertEqual(progress["estimated_seconds_remaining"], 10)
+
+            callback(None, 2, None, {})
+            self.assertEqual(
+                api._invoke_progress["req-eta"]["estimated_seconds_remaining"],
+                5,
+            )
 
     def test_invoke_progress_endpoint_retains_terminal_state(self):
         callback = api._make_step_callback("req-2", total_steps=5)

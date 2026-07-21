@@ -192,16 +192,29 @@ def _set_progress_stage(request_id: str | None, status: str, **details) -> None:
 
 
 def _make_step_callback(request_id: str | None, total_steps: int):
-    last_observed = [time.monotonic()]
+    started_at = time.monotonic()
+    last_observed = [started_at]
 
     def _on_step_end(pipe, step: int, timestep, callback_kwargs: dict) -> dict:
         now = time.monotonic()
-        STEP_LATENCY.labels(PROFILE).observe(now - last_observed[0])
+        step_duration = now - last_observed[0]
+        STEP_LATENCY.labels(PROFILE).observe(step_duration)
         last_observed[0] = now
+        completed_steps = step + 1
+        remaining_steps = max(total_steps - completed_steps, 0)
+        average_step_duration = (now - started_at) / completed_steps
+        estimated_seconds_remaining = math.ceil(
+            average_step_duration * remaining_steps
+        )
         with _invoke_progress_lock:
             _invoke_progress[request_id] = {
-                "status": "running", "step": step + 1, "total": total_steps,
-                "profile": PROFILE, "updated_at": time.time(),
+                "status": "running",
+                "step": completed_steps,
+                "total": total_steps,
+                "step_duration_seconds": round(step_duration, 1),
+                "estimated_seconds_remaining": estimated_seconds_remaining,
+                "profile": PROFILE,
+                "updated_at": time.time(),
             }
         return callback_kwargs
     return _on_step_end
