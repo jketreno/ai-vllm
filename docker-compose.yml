@@ -233,6 +233,7 @@ services:
       retries: 3
 
   sam3-worker:
+    profiles: [sam3]
     build:
       context: .
       dockerfile: sam3/Dockerfile
@@ -242,6 +243,8 @@ services:
     environment:
       HF_TOKEN_FILE: /run/secrets/huggingface_token
       LOG_LEVEL: ${SAM3_LOG_LEVEL:-INFO}
+      SAM3_PLATFORM: ${SAM3_PLATFORM:-gb10}
+      SAM3_RESOLUTION: ${SAM3_RESOLUTION:-1008}
     secrets:
       - huggingface_token
     volumes:
@@ -296,7 +299,7 @@ services:
       dockerfile: image-api/Dockerfile
     restart: unless-stopped
     environment:
-      SAM3_WORKER_URL: http://sam3-worker:8004
+      SAM3_WORKER_URL: ${SAM3_WORKER_URL:-http://sam3-worker:8004}
       QWEN_IMAGE_EDIT_WORKER_URL: http://qwen-image-edit-worker:8006
       IMAGE_API_POLICY_URL: http://clare2-policy:8000/v1
       IMAGE_API_POLICY_HEALTH_URL: http://clare2-policy:8000/health

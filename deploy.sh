@@ -1,6 +1,13 @@
-#!/bin/bash
-set -e
-. .env
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir"
+
+set -a
+# shellcheck source=/dev/null
+. "$script_dir/.env"
+set +a
 
 # If dirty, prompt to continue
 git diff --quiet || {
@@ -14,4 +21,6 @@ git diff --quiet || {
 
 git push
 
-ssh -t ${DEPLOYMENT} "bash -lic 'cd ${PROJECT} && git pull && docker compose build && docker compose up -d'"
+printf -v remote_command 'cd %q && git pull --ff-only && ./start.sh' "$PROJECT"
+printf -v remote_shell 'bash -lic %q' "$remote_command"
+ssh -t "$DEPLOYMENT" "$remote_shell"

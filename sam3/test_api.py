@@ -25,10 +25,19 @@ class MaskSerializationTests(unittest.TestCase):
     def test_mask_attachment_round_trips_every_pixel(self):
         mask = np.array([[False, True, False], [True, True, False]], dtype=bool)
         attachment = api._mask_attachment(mask, "mask:0")
-        decoded = np.asarray(Image.open(io.BytesIO(base64.b64decode(attachment["data_base64"]))))
+        decoded = np.asarray(
+            Image.open(io.BytesIO(base64.b64decode(attachment["data_base64"])))
+        )
         self.assertEqual(attachment["name"], "mask:0")
         self.assertEqual(attachment["media_type"], "image/png")
         np.testing.assert_array_equal(decoded, mask.astype(np.uint8) * 255)
+
+    def test_capabilities_report_selected_runtime(self):
+        capabilities = api.capabilities()
+        self.assertEqual(capabilities["runtime"]["platform"], "gb10")
+        self.assertEqual(capabilities["runtime"]["device"], "cuda")
+        self.assertEqual(capabilities["runtime"]["precision"], "fp32")
+        self.assertEqual(capabilities["runtime"]["resolution"], 1008)
 
 
 if __name__ == "__main__":

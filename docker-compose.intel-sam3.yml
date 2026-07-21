@@ -1,0 +1,36 @@
+name: ai-vllm-intel-sam3
+
+services:
+  sam3-worker:
+    profiles: [sam3]
+    build:
+      context: .
+      dockerfile: sam3/Dockerfile.intel
+    restart: unless-stopped
+    ipc: host
+    devices:
+      - ${SAM3_INTEL_DEVICE:-/dev/dri/renderD128}:${SAM3_INTEL_DEVICE:-/dev/dri/renderD128}
+    group_add:
+      - ${SAM3_INTEL_DEVICE_GID:-992}
+    environment:
+      HF_TOKEN_FILE: /run/secrets/huggingface_token
+      LOG_LEVEL: ${SAM3_LOG_LEVEL:-INFO}
+      SAM3_PLATFORM: intel_arc
+      SAM3_RESOLUTION: ${SAM3_INTEL_RESOLUTION:-1008}
+    secrets:
+      - huggingface_token
+    volumes:
+      - ${SAM3_MODEL_CACHE:-./models/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${SAM3_BIND_ADDRESS:-127.0.0.1}:${SAM3_API_PORT:-8004}:8004"
+      - "${SAM3_METRICS_BIND_ADDRESS:-127.0.0.1}:${SAM3_METRICS_PORT:-9092}:9092"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+
+secrets:
+  huggingface_token:
+    file: ./secrets/huggingface_token

@@ -66,6 +66,13 @@ inpainting, outpainting, and deterministic transforms. Host clients use
 The default stack runs a headless `sam3-worker`. Its capability RPC and metrics
 are private to Docker networks; no Streamlit UI is installed.
 
+Set `SAM3_PLATFORM=gb10` (the default) to retain the CUDA FP32 model at its
+native 1008px inference resolution. The same worker can run on an Intel Arc
+B-series GPU with `SAM3_PLATFORM=intel_arc`; that profile stores model weights
+in FP16 while retaining the checkpoint's native 1008px geometry. `/v1/capabilities`
+and the health endpoints report the selected platform, device, precision, and
+resolution.
+
 SAM3 is gated on Hugging Face. Accept Meta's model terms for the account behind
 `secrets/huggingface_token`, then build and start the services:
 
@@ -73,6 +80,28 @@ SAM3 is gated on Hugging Face. Accept Meta's model terms for the account behind
 docker compose build sam3-worker image-api
 docker compose up -d sam3-worker image-api
 ```
+
+To host SAM3 on an Intel Arc machine, copy this checkout and the Hugging Face
+token there, determine the render-device group with
+`stat --format %g /dev/dri/renderD128`, and run:
+
+```bash
+SAM3_INTEL_DEVICE_GID=992 \
+SAM3_BIND_ADDRESS=0.0.0.0 \
+./start.sh
+```
+
+Restrict port 8004 to the GB10 host with the host firewall or a private overlay
+network. On the GB10 deployment, set
+`SAM3_WORKER_URL=http://battle-linux.ketrenos.com:8004`; `image-api` then uses
+the remote worker without changing its public interface. Do not start the
+local `sam3-worker` in that topology. `start.sh` enforces this selection: a
+non-empty `SAM3_WORKER_URL` stops any existing local SAM3 container and starts
+the main stack without the `sam3` profile. When the URL is empty, it enables
+the local profile and selects Intel Arc when an Intel platform is configured
+or the configured render device and group ID are present; otherwise it starts
+the GB10 worker. `deploy.sh` updates the production checkout and invokes this
+same script remotely.
 
 Stop `sam3-worker` before CLARE2 training because both workloads require
 substantial unified GPU memory.
