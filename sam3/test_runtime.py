@@ -2,15 +2,30 @@
 
 import unittest
 
+import torch
+
 from sam3.runtime import runtime_config
 
 
 class RuntimeConfigTests(unittest.TestCase):
-    def test_gb10_defaults_preserve_existing_runtime(self):
+    def test_gb10_defaults_to_bf16(self):
         config = runtime_config({"SAM3_PLATFORM": "gb10"})
         self.assertEqual(config.device, "cuda")
-        self.assertEqual(config.precision, "fp32")
+        self.assertEqual(config.precision, "bf16-weight")
         self.assertEqual(config.resolution, 1008)
+
+    def test_gb10_fp32_fallback(self):
+        config = runtime_config(
+            {"SAM3_PLATFORM": "gb10", "SAM3_GB10_PRECISION": "fp32"}
+        )
+        self.assertEqual(config.dtype, torch.float32)
+        self.assertEqual(config.precision, "fp32")
+
+    def test_unknown_gb10_precision_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "SAM3_GB10_PRECISION"):
+            runtime_config(
+                {"SAM3_PLATFORM": "gb10", "SAM3_GB10_PRECISION": "fp16"}
+            )
 
     def test_b580_alias_selects_fp16_xpu_profile(self):
         config = runtime_config({"SAM3_PLATFORM": "b580"})

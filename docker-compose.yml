@@ -244,6 +244,7 @@ services:
       HF_TOKEN_FILE: /run/secrets/huggingface_token
       LOG_LEVEL: ${SAM3_LOG_LEVEL:-INFO}
       SAM3_PLATFORM: ${SAM3_PLATFORM:-gb10}
+      SAM3_GB10_PRECISION: ${SAM3_GB10_PRECISION:-bf16}
       SAM3_RESOLUTION: ${SAM3_RESOLUTION:-1008}
     secrets:
       - huggingface_token

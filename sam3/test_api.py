@@ -36,7 +36,7 @@ class MaskSerializationTests(unittest.TestCase):
         capabilities = api.capabilities()
         self.assertEqual(capabilities["runtime"]["platform"], "gb10")
         self.assertEqual(capabilities["runtime"]["device"], "cuda")
-        self.assertEqual(capabilities["runtime"]["precision"], "fp32")
+        self.assertEqual(capabilities["runtime"]["precision"], "bf16-weight")
         self.assertEqual(capabilities["runtime"]["resolution"], 1008)
 
 

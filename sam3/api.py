@@ -18,6 +18,7 @@ try:
         PlatformSAM3Annotator,
         inference_context,
         memory_snapshot,
+        reset_peak_memory_stats,
         runtime_config,
     )
 except ImportError:  # The container installs this API as /app/sam3_worker.py.
@@ -25,6 +26,7 @@ except ImportError:  # The container installs this API as /app/sam3_worker.py.
         PlatformSAM3Annotator,
         inference_context,
         memory_snapshot,
+        reset_peak_memory_stats,
         runtime_config,
     )
 
@@ -211,15 +213,19 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
         if isinstance(value, str) and value.strip()
     ][:24]
     try:
-        with (
-            inference_lock,
-            torch.inference_mode(),
-            inference_context(runtime),
-            INFERENCE_SECONDS.time(),
-        ):
-            segments, outputs = _segment(
-                image, prompts, float(parameters.get("threshold", 0.15))
-            )
+        with inference_lock:
+            reset_peak_memory_stats(runtime)
+            with (
+                torch.inference_mode(),
+                inference_context(runtime),
+                INFERENCE_SECONDS.time(),
+            ):
+                segments, outputs = _segment(
+                    image,
+                    prompts,
+                    float(parameters.get("threshold", 0.15)),
+                )
+            inference_memory = memory_snapshot(runtime)
         INFERENCE_REQUESTS.labels("success").inc()
         _update_device_metrics()
         return {
@@ -238,6 +244,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
                 "device": runtime.device,
                 "precision": runtime.precision,
                 "resolution": runtime.resolution,
+                "accelerator_memory": inference_memory,
             },
         }
     except Exception:

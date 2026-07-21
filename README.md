@@ -66,8 +66,9 @@ inpainting, outpainting, and deterministic transforms. Host clients use
 The default stack runs a headless `sam3-worker`. Its capability RPC and metrics
 are private to Docker networks; no Streamlit UI is installed.
 
-Set `SAM3_PLATFORM=gb10` (the default) to retain the CUDA FP32 model at its
-native 1008px inference resolution. The same worker can run on an Intel Arc
+Set `SAM3_PLATFORM=gb10` (the default) to use BF16 weights and autocast at the
+native 1008px inference resolution. Set `SAM3_GB10_PRECISION=fp32` to retain
+the original full-precision fallback. The same worker can run on an Intel Arc
 B-series GPU with `SAM3_PLATFORM=intel_arc`; that profile stores model weights
 in FP16 while retaining the checkpoint's native 1008px geometry. `/v1/capabilities`
 and the health endpoints report the selected platform, device, precision, and
