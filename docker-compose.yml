@@ -15,7 +15,7 @@ x-clare2-env: &clare2-env
   CLARE2_BASE_ARCHITECTURE: ${CLARE2_BASE_ARCHITECTURE:-Qwen3_5ForConditionalGeneration}
   CLARE2_BASE_CONFIG_HASH: ${CLARE2_BASE_CONFIG_HASH:?set the base config SHA256}
   CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
-  CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-{"clare":"github:jketreno/clare","ai-vllm":"ai-vllm"}}
+  CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-'{"clare":"github:jketreno/clare","ai-vllm":"ai-vllm"}'}
   CLARE2_MAX_CPU_LORAS: "8"
   CLARE2_SMTP_HOST: ${CLARE2_SMTP_HOST:-192.168.1.78}
   CLARE2_SMTP_PORT: ${CLARE2_SMTP_PORT:-25}
