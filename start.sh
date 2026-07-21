@@ -4,12 +4,24 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
 
-if [[ -f .env ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  . ./.env
-  set +a
-fi
+# Read the handful of vars this script's own branching logic needs directly
+# from .env, without shell-sourcing the file. Bash-sourcing (`. .env`) runs
+# every line through the shell parser, which strips quote characters from
+# values like `{"a":"b"}` (unescaped `"..."` is shell quoting syntax, not
+# literal text) -- silently corrupting valid JSON before docker compose ever
+# sees it. `docker compose` reads .env natively (no shell involved) and does
+# not have this problem, so container-bound values are left for it to parse;
+# only these few values are needed here in the shell itself.
+env_value() {
+  local key="$1"
+  [[ -f .env ]] || return 0
+  sed -n "s/^${key}=//p" .env | tail -n1
+}
+
+SAM3_WORKER_URL="$(env_value SAM3_WORKER_URL)"
+SAM3_PLATFORM="$(env_value SAM3_PLATFORM)"
+SAM3_INTEL_DEVICE="$(env_value SAM3_INTEL_DEVICE)"
+SAM3_INTEL_DEVICE_GID="$(env_value SAM3_INTEL_DEVICE_GID)"
 
 sam3_profile="sam3"
 intel_compose="docker-compose.intel-sam3.yml"
