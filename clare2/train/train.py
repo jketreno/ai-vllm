@@ -263,7 +263,13 @@ def main() -> None:
             lora_dropout=args.lora_dropout,
             target_modules=TARGET_MODULES,
             bias="none",
-            use_gradient_checkpointing="unsloth",
+            # "unsloth" mode traces through torch._dynamo; on GB10 (sm_121) this has
+            # produced `CUDA error: operation not permitted` (cudaErrorNotPermitted)
+            # on the very first forward pass through Qwen3.5's linear-attention path,
+            # matching the documented Dynamo/stream-capture interaction
+            # (https://github.com/pytorch/pytorch/issues/87794). Standard PyTorch
+            # checkpointing avoids the Dynamo-traced path at some memory/speed cost.
+            use_gradient_checkpointing=True,
             random_state=args.seed,
         )
         dataset, skipped = load_corpus(train_file, text_tokenizer, args.max_seq_length)
