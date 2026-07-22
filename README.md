@@ -277,11 +277,14 @@ Alibaba's hosted Qwen-Image-Edit API (see
 is purely prompt-driven — it has no mask, inpaint, outpaint, crop, or rotate
 parameter. This service adds mask-guided endpoints around the supported
 `QwenImageEditPlusPipeline`: it draws a temporary high-contrast contour around
-the SAM-selected object on a padded crop, tells Qwen to apply the requested edit
-inside that marker, then composites only masked pixels back onto the untouched
-source. The annotated conditioning crop and raw pre-composite generation are
-returned as diagnostic artifacts. This preserves exact source pixels outside the
-mask without pairing the 2511 Edit Plus checkpoint with the older
+the SAM-selected object on a padded crop and composites only masked pixels back
+onto the untouched source. The worker sends the supplied prompt and negative
+prompt to Qwen exactly as received; clients such as Auto-SAM own any marker-aware
+prompt templates. Auto-SAM expands its edit mask outward by 5% of the selected
+bounds for edge context and blending before invoking this worker. The annotated
+conditioning crop and raw pre-composite generation are returned as diagnostic
+artifacts. This preserves exact source pixels outside the expanded edit mask
+without pairing the 2511 Edit Plus checkpoint with the older
 `QwenImageEditInpaintPipeline` intended for `Qwen/Qwen-Image-Edit`.
 
 - `POST /v1/images/edit` — whole-image, prompt-driven edit (text editing, object

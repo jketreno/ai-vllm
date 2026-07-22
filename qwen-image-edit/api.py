@@ -88,7 +88,6 @@ PROGRESS_RETENTION_SECONDS = int(
 
 MARKER_COLOR = (255, 0, 255)
 MARKER_HALO_COLOR = (255, 255, 255)
-MARKER_NEGATIVE_PROMPT = "editing annotation, selection border, contour marker"
 
 LATENCY_BUCKETS = (10, 30, 60, 120, 300, 600, 900, 1200, 1800)
 
@@ -522,9 +521,7 @@ def _visual_marker_width(image: Image.Image) -> int:
     return max(6, min(16, round(min(image.size) * 0.008)))
 
 
-def _annotate_inpaint_region(
-    image: Image.Image, mask: Image.Image, mask_label: str = ""
-) -> tuple[Image.Image, str, str]:
+def _annotate_inpaint_region(image: Image.Image, mask: Image.Image) -> Image.Image:
     """Mark the selected object for prompt-driven Qwen Edit Plus inference.
 
     The colored bands are outside the compositing mask, so even a model that
@@ -543,26 +540,7 @@ def _annotate_inpaint_region(
     annotated = Image.composite(
         Image.new("RGB", image.size, MARKER_COLOR), annotated, marker_band
     )
-    label = mask_label.strip()[:200]
-    label_context = (
-        f'The object enclosed by the contour is labeled "{label}". '
-        if label
-        else ""
-    )
-    prompt_prefix = (
-        "The bright magenta contour with a white halo is a temporary editing "
-        "marker and the outer limit of the permitted edit. "
-        f"{label_context}Replace the labeled object enclosed by that contour according "
-        "to the user's instruction. Do not reproduce the contour or halo, and do "
-        "not change anything beyond it. User edit instruction: "
-    )
-    negative_addition = _append_negative_prompt(label, MARKER_NEGATIVE_PROMPT)
-    return annotated, prompt_prefix, negative_addition
-
-
-def _append_negative_prompt(negative_prompt: str, addition: str) -> str:
-    parts = [value.strip() for value in (negative_prompt, addition) if value.strip()]
-    return ", ".join(parts)
+    return annotated
 
 
 def _composite_generated_region(
@@ -707,7 +685,6 @@ async def inpaint(
     file: UploadFile = File(...),
     mask: str = Form(...),
     prompt: str = Form(...),
-    mask_label: str = Form(""),
     negative_prompt: str = Form(""),
     strength: float = Form(1.0),
     num_inference_steps: int = Form(20),
@@ -738,13 +715,7 @@ async def inpaint(
     inference_image, inference_mask, region_box = _inpaint_region(
         image, mask_image, padding_mask_crop
     )
-    conditioning_image, prompt_prefix, marker_negative = _annotate_inpaint_region(
-        inference_image, inference_mask, mask_label
-    )
-    conditioned_prompt = f"{prompt_prefix}{prompt.strip()}"
-    conditioned_negative_prompt = _append_negative_prompt(
-        negative_prompt, marker_negative
-    )
+    conditioning_image = _annotate_inpaint_region(inference_image, inference_mask)
     _gate_inference("inpaint", request_id, num_inference_steps)
     _observe_dimensions("inpaint", image)
 
@@ -761,8 +732,8 @@ async def inpaint(
                 # original SAM mask during compositing below.
                 out = _edit_plus_image(
                     conditioning_image,
-                    conditioned_prompt,
-                    conditioned_negative_prompt,
+                    prompt.strip(),
+                    negative_prompt,
                     num_inference_steps,
                     true_cfg_scale,
                     generator,
@@ -1099,7 +1070,6 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
             file=image,
             mask=f"data:image/png;base64,{mask_payload}",
             prompt=prompt,
-            mask_label=str(parameters.get("mask_label", "")),
             negative_prompt=str(parameters.get("negative_prompt", "")),
             strength=float(parameters.get("strength", 1.0)),
             num_inference_steps=int(parameters.get("num_inference_steps", 20)),

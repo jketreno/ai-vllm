@@ -308,29 +308,17 @@ class InpaintCompositionTests(unittest.TestCase):
         mask = Image.new("L", source.size, 0)
         mask.paste(255, (30, 30, 70, 70))
 
-        annotated, prompt_prefix, negative_addition = api._annotate_inpaint_region(
-            source, mask, "Christmas tree"
-        )
+        annotated = api._annotate_inpaint_region(source, mask)
 
         self.assertEqual(annotated.getpixel((50, 50)), source.getpixel((50, 50)))
         self.assertEqual(annotated.getpixel((28, 50)), api.MARKER_COLOR)
         self.assertEqual(annotated.getpixel((20, 50)), api.MARKER_HALO_COLOR)
         self.assertEqual(annotated.getpixel((0, 0)), source.getpixel((0, 0)))
-        self.assertIn("magenta contour", prompt_prefix)
-        self.assertIn('labeled "Christmas tree"', prompt_prefix)
-        self.assertIn("Christmas tree", negative_addition)
-        self.assertIn("selection border", negative_addition)
 
     def test_marker_width_scales_and_is_bounded(self):
         self.assertEqual(api._visual_marker_width(_make_image(100, 100)), 6)
         self.assertEqual(api._visual_marker_width(_make_image(1000, 800)), 6)
         self.assertEqual(api._visual_marker_width(_make_image(4000, 4000)), 16)
-
-    def test_marker_negative_prompt_preserves_user_terms(self):
-        result = api._append_negative_prompt("tree", api.MARKER_NEGATIVE_PROMPT)
-
-        self.assertIn("tree", result)
-        self.assertIn("contour marker", result)
 
     def test_empty_mask_uses_full_canvas_without_changing_dimensions(self):
         source = _make_image(1204, 1599)
@@ -392,6 +380,8 @@ class InpaintPipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.kwargs["num_inference_steps"], 2)
         self.assertEqual(pipeline.kwargs["true_cfg_scale"], 4.0)
         self.assertEqual(pipeline.kwargs["guidance_scale"], 1.0)
+        self.assertEqual(pipeline.kwargs["prompt"], "replace with fireworks")
+        self.assertEqual(pipeline.kwargs["negative_prompt"], " ")
         self.assertNotIn("mask_image", pipeline.kwargs)
         self.assertNotIn("strength", pipeline.kwargs)
 

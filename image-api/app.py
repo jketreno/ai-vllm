@@ -462,7 +462,6 @@ async def inpaint(
     file: UploadFile = File(...),
     mask: str = Form(...),
     prompt: str = Form(...),
-    mask_label: str = Form(""),
     negative_prompt: str = Form(""),
     strength: float = Form(1.0),
     num_inference_steps: int = Form(20),
@@ -478,7 +477,6 @@ async def inpaint(
         num_inference_steps,
         true_cfg_scale,
         seed,
-        mask_label=mask_label,
         strength=strength,
         padding_mask_crop=padding_mask_crop,
     )
