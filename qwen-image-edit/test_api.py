@@ -144,6 +144,18 @@ except ImportError:
     fastapi_stub.UploadFile = type("UploadFile", (), {})
     sys.modules.setdefault("fastapi", fastapi_stub)
 
+if "fastapi.responses" not in sys.modules:
+    fastapi_responses_stub = types.ModuleType("fastapi.responses")
+
+    class _FakeResponse:
+        def __init__(self, content=None, media_type=None, headers=None):
+            self.body = content
+            self.media_type = media_type
+            self.headers = headers or {}
+
+    fastapi_responses_stub.Response = _FakeResponse
+    sys.modules["fastapi.responses"] = fastapi_responses_stub
+
 api = importlib.import_module("api")
 
 
@@ -389,9 +401,13 @@ class InpaintPipelineTests(unittest.TestCase):
 class InvokeProgressTests(unittest.TestCase):
     def setUp(self):
         api._invoke_progress.clear()
+        api._invoke_previews.clear()
+        api._cancelled_requests.clear()
 
     def tearDown(self):
         api._invoke_progress.clear()
+        api._invoke_previews.clear()
+        api._cancelled_requests.clear()
 
     def test_step_callback_progress_is_monotonically_increasing_within_a_request(self):
         callback = api._make_step_callback("req-1", total_steps=10)
@@ -435,6 +451,27 @@ class InvokeProgressTests(unittest.TestCase):
         self.assertEqual(progress["status"], "succeeded")
         self.assertEqual(progress["step"], 1)
         self.assertEqual(progress["total"], 5)
+
+    def test_step_callback_publishes_latest_preview_by_version(self):
+        callback = api._make_step_callback(
+            "req-preview", total_steps=2,
+            preview_renderer=lambda _pipe, _latents: b"jpeg-preview",
+        )
+
+        callback(None, 0, None, {"latents": object()})
+
+        progress = api.invoke_progress("req-preview")
+        self.assertEqual(progress["preview_version"], 1)
+        self.assertEqual(progress["preview_media_type"], "image/jpeg")
+        self.assertEqual(api.invoke_preview("req-preview").body, b"jpeg-preview")
+
+    def test_cancelled_request_stops_at_next_step_callback(self):
+        callback = api._make_step_callback("req-cancel", total_steps=2)
+        response = api.cancel_invoke("req-cancel")
+
+        self.assertEqual(response["status"], "cancel_requested")
+        with self.assertRaises(api.InferenceCancelled):
+            callback(None, 0, None, {})
 
     def test_invoke_progress_endpoint_raises_for_unknown_request_id(self):
         with self.assertRaises(api.HTTPException):

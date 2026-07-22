@@ -314,6 +314,14 @@ without pairing the 2511 Edit Plus checkpoint with the older
   endpoints rather than paying for a diffusion pass on a task that doesn't
   need one.
 
+Long-running Qwen edit requests publish step progress at
+`GET /v1/images/invoke/{request_id}/progress`. When `preview_version` changes,
+`GET /v1/images/invoke/{request_id}/preview` returns the latest low-resolution
+JPEG decoded from that step's latents. Inpaint and outpaint previews already
+include the same mask composite used by the final result. Only the newest frame
+is retained. `POST /v1/images/invoke/{request_id}/cancel` requests cooperative
+cancellation; inference stops at the next diffusion-step boundary.
+
 All endpoints return `{"width", "height", "image_png_base64"}`. Example
 inpaint call using a SAM3 mask:
 

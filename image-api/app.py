@@ -11,7 +11,7 @@ import uuid
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 
 from image_ops import (
@@ -496,6 +496,21 @@ async def invoke_progress(request_id: str):
     progress, so callers polling for inpaint/outpaint step progress don't need to
     know the worker's internal URL."""
     return await editor.invoke_progress(request_id)
+
+
+@app.get("/v1/images/invoke/{request_id}/preview")
+async def invoke_preview(request_id: str):
+    payload, media_type = await editor.invoke_preview(request_id)
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/v1/images/invoke/{request_id}/cancel")
+async def cancel_invoke(request_id: str):
+    return await editor.cancel_invoke(request_id)
 
 
 @app.post("/v1/images/outpaint")

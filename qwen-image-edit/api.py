@@ -34,6 +34,7 @@ from diffusers import (
     TorchAoConfig,
 )
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from PIL import Image, ImageChops, ImageFilter, UnidentifiedImageError
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from torchao.quantization import Float8WeightOnlyConfig
@@ -84,6 +85,12 @@ LIGHTNING_WEIGHT = os.environ.get(
 log = logging.getLogger("qwen_image_edit")
 PROGRESS_RETENTION_SECONDS = int(
     os.environ.get("QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS", "86400")
+)
+PREVIEW_MAX_DIMENSION = int(
+    os.environ.get("QWEN_IMAGE_EDIT_PREVIEW_MAX_DIMENSION", "512")
+)
+PREVIEW_JPEG_QUALITY = int(
+    os.environ.get("QWEN_IMAGE_EDIT_PREVIEW_JPEG_QUALITY", "72")
 )
 
 MARKER_COLOR = (255, 0, 255)
@@ -166,7 +173,14 @@ _pipeline_lock = threading.Lock()
 # /v1/invoke call is still in flight, mirroring the _LoadStatus file-based progress
 # pattern above but held in memory since this is per-request, not per-process-load.
 _invoke_progress: dict[str, dict] = {}
+_invoke_previews: dict[str, bytes] = {}
+_cancelled_requests: set[str] = set()
 _invoke_progress_lock = threading.Lock()
+
+
+class InferenceCancelled(HTTPException):
+    def __init__(self):
+        super().__init__(409, "image inference was cancelled")
 
 
 def _prune_progress(now: float | None = None) -> None:
@@ -179,6 +193,8 @@ def _prune_progress(now: float | None = None) -> None:
         ]
         for request_id in expired:
             del _invoke_progress[request_id]
+            _invoke_previews.pop(request_id, None)
+            _cancelled_requests.discard(request_id)
 
 
 def _set_progress_stage(request_id: str | None, status: str, **details) -> None:
@@ -195,11 +211,83 @@ def _set_progress_stage(request_id: str | None, status: str, **details) -> None:
         }
 
 
-def _make_step_callback(request_id: str | None, total_steps: int):
+def _pipeline_dimensions(image: Image.Image) -> tuple[int, int]:
+    ratio = image.width / image.height
+    raw_width = math.sqrt(1024 * 1024 * ratio)
+    raw_height = raw_width / ratio
+    width = round(raw_width / 32) * 32
+    height = round(raw_height / 32) * 32
+    return width, height
+
+
+def _decode_step_preview(pipe, packed_latents, width: int, height: int) -> Image.Image:
+    latents = pipe._unpack_latents(
+        packed_latents, height, width, pipe.vae_scale_factor
+    ).to(pipe.vae.dtype)
+    preview_scale = min(1.0, PREVIEW_MAX_DIMENSION / max(width, height))
+    if preview_scale < 1.0:
+        latent_height = max(2, round(latents.shape[-2] * preview_scale))
+        latent_width = max(2, round(latents.shape[-1] * preview_scale))
+        latents = torch.nn.functional.interpolate(
+            latents,
+            size=(latents.shape[-3], latent_height, latent_width),
+            mode="trilinear",
+            align_corners=False,
+        )
+    latents_mean = torch.tensor(pipe.vae.config.latents_mean).view(
+        1, pipe.vae.config.z_dim, 1, 1, 1
+    ).to(latents.device, latents.dtype)
+    latents_std = 1.0 / torch.tensor(pipe.vae.config.latents_std).view(
+        1, pipe.vae.config.z_dim, 1, 1, 1
+    ).to(latents.device, latents.dtype)
+    decoded = pipe.vae.decode(latents / latents_std + latents_mean, return_dict=False)[
+        0
+    ][:, :, 0]
+    return pipe.image_processor.postprocess(decoded, output_type="pil")[0]
+
+
+def _encode_step_preview(image: Image.Image) -> bytes:
+    image = image.convert("RGB")
+    image.thumbnail((PREVIEW_MAX_DIMENSION, PREVIEW_MAX_DIMENSION))
+    buffer = io.BytesIO()
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=max(20, min(PREVIEW_JPEG_QUALITY, 95)),
+        optimize=True,
+    )
+    return buffer.getvalue()
+
+
+def _preview_renderer(
+    inference_image: Image.Image,
+    compositor=None,
+):
+    width, height = _pipeline_dimensions(inference_image)
+
+    def render(pipe, packed_latents) -> bytes:
+        generated = _decode_step_preview(pipe, packed_latents, width, height)
+        return _encode_step_preview(compositor(generated) if compositor else generated)
+
+    return render
+
+
+def _request_cancelled(request_id: str | None) -> bool:
+    if not request_id:
+        return False
+    with _invoke_progress_lock:
+        return request_id in _cancelled_requests
+
+
+def _make_step_callback(
+    request_id: str | None, total_steps: int, preview_renderer=None
+):
     started_at = time.monotonic()
     last_observed = [started_at]
 
     def _on_step_end(pipe, step: int, timestep, callback_kwargs: dict) -> dict:
+        if _request_cancelled(request_id):
+            raise InferenceCancelled()
         now = time.monotonic()
         step_duration = now - last_observed[0]
         STEP_LATENCY.labels(PROFILE).observe(step_duration)
@@ -208,7 +296,25 @@ def _make_step_callback(request_id: str | None, total_steps: int):
         remaining_steps = max(total_steps - completed_steps, 0)
         average_step_duration = (now - started_at) / completed_steps
         estimated_seconds_remaining = math.ceil(average_step_duration * remaining_steps)
+        preview_version = None
+        if preview_renderer is not None and "latents" in callback_kwargs:
+            try:
+                preview = preview_renderer(pipe, callback_kwargs["latents"])
+                preview_version = completed_steps
+            except Exception:  # noqa: BLE001 -- preview failure must not fail inference
+                log.exception(
+                    "request_id=%s step=%d preview decode failed",
+                    request_id,
+                    completed_steps,
+                )
+                preview = None
+        else:
+            preview = None
+        if _request_cancelled(request_id):
+            raise InferenceCancelled()
         with _invoke_progress_lock:
+            if preview is not None:
+                _invoke_previews[request_id] = preview
             _invoke_progress[request_id] = {
                 "status": "running",
                 "step": completed_steps,
@@ -217,6 +323,14 @@ def _make_step_callback(request_id: str | None, total_steps: int):
                 "estimated_seconds_remaining": estimated_seconds_remaining,
                 "profile": PROFILE,
                 "updated_at": time.time(),
+                **(
+                    {
+                        "preview_version": preview_version,
+                        "preview_media_type": "image/jpeg",
+                    }
+                    if preview_version is not None
+                    else {}
+                ),
             }
         return callback_kwargs
 
@@ -236,6 +350,11 @@ def _finish_progress(request_id: str | None, status: str, detail: str | None = N
         }
 
 
+def _record_cancelled(operation: str, request_id: str | None) -> None:
+    INFERENCE_REQUESTS.labels(operation, "cancelled", PROFILE).inc()
+    _finish_progress(request_id, "cancelled", "cancelled by client")
+
+
 def _mem_available_gib():
     with open("/proc/meminfo") as f:
         for line in f:
@@ -249,14 +368,19 @@ def _gate_inference(operation: str, request_id: str | None, total_steps: int) ->
     INFERENCE_MEMORY.labels("before", PROFILE).set(available)
     if request_id:
         with _invoke_progress_lock:
+            cancelled = request_id in _cancelled_requests
+            _invoke_previews.pop(request_id, None)
             _invoke_progress[request_id] = {
-                "status": "resource_check",
+                "status": "cancelled" if cancelled else "resource_check",
                 "step": 0,
                 "total": total_steps,
                 "profile": PROFILE,
                 "mem_available_gib": round(available, 2),
                 "updated_at": time.time(),
             }
+        if cancelled:
+            INFERENCE_REQUESTS.labels(operation, "cancelled", PROFILE).inc()
+            raise InferenceCancelled()
     if available < INFERENCE_REQUIRED_GIB:
         INFERENCE_REQUESTS.labels(operation, "rejected", PROFILE).inc()
         _finish_progress(request_id, "failed", "insufficient memory headroom")
@@ -651,7 +775,13 @@ async def edit(
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     callback = (
-        _make_step_callback(request_id, num_inference_steps) if request_id else None
+        _make_step_callback(
+            request_id,
+            num_inference_steps,
+            _preview_renderer(images[-1]),
+        )
+        if request_id
+        else None
     )
 
     def _run():
@@ -670,6 +800,9 @@ async def edit(
                 INFERENCE_REQUESTS.labels("edit", "success", PROFILE).inc()
                 _finish_progress(request_id, "succeeded")
                 return out
+            except InferenceCancelled:
+                _record_cancelled("edit", request_id)
+                raise
             except Exception as error:
                 INFERENCE_REQUESTS.labels("edit", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
@@ -721,7 +854,18 @@ async def inpaint(
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     callback = (
-        _make_step_callback(request_id, num_inference_steps) if request_id else None
+        _make_step_callback(
+            request_id,
+            num_inference_steps,
+            _preview_renderer(
+                conditioning_image,
+                lambda generated: _composite_generated_region(
+                    image, mask_image, generated, region_box, strength
+                ),
+            ),
+        )
+        if request_id
+        else None
     )
 
     def _run():
@@ -747,6 +891,9 @@ async def inpaint(
                 INFERENCE_REQUESTS.labels("inpaint", "success", PROFILE).inc()
                 _finish_progress(request_id, "succeeded")
                 return result, out
+            except InferenceCancelled:
+                _record_cancelled("inpaint", request_id)
+                raise
             except Exception as error:
                 INFERENCE_REQUESTS.labels("inpaint", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
@@ -838,7 +985,21 @@ async def outpaint(
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
     callback = (
-        _make_step_callback(request_id, num_inference_steps) if request_id else None
+        _make_step_callback(
+            request_id,
+            num_inference_steps,
+            _preview_renderer(
+                canvas,
+                lambda generated: _composite_generated_region(
+                    canvas,
+                    mask_image,
+                    generated,
+                    (0, 0, canvas.width, canvas.height),
+                ),
+            ),
+        )
+        if request_id
+        else None
     )
 
     def _run():
@@ -861,6 +1022,9 @@ async def outpaint(
                 INFERENCE_REQUESTS.labels("outpaint", "success", PROFILE).inc()
                 _finish_progress(request_id, "succeeded")
                 return result
+            except InferenceCancelled:
+                _record_cancelled("outpaint", request_id)
+                raise
             except Exception as error:
                 INFERENCE_REQUESTS.labels("outpaint", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
@@ -1095,3 +1259,33 @@ def invoke_progress(request_id: str):
             "or already finished)",
         )
     return progress
+
+
+@app.get("/v1/invoke/{request_id}/preview")
+def invoke_preview(request_id: str):
+    _prune_progress()
+    with _invoke_progress_lock:
+        preview = _invoke_previews.get(request_id)
+    if preview is None:
+        raise HTTPException(404, "no step preview is available for this request")
+    return Response(
+        content=preview,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/v1/invoke/{request_id}/cancel")
+def cancel_invoke(request_id: str):
+    _prune_progress()
+    with _invoke_progress_lock:
+        current = _invoke_progress.get(request_id, {})
+        if current.get("status") in {"succeeded", "failed", "cancelled"}:
+            return {"request_id": request_id, "status": current["status"]}
+        _cancelled_requests.add(request_id)
+        _invoke_progress[request_id] = {
+            **current,
+            "status": "cancel_requested",
+            "updated_at": time.time(),
+        }
+    return {"request_id": request_id, "status": "cancel_requested"}

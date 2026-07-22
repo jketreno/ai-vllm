@@ -85,3 +85,21 @@ class WorkerClient:
             raise HTTPException(404, "no progress recorded for this request_id")
         response.raise_for_status()
         return response.json()
+
+    async def invoke_preview(self, request_id: str) -> tuple[bytes, str]:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{self.base_url}/v1/invoke/{request_id}/preview"
+            )
+        if response.status_code == 404:
+            raise HTTPException(404, "no preview is available for this request_id")
+        response.raise_for_status()
+        return response.content, response.headers.get("content-type", "image/jpeg")
+
+    async def cancel_invoke(self, request_id: str) -> dict:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/invoke/{request_id}/cancel"
+            )
+        response.raise_for_status()
+        return response.json()
