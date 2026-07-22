@@ -96,8 +96,12 @@ class SyncAllTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             if "dev-laptop.example.com" in command[-2]:
-                return subprocess.CompletedProcess(command, returncode=23, stdout="", stderr="rsync error")
-            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                return subprocess.CompletedProcess(
+                    command, returncode=23, stdout="", stderr="rsync error"
+                )
+            return subprocess.CompletedProcess(
+                command, returncode=0, stdout="", stderr=""
+            )
 
         with patch.object(corpus_sync, "SOURCES_PATH", self.sources_path), patch.object(
             corpus_sync, "CORPUS_ROOT", self.corpus_root
@@ -128,7 +132,9 @@ class SyncAllTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             captured_commands.append(command)
-            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stdout="", stderr=""
+            )
 
         with patch.object(corpus_sync, "SOURCES_PATH", self.sources_path), patch.object(
             corpus_sync, "CORPUS_ROOT", self.corpus_root
@@ -138,7 +144,9 @@ class SyncAllTests(unittest.TestCase):
             sync_all()
 
         self.assertEqual(len(captured_commands), 1)
-        ssh_option = next(part for part in captured_commands[0] if part.startswith("ssh "))
+        ssh_option = next(
+            part for part in captured_commands[0] if part.startswith("ssh ")
+        )
         self.assertIn("StrictHostKeyChecking=yes", ssh_option)
         self.assertIn("UserKnownHostsFile=", ssh_option)
         self.assertNotIn("StrictHostKeyChecking=no", ssh_option)
@@ -154,7 +162,9 @@ class SyncAllTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             captured_commands.append(command)
-            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stdout="", stderr=""
+            )
 
         with patch.object(corpus_sync, "SOURCES_PATH", self.sources_path), patch.object(
             corpus_sync, "CORPUS_ROOT", self.corpus_root
@@ -171,7 +181,9 @@ class SyncAllTests(unittest.TestCase):
         _write_sources(self.sources_path, [VALID_ENTRY])
 
         def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stdout="", stderr=""
+            )
 
         with patch.object(corpus_sync, "SOURCES_PATH", self.sources_path), patch.object(
             corpus_sync, "CORPUS_ROOT", self.corpus_root

@@ -98,9 +98,9 @@ class ClassifyRequest(BaseModel):
 class ModelAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    reasons: list[Annotated[str, StringConstraints(min_length=1, max_length=240)]] = (
-        Field(min_length=1, max_length=5)
-    )
+    reasons: list[
+        Annotated[str, StringConstraints(min_length=1, max_length=240)]
+    ] = Field(min_length=1, max_length=5)
     classification: Classification
     spam_score: float = Field(ge=0.0, le=1.0)
 
@@ -110,9 +110,15 @@ class ModelAssessment(BaseModel):
         # last. If the last numeric field contradicts the explicit decision,
         # keep the decision and move the score back to the matching side of the
         # threshold instead of turning legitimate mail into an API failure.
-        if self.classification == Classification.HAM and self.spam_score >= SPAM_THRESHOLD:
+        if (
+            self.classification == Classification.HAM
+            and self.spam_score >= SPAM_THRESHOLD
+        ):
             self.spam_score = min(0.49, SPAM_THRESHOLD - 0.01)
-        if self.classification == Classification.SPAM and self.spam_score < SPAM_THRESHOLD:
+        if (
+            self.classification == Classification.SPAM
+            and self.spam_score < SPAM_THRESHOLD
+        ):
             self.spam_score = SPAM_THRESHOLD
         return self
 
@@ -183,7 +189,9 @@ def _classify_with_model(payload: ClassifyRequest) -> ModelAssessment:
         content = response.json()["choices"][0]["message"]["content"]
         return ModelAssessment.model_validate_json(content)
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail="spam model request failed") from exc
+        raise HTTPException(
+            status_code=502, detail="spam model request failed"
+        ) from exc
 
 
 app = FastAPI(title="LLM Spam Classifier", version="1.0.0")

@@ -15,7 +15,11 @@ class ExporterTests(unittest.TestCase):
         """
         self.assertEqual(
             parse_allocations(text),
-            {"weights": 29.95 * GIB, "kv_cache": 48.62 * GIB, "cuda_graphs": 0.33 * GIB},
+            {
+                "weights": 29.95 * GIB,
+                "kv_cache": 48.62 * GIB,
+                "cuda_graphs": 0.33 * GIB,
+            },
         )
 
     def test_decodes_multiplexed_docker_logs(self):

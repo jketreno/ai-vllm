@@ -23,7 +23,9 @@ log = logging.getLogger(__name__)
 STATE_ROOT = pathlib.Path(os.environ.get("CLARE2_STATE_ROOT", "/corpus/meta"))
 STATE_PATH = STATE_ROOT / "lifecycle.json"
 LOCK_PATH = STATE_ROOT / "lifecycle.lock"
-DOCKER_PROXY_URL = os.environ.get("CLARE2_DOCKER_PROXY_URL", "http://docker-socket-proxy:2375")
+DOCKER_PROXY_URL = os.environ.get(
+    "CLARE2_DOCKER_PROXY_URL", "http://docker-socket-proxy:2375"
+)
 VLLM_CONTAINER = os.environ.get("CLARE2_VLLM_CONTAINER", "vllm-engine")
 TRAIN_CONTAINER = os.environ.get("CLARE2_TRAIN_CONTAINER", "clare2-train")
 DRAIN_TIMEOUT = float(os.environ.get("CLARE2_DRAIN_TIMEOUT", "900"))
@@ -107,8 +109,11 @@ def _acquire_image_edit_lease_once(request_id: str) -> dict[str, Any]:
                 seconds=IMAGE_LEASE_TTL
             )
             _set_state(
-                "image_edit", reset=True, lease_id=lease_id,
-                request_id=request_id, expires_at=expires_at.isoformat(),
+                "image_edit",
+                reset=True,
+                lease_id=lease_id,
+                request_id=request_id,
+                expires_at=expires_at.isoformat(),
                 mem_available_gib=round(available, 2),
                 acquired_monotonic=time.monotonic(),
             )
@@ -122,15 +127,15 @@ def _acquire_image_edit_lease_once(request_id: str) -> dict[str, Any]:
                     _wait_for_vllm()
                 except Exception as restore_error:
                     _set_state(
-                        "image_edit", reset=True, lease_id=lease_id,
+                        "image_edit",
+                        reset=True,
+                        lease_id=lease_id,
                         request_id=request_id,
                         expires_at=datetime.now(tz=timezone.utc).isoformat(),
                         error=f"vLLM restoration failed: {restore_error}",
                     )
                     metrics.image_lease_active.set(1)
-                    metrics.image_lease_outcomes.labels(
-                        outcome="restore_failure"
-                    ).inc()
+                    metrics.image_lease_outcomes.labels(outcome="restore_failure").inc()
                     raise acquire_error from restore_error
             maintenance.exit()
             _set_state("failed", reset=True, error="image lease acquisition failed")
@@ -170,7 +175,9 @@ def release_image_edit_lease(lease_id: str) -> dict[str, Any]:
             _wait_for_vllm()
         except Exception as error:
             _set_state(
-                "image_edit", reset=True, lease_id=lease_id,
+                "image_edit",
+                reset=True,
+                lease_id=lease_id,
                 request_id=state.get("request_id"),
                 expires_at=datetime.now(tz=timezone.utc).isoformat(),
                 acquired_monotonic=acquired,
@@ -213,14 +220,18 @@ def reconcile_terminal_state() -> dict[str, Any]:
         for result in state.get("batch_results", []):
             if result.get("outcome") == "rejected":
                 _reconcile_rejected_candidate(result["adapter_id"])
-    if state.get("outcome") in TERMINAL_OUTCOMES and state.get("phase") not in {"idle", "failed"}:
+    if state.get("outcome") in TERMINAL_OUTCOMES and state.get("phase") not in {
+        "idle",
+        "failed",
+    }:
         _set_state("idle")
         return status()
     return state
 
 
 def _reconcile_rejected_candidate(adapter_id: str) -> None:
-    """Align registry state after a crash between rejection state and registry transition."""
+    """Align registry state after a crash between rejection state and registry
+    transition."""
     try:
         adapter = registry.read().get("adapters", {}).get(adapter_id)
         if adapter and adapter.get("status") in {"training", "candidate", "loaded"}:
@@ -257,7 +268,9 @@ def _active_inference_sessions() -> int:
     response.raise_for_status()
     payload = response.json()
     if payload.get("status") != "success":
-        raise RuntimeError(f"Prometheus query failed: {payload.get('error', 'unknown error')}")
+        raise RuntimeError(
+            f"Prometheus query failed: {payload.get('error', 'unknown error')}"
+        )
     result = payload.get("data", {}).get("result", [])
     if not result:
         raise RuntimeError("Prometheus returned no active-inference metric")
@@ -269,7 +282,9 @@ def _wait_for_inference_idle(run_id: str, postponement_notified: bool) -> bool:
         try:
             active_sessions = _active_inference_sessions()
         except (httpx.HTTPError, KeyError, TypeError, ValueError, RuntimeError):
-            log.exception("Unable to determine active inference sessions; postponing training")
+            log.exception(
+                "Unable to determine active inference sessions; postponing training"
+            )
             time.sleep(TRAINING_RETRY_INTERVAL)
             continue
         if active_sessions == 0:
@@ -293,7 +308,9 @@ def run_nightly_training() -> None:
     with single_run():
         state = reconcile_terminal_state()
         if state.get("phase") not in {"postponed", "idle", "failed"}:
-            raise RuntimeError(f"cannot start nightly training from {state.get('phase')}")
+            raise RuntimeError(
+                f"cannot start nightly training from {state.get('phase')}"
+            )
         resuming = state.get("phase") == "postponed"
         run_id = state.get("run_id") if resuming else _new_run_id()
         postponement_notified = resuming and bool(state.get("postponement_notified"))
@@ -314,7 +331,9 @@ def run_nightly_training() -> None:
             active_sessions=0,
         )
         corpus.assemble()
-        _wait_for_training_container(run_id, postponement_notified=postponement_notified)
+        _wait_for_training_container(
+            run_id, postponement_notified=postponement_notified
+        )
         started = time.monotonic()
         _set_state(
             "draining",
@@ -327,7 +346,9 @@ def run_nightly_training() -> None:
             if not maintenance.wait_for_drain(DRAIN_TIMEOUT):
                 raise TimeoutError("timed out waiting for in-flight inference")
             _container("stop", VLLM_CONTAINER)
-            _start_training_container(run_id, postponement_notified=postponement_notified)
+            _start_training_container(
+                run_id, postponement_notified=postponement_notified
+            )
         except Exception as exc:
             _recover(run_id, exc)
             raise
@@ -384,7 +405,9 @@ def _record_training_metrics(
     epoch_losses: list[float],
 ) -> None:
     for epoch, epoch_loss in enumerate(epoch_losses, 1):
-        metrics.training_loss_by_epoch.labels(project=project, epoch=str(epoch)).set(epoch_loss)
+        metrics.training_loss_by_epoch.labels(project=project, epoch=str(epoch)).set(
+            epoch_loss
+        )
     if loss is not None:
         metrics.training_loss_final.labels(project=project).set(loss)
 
@@ -413,10 +436,15 @@ def complete_training(
         state = status()
         if state.get("completed_adapter_id") == adapter_id:
             return state
-        if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
+        if state.get("run_id") != run_id or state.get("phase") not in {
+            "training",
+            "idle",
+        }:
             raise RuntimeError("callback does not match the active training run")
         try:
-            _register_candidate(adapter_id, run_id, mlflow_run_id, loss, epoch_losses or [])
+            _register_candidate(
+                adapter_id, run_id, mlflow_run_id, loss, epoch_losses or []
+            )
             _set_state(
                 "restarting",
                 run_id=run_id,
@@ -471,7 +499,9 @@ def _register_candidate(
     return project
 
 
-def complete_training_batch(run_id: str, adapters: list[dict[str, Any]]) -> dict[str, Any]:
+def complete_training_batch(
+    run_id: str, adapters: list[dict[str, Any]]
+) -> dict[str, Any]:
     """Handle the nightly run's single batch callback covering every project
     clare2-train trained in this invocation. vLLM is restarted once — not per
     adapter — since clare2-train trains all projects sequentially in one GPU
@@ -482,7 +512,10 @@ def complete_training_batch(run_id: str, adapters: list[dict[str, Any]]) -> dict
         state = status()
         if state.get("completed_run_id") == run_id:
             return state
-        if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
+        if state.get("run_id") != run_id or state.get("phase") not in {
+            "training",
+            "idle",
+        }:
             raise RuntimeError("callback does not match the active training run")
         in_flight_adapter_id: str | None = None
         try:
@@ -521,7 +554,11 @@ def _complete_one_candidate(run_id: str, adapter: dict[str, Any]) -> dict[str, A
     adapter_id = adapter["adapter_id"]
     mlflow_run_id = adapter.get("mlflow_run_id")
     project = _register_candidate(
-        adapter_id, run_id, mlflow_run_id, adapter.get("loss"), adapter.get("epoch_losses") or []
+        adapter_id,
+        run_id,
+        mlflow_run_id,
+        adapter.get("loss"),
+        adapter.get("epoch_losses") or [],
     )
     result = _evaluate_and_apply(run_id, adapter_id, mlflow_run_id, project=project)
     return {"adapter_id": adapter_id, "mlflow_run_id": mlflow_run_id, **result}
@@ -537,7 +574,9 @@ def _evaluate_and_apply(
     promote or reject it in the registry. Returns project/outcome/report."""
     if project is None:
         candidate_path = registry.adapters_root / adapter_id / "candidate_manifest.json"
-        project = json.loads(candidate_path.read_text(encoding="utf-8")).get("project_scope", "unknown")
+        project = json.loads(candidate_path.read_text(encoding="utf-8")).get(
+            "project_scope", "unknown"
+        )
 
     document = registry.read()
     current_id = document["aliases"]["current"]
@@ -549,7 +588,9 @@ def _evaluate_and_apply(
 
     _set_state("evaluating", run_id=run_id, candidate_id=adapter_id)
     report = evaluator.compare(adapter_id, baseline_id, _invoke_probe, project=project)
-    outcome = _apply_evaluation(adapter_id, run_id, mlflow_run_id, report, project=project)
+    outcome = _apply_evaluation(
+        adapter_id, run_id, mlflow_run_id, report, project=project
+    )
     return {"project": project, "outcome": outcome, "report": report}
 
 
@@ -562,7 +603,10 @@ def complete_training_skipped(run_id: str) -> dict[str, Any]:
         state = status()
         if state.get("completed_adapter_id") == f"skipped:{run_id}":
             return state
-        if state.get("run_id") != run_id or state.get("phase") not in {"training", "idle"}:
+        if state.get("run_id") != run_id or state.get("phase") not in {
+            "training",
+            "idle",
+        }:
             raise RuntimeError("callback does not match the active training run")
         try:
             _set_state("restarting", run_id=run_id, trainer_start_requested=False)
@@ -596,12 +640,18 @@ def rollback() -> dict[str, Any]:
             controller.ensure_loaded(adapter_id)
             completion = _invoke_probe(
                 adapter_id,
-                {"prompt": "Reply with exactly: CLARE_ROLLBACK_OK", "expected_keyword": "CLARE_ROLLBACK_OK"},
+                {
+                    "prompt": "Reply with exactly: CLARE_ROLLBACK_OK",
+                    "expected_keyword": "CLARE_ROLLBACK_OK",
+                },
             )
             if "CLARE_ROLLBACK_OK" not in completion:
                 raise RuntimeError("rollback smoke request failed")
             metrics.lifecycle_outcomes.labels(outcome="rollback").inc()
-            return {"current": document["aliases"]["current"], "rollback": document["aliases"]["rollback"]}
+            return {
+                "current": document["aliases"]["current"],
+                "rollback": document["aliases"]["rollback"],
+            }
         except Exception:
             registry.update(lambda data: data["aliases"].update(prior))
             if prior["current"]:
@@ -703,7 +753,10 @@ def _start_training_container(run_id: str, **fields: Any) -> None:
                 waiting_for=TRAIN_CONTAINER,
                 **fields,
             )
-            log.info("Training container %s disappeared before start; waiting", TRAIN_CONTAINER)
+            log.info(
+                "Training container %s disappeared before start; waiting",
+                TRAIN_CONTAINER,
+            )
             time.sleep(TRAINING_RETRY_INTERVAL)
             continue
         _set_state(

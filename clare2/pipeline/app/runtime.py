@@ -67,7 +67,9 @@ class MaintenanceState:
 MODELS_ROOT = pathlib.Path(os.environ.get("MODELS_ROOT", "/models"))
 VLLM_URL = os.environ.get("CLARE2_VLLM_URL", "http://vllm-engine:8001")
 BASE_MODEL_ID = os.environ.get("CLARE2_INFERENCE_MODEL", "Qwen/Qwen3.6-27B-FP8")
-PROJECTS = json.loads(os.environ.get("CLARE2_PROJECT_MAP", '{"clare":"github:jketreno/clare"}'))
+PROJECTS = json.loads(
+    os.environ.get("CLARE2_PROJECT_MAP", '{"clare":"github:jketreno/clare"}')
+)
 
 registry = AdapterRegistry(MODELS_ROOT)
 router = Router(registry, PROJECTS)
@@ -98,8 +100,12 @@ def initialize_registry() -> None:
                 "CLARE2_BASE_ARCHITECTURE",
                 "Qwen3_5ForConditionalGeneration",
             ),
-            "config_hash": os.environ.get("CLARE2_BASE_CONFIG_HASH", "REPLACE_WITH_SHA256"),
-            "tokenizer_hash": os.environ.get("CLARE2_TOKENIZER_HASH", "REPLACE_WITH_SHA256"),
+            "config_hash": os.environ.get(
+                "CLARE2_BASE_CONFIG_HASH", "REPLACE_WITH_SHA256"
+            ),
+            "tokenizer_hash": os.environ.get(
+                "CLARE2_TOKENIZER_HASH", "REPLACE_WITH_SHA256"
+            ),
             "inference_quantization": "fp8",
         }
     )

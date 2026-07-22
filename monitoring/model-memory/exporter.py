@@ -8,7 +8,9 @@ import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DOCKER_URL = os.environ.get("DOCKER_PROXY_URL", "http://docker-socket-proxy:2375").rstrip("/")
+DOCKER_URL = os.environ.get(
+    "DOCKER_PROXY_URL", "http://docker-socket-proxy:2375"
+).rstrip("/")
 CONTAINER = os.environ.get("VLLM_CONTAINER", "vllm-engine")
 MODEL = os.environ.get("VLLM_MODEL", "unknown")
 PORT = int(os.environ.get("MODEL_MEMORY_PORT", "9836"))
@@ -73,7 +75,9 @@ class Collector:
                     allocations = parse_allocations(decode_docker_log(payload))
                     missing = sorted(set(PATTERNS) - set(allocations))
                     if missing:
-                        raise RuntimeError(f"profiler values missing: {', '.join(missing)}")
+                        raise RuntimeError(
+                            f"profiler values missing: {', '.join(missing)}"
+                        )
                     self.allocations = allocations
                     self.started_at = started_at
                 self.error = ""
@@ -84,10 +88,12 @@ class Collector:
         self.refresh()
         with self.lock:
             lines = [
-                "# HELP model_memory_exporter_up Whether model allocations were collected successfully.\n",
+                "# HELP model_memory_exporter_up Whether model allocations were "
+                "collected successfully.\n",
                 "# TYPE model_memory_exporter_up gauge\n",
                 f"model_memory_exporter_up {0 if self.error else 1}\n",
-                "# HELP model_accelerator_memory_bytes Accelerator memory attributed by the model runtime profiler.\n",
+                "# HELP model_accelerator_memory_bytes Accelerator memory "
+                "attributed by the model runtime profiler.\n",
                 "# TYPE model_accelerator_memory_bytes gauge\n",
             ]
             for kind, value in sorted(self.allocations.items()):
@@ -97,9 +103,12 @@ class Collector:
                 )
             lines.extend(
                 [
-                    "# HELP model_accelerator_memory_collection_error_info Last collection error.\n",
-                    "# TYPE model_accelerator_memory_collection_error_info gauge\n",
-                    f'model_accelerator_memory_collection_error_info{{error="{escape_label(self.error)}"}} 1\n',
+                    "# HELP model_accelerator_memory_collection_error_info Last "
+                    "collection error.\n",
+                    "# TYPE model_accelerator_memory_collection_error_info "
+                    "gauge\n",
+                    "model_accelerator_memory_collection_error_info{error="
+                    f'"{escape_label(self.error)}"}} 1\n',
                 ]
             )
             return "".join(lines).encode()

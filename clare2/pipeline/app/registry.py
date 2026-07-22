@@ -59,7 +59,9 @@ class AdapterRegistry:
         self.adapters_root = (self.models_root / "adapters").resolve()
         self.path = self.adapters_root / "registry.json"
         self._lock = threading.RLock()
-        self._validate_safetensors = safetensors_validator or self._basic_safetensors_validation
+        self._validate_safetensors = (
+            safetensors_validator or self._basic_safetensors_validation
+        )
 
     def read(self) -> dict[str, Any]:
         with self._lock:
@@ -123,7 +125,9 @@ class AdapterRegistry:
         def change(document: dict[str, Any]) -> None:
             candidate = self._adapter(document, adapter_id)
             if candidate["status"] not in {"candidate", "loaded"}:
-                raise RegistryError("only a candidate or loaded adapter may be promoted")
+                raise RegistryError(
+                    "only a candidate or loaded adapter may be promoted"
+                )
             previous = document["aliases"]["current"]
             if previous and previous != adapter_id:
                 document["adapters"][previous]["status"] = "approved"
@@ -244,18 +248,23 @@ class AdapterRegistry:
         )
 
     @staticmethod
-    def _validate_base_compatibility(base: dict[str, Any], adapter: dict[str, Any]) -> None:
+    def _validate_base_compatibility(
+        base: dict[str, Any], adapter: dict[str, Any]
+    ) -> None:
         adapter_base = adapter.get("inference_base") or adapter.get("base", {})
         for field in ("model_id", "revision", "config_hash", "tokenizer_hash"):
             if adapter_base.get(field) != base.get(field):
                 raise RegistryError(f"adapter inference fingerprint mismatch: {field}")
-        if adapter_base.get("architecture") and adapter_base.get("architecture") != base.get("architecture"):
+        if adapter_base.get("architecture") and adapter_base.get(
+            "architecture"
+        ) != base.get("architecture"):
             raise RegistryError("adapter inference fingerprint mismatch: architecture")
-        if (
-            adapter_base.get("inference_quantization")
-            and adapter_base.get("inference_quantization") != base.get("inference_quantization")
-        ):
-            raise RegistryError("adapter inference fingerprint mismatch: inference_quantization")
+        if adapter_base.get("inference_quantization") and adapter_base.get(
+            "inference_quantization"
+        ) != base.get("inference_quantization"):
+            raise RegistryError(
+                "adapter inference fingerprint mismatch: inference_quantization"
+            )
 
     @staticmethod
     def _basic_safetensors_validation(path: pathlib.Path) -> None:

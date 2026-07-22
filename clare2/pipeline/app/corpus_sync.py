@@ -1,4 +1,5 @@
-"""Nightly remote corpus sync: pull each developer's sessions/ over SSH before distillation."""
+"""Nightly remote corpus sync: pull each developer's sessions/ over SSH before
+distillation."""
 
 from __future__ import annotations
 
@@ -19,7 +20,9 @@ from . import metrics
 log = logging.getLogger(__name__)
 
 CORPUS_ROOT = pathlib.Path(os.environ.get("CORPUS_ROOT", "/corpus"))
-SOURCES_PATH = pathlib.Path(os.environ.get("CLARE2_CORPUS_SOURCES_FILE", "/app/config/corpus_sources.yml"))
+SOURCES_PATH = pathlib.Path(
+    os.environ.get("CLARE2_CORPUS_SOURCES_FILE", "/app/config/corpus_sources.yml")
+)
 SSH_KEY_PATH = pathlib.Path(
     os.environ.get("CLARE2_CORPUS_SYNC_KEY_FILE", "/run/secrets/clare2_corpus_sync_key")
 )
@@ -58,7 +61,9 @@ def _validate_entry(entry: dict) -> CorpusSource:
         raise CorpusSourceError(f"invalid user: {user!r}")
     host_key = entry.get("host_key")
     if not isinstance(host_key, str) or not host_key.strip():
-        raise CorpusSourceError(f"host_key is required for {host} — refusing unpinned host-key checking")
+        raise CorpusSourceError(
+            f"host_key is required for {host} — refusing unpinned host-key checking"
+        )
     port = entry.get("port", 22)
     if not isinstance(port, int) or not (0 < port < 65536):
         raise CorpusSourceError(f"invalid port for {host}: {port!r}")
@@ -75,7 +80,9 @@ def _validate_entry(entry: dict) -> CorpusSource:
 def load_sources(path: pathlib.Path | None = None) -> list[CorpusSource]:
     sources_path = path or SOURCES_PATH
     if not sources_path.exists():
-        log.info("No corpus_sources.yml found at %s — skipping remote sync", sources_path)
+        log.info(
+            "No corpus_sources.yml found at %s — skipping remote sync", sources_path
+        )
         return []
     document = yaml.safe_load(sources_path.read_text(encoding="utf-8")) or {}
     entries = document.get("sources") or []
@@ -84,7 +91,9 @@ def load_sources(path: pathlib.Path | None = None) -> list[CorpusSource]:
     return [_validate_entry(entry) for entry in entries]
 
 
-def _write_known_hosts(sources: list[CorpusSource], directory: pathlib.Path) -> pathlib.Path:
+def _write_known_hosts(
+    sources: list[CorpusSource], directory: pathlib.Path
+) -> pathlib.Path:
     known_hosts_path = directory / "known_hosts"
     known_hosts_path.write_text(
         "\n".join(source.host_key for source in sources) + "\n", encoding="utf-8"
@@ -93,7 +102,9 @@ def _write_known_hosts(sources: list[CorpusSource], directory: pathlib.Path) -> 
     return known_hosts_path
 
 
-def _sync_source(source: CorpusSource, known_hosts_path: pathlib.Path) -> tuple[str, str]:
+def _sync_source(
+    source: CorpusSource, known_hosts_path: pathlib.Path
+) -> tuple[str, str]:
     # rrsync's forced authorized_keys command (e.g. `rrsync -ro .../sessions`)
     # fixes the remote root directory itself, so the remote path argument here
     # must be relative ("."), not the absolute remote_corpus_root repeated —
@@ -154,7 +165,10 @@ def sync_all() -> dict:
         return {"hosts": 0, "succeeded": 0, "failed": 0}
 
     if not SSH_KEY_PATH.exists():
-        log.error("Corpus sync key not found at %s — skipping remote corpus sync", SSH_KEY_PATH)
+        log.error(
+            "Corpus sync key not found at %s — skipping remote corpus sync",
+            SSH_KEY_PATH,
+        )
         return {"hosts": len(sources), "succeeded": 0, "failed": len(sources)}
 
     results: dict[str, str] = {}
@@ -179,11 +193,15 @@ def sync_all() -> dict:
         "completed_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     _write_status(summary)
-    metrics.corpus_sync_last_run_timestamp.set(datetime.now(tz=timezone.utc).timestamp())
+    metrics.corpus_sync_last_run_timestamp.set(
+        datetime.now(tz=timezone.utc).timestamp()
+    )
     return summary
 
 
 def _write_status(summary: dict) -> None:
     status_path = CORPUS_ROOT / "meta" / "corpus_sync_status.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)
-    status_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    status_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )

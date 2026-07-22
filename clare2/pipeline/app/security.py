@@ -25,7 +25,11 @@ def secret_value(name: str) -> str:
 
 def require_bearer(expected: str, authorization: str | None) -> None:
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not expected or not hmac.compare_digest(token, expected):
+    if (
+        scheme.lower() != "bearer"
+        or not expected
+        or not hmac.compare_digest(token, expected)
+    ):
         raise HTTPException(status_code=401, detail="invalid bearer token")
 
 
@@ -42,10 +46,14 @@ def verify_callback(
     try:
         sent_at = int(timestamp)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail="invalid callback timestamp") from exc
+        raise HTTPException(
+            status_code=401, detail="invalid callback timestamp"
+        ) from exc
     if abs(int(time.time()) - sent_at) > max_age_seconds:
         raise HTTPException(status_code=401, detail="expired callback")
-    expected = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    expected = hmac.new(
+        secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256
+    ).hexdigest()
     if not hmac.compare_digest(signature, expected):
         raise HTTPException(status_code=401, detail="invalid callback signature")
 

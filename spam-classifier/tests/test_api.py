@@ -32,7 +32,9 @@ class SpamClassifierTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_prompt_disallows_metadata_absence_as_spam_evidence(self):
-        self.assertIn("Do NOT mark SPAM only because headers are missing", main.SYSTEM_PROMPT)
+        self.assertIn(
+            "Do NOT mark SPAM only because headers are missing", main.SYSTEM_PROMPT
+        )
         self.assertIn('subject "Dinner plans"', main.SYSTEM_PROMPT)
 
     def test_applies_threshold_to_structured_model_response(self):
@@ -61,7 +63,9 @@ class SpamClassifierTests(unittest.TestCase):
                 headers={"Authorization": "Bearer test-token"},
                 json={
                     "envelope_from": "billing@lookalike.example",
-                    "headers": [{"name": "Authentication-Results", "value": "spf=fail"}],
+                    "headers": [
+                        {"name": "Authentication-Results", "value": "spf=fail"}
+                    ],
                     "subject": "Your account will be closed today",
                     "text_body": "Verify your password immediately.",
                 },
@@ -95,7 +99,7 @@ class SpamClassifierTests(unittest.TestCase):
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
                 json={"subject": "Hello"},
-        )
+            )
         self.assertEqual(response.status_code, 502)
 
     def test_normalizes_ham_score_that_contradicts_classification(self):
@@ -107,8 +111,10 @@ class SpamClassifierTests(unittest.TestCase):
                         "content": json.dumps(
                             {
                                 "reasons": [
-                                    "Valid DKIM and SPF authentication signatures confirm legitimate sender identity.",
-                                    "No indicators of phishing, credential theft, or unsolicited advertising present.",
+                                    "Valid DKIM and SPF authentication signatures "
+                                    "confirm legitimate sender identity.",
+                                    "No indicators of phishing, credential theft, "
+                                    "or unsolicited advertising present.",
                                 ],
                                 "classification": "HAM",
                                 "spam_score": 1.0,
@@ -122,7 +128,10 @@ class SpamClassifierTests(unittest.TestCase):
             response = self.client.post(
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
-                json={"subject": "Funeral notice", "text_body": "May his memory be eternal."},
+                json={
+                    "subject": "Funeral notice",
+                    "text_body": "May his memory be eternal.",
+                },
             )
         self.assertEqual(response.status_code, 200)
         result = response.json()
@@ -153,7 +162,10 @@ class SpamClassifierTests(unittest.TestCase):
             response = self.client.post(
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
-                json={"subject": "Urgent password reset", "text_body": "Send your password now."},
+                json={
+                    "subject": "Urgent password reset",
+                    "text_body": "Send your password now.",
+                },
             )
         self.assertEqual(response.status_code, 200)
         result = response.json()

@@ -45,7 +45,9 @@ BASE = {
 
 class JsonOutputTests(unittest.TestCase):
     def test_parses_fenced_and_embedded_json(self):
-        self.assertEqual(parse_json_output('```json\n[{"ok": true}]\n```'), [{"ok": True}])
+        self.assertEqual(
+            parse_json_output('```json\n[{"ok": true}]\n```'), [{"ok": True}]
+        )
         self.assertEqual(
             parse_json_output('Here is the result:\n[{"category": "domain"}]\nDone.'),
             [{"category": "domain"}],
@@ -56,25 +58,31 @@ class JsonOutputTests(unittest.TestCase):
             parse_json_output("no structured payload")
 
     def test_pattern_schema_repairs_invalid_output_once(self):
-        repaired = json.dumps([
-            {
-                "category": "domain",
-                "pattern": "Use CLARE2_CORPUS_ROOT for shared corpus mounts.",
-                "evidence_count": 2,
-                "canonical_example": "Mount ${CLARE2_CORPUS_ROOT}:/corpus.",
-                "first_seen": "2026-07-02T18:01:27Z",
-                "last_seen": "2026-07-02T18:14:07Z",
-            }
-        ])
+        repaired = json.dumps(
+            [
+                {
+                    "category": "domain",
+                    "pattern": "Use CLARE2_CORPUS_ROOT for shared corpus mounts.",
+                    "evidence_count": 2,
+                    "canonical_example": "Mount ${CLARE2_CORPUS_ROOT}:/corpus.",
+                    "first_seen": "2026-07-02T18:01:27Z",
+                    "last_seen": "2026-07-02T18:14:07Z",
+                }
+            ]
+        )
         records, outcome = parse_pattern_records_with_repair(
-            "[{\"category\":\"domain\"}]",
+            '[{"category":"domain"}]',
             lambda error: repaired,
         )
         self.assertEqual(outcome, "repaired")
-        self.assertEqual(records[0]["pattern"], "Use CLARE2_CORPUS_ROOT for shared corpus mounts.")
+        self.assertEqual(
+            records[0]["pattern"], "Use CLARE2_CORPUS_ROOT for shared corpus mounts."
+        )
 
     def test_pattern_schema_fails_after_repair_attempt(self):
-        records, outcome = parse_pattern_records_with_repair("not json", lambda error: "still not json")
+        records, outcome = parse_pattern_records_with_repair(
+            "not json", lambda error: "still not json"
+        )
         self.assertEqual(outcome, "failed")
         self.assertEqual(records, [])
 
@@ -105,14 +113,20 @@ class SummarizerPathTests(unittest.TestCase):
             "first_seen": "2026-07-05T00:00:00Z",
             "last_seen": "2026-07-05T00:01:00Z",
         }
-        self._write_jsonl(self.root / "episodes" / "ai-vllm" / "2026/07/05.jsonl", [record])
+        self._write_jsonl(
+            self.root / "episodes" / "ai-vllm" / "2026/07/05.jsonl", [record]
+        )
         with patch.object(summarizer, "CORPUS_ROOT", self.root), patch.object(
             summarizer, "_call_llm_merge", return_value=[record]
         ):
             result = summarizer.run_weekly(datetime(2026, 7, 5, tzinfo=timezone.utc))
         self.assertEqual(result["input_records"], 1)
-        self.assertTrue((self.root / "summaries" / "weekly" / "ai-vllm" / "2026-W27.jsonl").exists())
-        self.assertFalse((self.root / "summaries" / "weekly" / "2026-W27.jsonl").exists())
+        self.assertTrue(
+            (self.root / "summaries" / "weekly" / "ai-vllm" / "2026-W27.jsonl").exists()
+        )
+        self.assertFalse(
+            (self.root / "summaries" / "weekly" / "2026-W27.jsonl").exists()
+        )
 
     def test_quarterly_themes_are_project_scoped(self):
         record = {
@@ -123,23 +137,40 @@ class SummarizerPathTests(unittest.TestCase):
             "first_seen": "2026-01-01T00:00:00Z",
             "last_seen": "2026-01-02T00:00:00Z",
         }
-        self._write_jsonl(self.root / "summaries" / "monthly" / "ai-vllm" / "2026-01.jsonl", [record])
+        self._write_jsonl(
+            self.root / "summaries" / "monthly" / "ai-vllm" / "2026-01.jsonl", [record]
+        )
         with patch.object(summarizer, "CORPUS_ROOT", self.root), patch.object(
             summarizer, "_call_llm_merge", return_value=[record]
         ):
             result = summarizer.run_quarterly(datetime(2026, 4, 1, tzinfo=timezone.utc))
         self.assertEqual(result["themes_promoted"], 1)
-        self.assertTrue((self.root / "summaries" / "quarterly" / "ai-vllm" / "2026-Q1.jsonl").exists())
-        self.assertTrue((self.root / "themes" / "active" / "ai-vllm" / "domain.jsonl").exists())
+        self.assertTrue(
+            (
+                self.root / "summaries" / "quarterly" / "ai-vllm" / "2026-Q1.jsonl"
+            ).exists()
+        )
+        self.assertTrue(
+            (self.root / "themes" / "active" / "ai-vllm" / "domain.jsonl").exists()
+        )
         self.assertFalse((self.root / "themes" / "active" / "domain.jsonl").exists())
 
 
 class IngestFlowTests(unittest.TestCase):
     def test_sync_distill_and_assemble_runs_in_order(self):
         calls = []
-        sync = lambda: calls.append("sync") or {"succeeded": 1}
-        distill = lambda: calls.append("distill") or {"sessions": 2}
-        assemble = lambda: calls.append("assemble") or {"sft_pairs": 3}
+
+        def sync():
+            calls.append("sync")
+            return {"succeeded": 1}
+
+        def distill():
+            calls.append("distill")
+            return {"sessions": 2}
+
+        def assemble():
+            calls.append("assemble")
+            return {"sft_pairs": 3}
         with patch.object(main.corpus_sync, "sync_all", side_effect=sync), patch.object(
             main.distiller, "run_daily", side_effect=distill
         ), patch.object(main.corpus, "assemble", side_effect=assemble):
@@ -160,7 +191,9 @@ def adapter(models: pathlib.Path, adapter_id: str, **overrides) -> dict:
     directory = models / "adapters" / adapter_id
     directory.mkdir(parents=True)
     (directory / "adapter_config.json").write_text(
-        json.dumps({"r": 32, "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]})
+        json.dumps(
+            {"r": 32, "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]}
+        )
     )
     safetensors(directory / "adapter_model.safetensors")
     result = {
@@ -281,7 +314,9 @@ class RegistryTests(unittest.TestCase):
         (outside / "adapter_config.json").write_text("{}")
         safetensors(outside / "adapter_model.safetensors")
         adapter_id = "clare-project-20260611T000000Z-12345678"
-        (self.models / "adapters" / adapter_id).symlink_to(outside, target_is_directory=True)
+        (self.models / "adapters" / adapter_id).symlink_to(
+            outside, target_is_directory=True
+        )
         item = {
             **adapter(self.models, "clare-project-20260611T000001Z-12345679"),
             "id": adapter_id,
@@ -389,7 +424,9 @@ class ControllerTests(unittest.TestCase):
 
     def test_concurrent_first_load_is_serialized(self):
         threads = [
-            threading.Thread(target=self.controller.ensure_loaded, args=(self.items[0]["id"],))
+            threading.Thread(
+                target=self.controller.ensure_loaded, args=(self.items[0]["id"],)
+            )
             for _ in range(5)
         ]
         for thread in threads:
@@ -437,7 +474,9 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             require_bearer("secret", "Bearer wrong")
         body = b'{"ok":true}'
         timestamp = str(int(time.time()))
-        signature = hmac.new(b"secret", timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+        signature = hmac.new(
+            b"secret", timestamp.encode() + b"." + body, hashlib.sha256
+        ).hexdigest()
         verify_callback("secret", body, timestamp, signature)
         with self.assertRaises(HTTPException):
             verify_callback("secret", body, timestamp, "wrong")
@@ -487,20 +526,29 @@ class SecurityAndEvaluationTests(unittest.TestCase):
 
     def test_promotion_requires_threshold_and_no_category_regression(self):
         probes = [
-            {"id": f"p{i}", "prompt": str(i), "expected_keyword": "pass", "category": "code"}
+            {
+                "id": f"p{i}",
+                "prompt": str(i),
+                "expected_keyword": "pass",
+                "category": "code",
+            }
             for i in range(10)
         ]
         report = compare(
             "candidate",
             "baseline",
-            lambda model, probe: "pass" if model == "candidate" or probe["id"] != "p0" else "fail",
+            lambda model, probe: "pass"
+            if model == "candidate" or probe["id"] != "p0"
+            else "fail",
             probes,
         )
         self.assertTrue(report["approved"])
         regressed = compare(
             "candidate",
             "baseline",
-            lambda model, probe: "fail" if model == "candidate" and probe["id"] == "p0" else "pass",
+            lambda model, probe: "fail"
+            if model == "candidate" and probe["id"] == "p0"
+            else "pass",
             probes,
         )
         self.assertFalse(regressed["approved"])
@@ -510,7 +558,14 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             "candidate-x",
             "baseline-x",
             lambda model, probe: "pass",
-            [{"id": "p0", "prompt": "p", "expected_keyword": "pass", "category": "code"}],
+            [
+                {
+                    "id": "p0",
+                    "prompt": "p",
+                    "expected_keyword": "pass",
+                    "category": "code",
+                }
+            ],
             project="ai-vllm",
         )
         score = metrics.evaluation_score.labels(
@@ -523,7 +578,14 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             "candidate-y",
             "baseline-y",
             lambda model, probe: "pass",
-            [{"id": "p0", "prompt": "p", "expected_keyword": "pass", "category": "code"}],
+            [
+                {
+                    "id": "p0",
+                    "prompt": "p",
+                    "expected_keyword": "pass",
+                    "category": "code",
+                }
+            ],
         )
         score = metrics.evaluation_score.labels(
             adapter_id="candidate-y", project="unknown", category="code"
@@ -535,7 +597,14 @@ class SecurityAndEvaluationTests(unittest.TestCase):
             "candidate",
             "baseline",
             lambda model, probe: None if model == "candidate" else "pass",
-            [{"id": "p0", "prompt": "p", "expected_keyword": "pass", "category": "code"}],
+            [
+                {
+                    "id": "p0",
+                    "prompt": "p",
+                    "expected_keyword": "pass",
+                    "category": "code",
+                }
+            ],
         )
         self.assertFalse(report["approved"])
         self.assertFalse(report["results"][0]["passed"])
@@ -588,7 +657,9 @@ class ProxyIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json(), {"detail": "unable to connect to vLLM engine"})
+        self.assertEqual(
+            response.json(), {"detail": "unable to connect to vLLM engine"}
+        )
         self.assertEqual(len(captured.output), 1)
         self.assertIn("Unable to connect to vLLM engine", captured.output[0])
         self.assertEqual(maintenance.active, 0)
@@ -621,7 +692,9 @@ class ProxyIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json(), {"detail": "unable to connect to vLLM engine"})
+        self.assertEqual(
+            response.json(), {"detail": "unable to connect to vLLM engine"}
+        )
         self.assertEqual(len(captured.output), 1)
         self.assertEqual(maintenance.active, 0)
 
@@ -804,17 +877,17 @@ class ProxyIntegrationTests(unittest.TestCase):
                 "/v1/chat/completions",
                 headers={
                     "Authorization": "Bearer secret",
-                    "X-CLARE2-Params": json.dumps({
-                        "chat_template_kwargs": {"enable_thinking": False},
-                        "thinking_token_budget": 512,
-                    }),
+                    "X-CLARE2-Params": json.dumps(
+                        {
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            "thinking_token_budget": 512,
+                        }
+                    ),
                 },
                 json={"model": "ignored", "messages": []},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            captured["chat_template_kwargs"], {"enable_thinking": False}
-        )
+        self.assertEqual(captured["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(captured["thinking_token_budget"], 512)
 
     def test_proxy_x_clare2_params_deep_merges_nested_objects(self):
@@ -849,9 +922,11 @@ class ProxyIntegrationTests(unittest.TestCase):
                 "/v1/chat/completions",
                 headers={
                     "Authorization": "Bearer secret",
-                    "X-CLARE2-Params": json.dumps({
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    }),
+                    "X-CLARE2-Params": json.dumps(
+                        {
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        }
+                    ),
                 },
                 json={
                     "model": "ignored",

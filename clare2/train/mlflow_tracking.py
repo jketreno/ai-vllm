@@ -29,9 +29,10 @@ class TrainingTracker:
             "MLFLOW_EXPERIMENT_NAME",
             "clare2-qlora",
         )
-        self.disabled = os.environ.get("CLARE2_TRAIN_SKIP_CALLBACK") == "1" or os.environ.get(
-            "CLARE2_TRAIN_MLFLOW_DISABLED"
-        ) == "1"
+        self.disabled = (
+            os.environ.get("CLARE2_TRAIN_SKIP_CALLBACK") == "1"
+            or os.environ.get("CLARE2_TRAIN_MLFLOW_DISABLED") == "1"
+        )
         self.mlflow_run_id: str | None = None
 
     def start(self, params: dict[str, Any], tags: dict[str, Any]) -> str | None:

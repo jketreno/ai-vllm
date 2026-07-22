@@ -49,15 +49,20 @@ def _all_session_files(project: str) -> list[pathlib.Path]:
     return sorted(project_dir.glob("*/*/*/*.jsonl"))
 
 
-def _unprocessed_session_files(project: str, date: datetime | None = None) -> list[pathlib.Path]:
+def _unprocessed_session_files(
+    project: str, date: datetime | None = None
+) -> list[pathlib.Path]:
     session_files = (
-        _session_files_for_date(date, project) if date is not None else _all_session_files(project)
+        _session_files_for_date(date, project)
+        if date is not None
+        else _all_session_files(project)
     )
     processed_keys = _processed_session_keys(project)
     return [
         path
         for path in session_files
-        if _session_key(project, _session_file_date(path), path.stem) not in processed_keys
+        if _session_key(project, _session_file_date(path), path.stem)
+        not in processed_keys
     ]
 
 
@@ -86,7 +91,9 @@ def _parse_patterns(llm_output: str) -> list[dict]:
         llm_output,
         lambda error: generate(repair_prompt(llm_output, error), max_tokens=1536),
     )
-    metrics.structured_output_attempts.labels(stage="distillation", outcome=outcome).inc()
+    metrics.structured_output_attempts.labels(
+        stage="distillation", outcome=outcome
+    ).inc()
     if outcome == "failed":
         metrics.distillation_parse_errors.inc()
         log.error("LLM distillation output was not valid JSON:\n%s", llm_output[:500])
@@ -139,7 +146,9 @@ def _accepted_patterns(
         accepted.append(pattern)
 
         category = pattern.get("category", "unknown")
-        metrics.distillation_patterns_extracted.labels(project=project, category=category).inc()
+        metrics.distillation_patterns_extracted.labels(
+            project=project, category=category
+        ).inc()
     return accepted, gated_out
 
 
@@ -150,7 +159,9 @@ def _write_episode_patterns(project: str, patterns: list[dict]) -> None:
 
     for session_date, dated_patterns in sorted(patterns_by_date.items()):
         year, month, day = session_date.split("-")
-        episode_path = CORPUS_ROOT / "episodes" / project / year / month / f"{day}.jsonl"
+        episode_path = (
+            CORPUS_ROOT / "episodes" / project / year / month / f"{day}.jsonl"
+        )
         episode_path.parent.mkdir(parents=True, exist_ok=True)
         with open(episode_path, "a", encoding="utf-8") as fh:
             for pattern in dated_patterns:
@@ -160,7 +171,9 @@ def _write_episode_patterns(project: str, patterns: list[dict]) -> None:
 def _distill_project(project: str, date: datetime | None, prompt_template: str) -> dict:
     """Distill unprocessed sessions for one project."""
     session_files = _unprocessed_session_files(project, date)
-    metrics.distillation_sessions_pending.labels(project=project).set(len(session_files))
+    metrics.distillation_sessions_pending.labels(project=project).set(
+        len(session_files)
+    )
     if not session_files:
         _record_last_distillation_metrics(project, 0, 0, 0)
         scope = date.date() if date is not None else "any date"
@@ -172,11 +185,15 @@ def _distill_project(project: str, date: datetime | None, prompt_template: str) 
     processed_files: list[pathlib.Path] = []
 
     for session_path in session_files:
-        outcome, raw_patterns = _patterns_from_session(project, session_path, prompt_template)
+        outcome, raw_patterns = _patterns_from_session(
+            project, session_path, prompt_template
+        )
         if outcome == "llm_error":
             continue
         processed_files.append(session_path)
-        accepted, session_gated_out = _accepted_patterns(project, session_path, raw_patterns)
+        accepted, session_gated_out = _accepted_patterns(
+            project, session_path, raw_patterns
+        )
         all_patterns.extend(accepted)
         gated_out += session_gated_out
 
@@ -184,8 +201,16 @@ def _distill_project(project: str, date: datetime | None, prompt_template: str) 
         _update_session_index(processed_files, project)
         _record_last_distillation_metrics(project, len(session_files), 0, gated_out)
         scope = date.date() if date is not None else "unprocessed sessions"
-        log.info("No patterns passed the recurrence gate for project %s on %s", project, scope)
-        return {"sessions": len(session_files), "patterns_extracted": 0, "patterns_gated": gated_out}
+        log.info(
+            "No patterns passed the recurrence gate for project %s on %s",
+            project,
+            scope,
+        )
+        return {
+            "sessions": len(session_files),
+            "patterns_extracted": 0,
+            "patterns_gated": gated_out,
+        }
 
     _write_episode_patterns(project, all_patterns)
 
@@ -199,7 +224,9 @@ def _distill_project(project: str, date: datetime | None, prompt_template: str) 
 
     _update_session_index(processed_files, project)
     _update_corpus_stats(project, all_patterns)
-    _record_last_distillation_metrics(project, len(session_files), len(all_patterns), gated_out)
+    _record_last_distillation_metrics(
+        project, len(session_files), len(all_patterns), gated_out
+    )
 
     return {
         "sessions": len(session_files),
@@ -219,7 +246,9 @@ def run_daily(date: datetime | None = None) -> dict:
     if not projects:
         log.info("No project session directories found — skipping distillation")
         metrics.distillation_runs.labels(outcome="no_projects").inc()
-        metrics.distillation_last_run_timestamp.set(datetime.now(tz=timezone.utc).timestamp())
+        metrics.distillation_last_run_timestamp.set(
+            datetime.now(tz=timezone.utc).timestamp()
+        )
         return {"sessions": 0, "patterns_extracted": 0, "patterns_gated": 0}
 
     prompt_template = _load_distill_prompt()
@@ -232,7 +261,9 @@ def run_daily(date: datetime | None = None) -> dict:
 
     outcome = "patterns_extracted" if totals["patterns_extracted"] else "no_patterns"
     metrics.distillation_runs.labels(outcome=outcome).inc()
-    metrics.distillation_last_run_timestamp.set(datetime.now(tz=timezone.utc).timestamp())
+    metrics.distillation_last_run_timestamp.set(
+        datetime.now(tz=timezone.utc).timestamp()
+    )
     return totals
 
 
@@ -243,14 +274,22 @@ def _session_key(project: str, date: str, session_id: str) -> tuple[str, str, st
 def _processed_session_keys(project: str = "") -> set[tuple[str, str, str]]:
     index_path = CORPUS_ROOT / "meta" / "session_index.json"
     try:
-        index = json.loads(index_path.read_text()) if index_path.exists() else {"sessions": []}
+        index = (
+            json.loads(index_path.read_text())
+            if index_path.exists()
+            else {"sessions": []}
+        )
     except json.JSONDecodeError:
         return set()
     sessions = index.get("sessions", [])
     if project:
         sessions = [s for s in sessions if s.get("project") == project]
     return {
-        _session_key(record.get("project", ""), record.get("date", ""), record.get("session_id", ""))
+        _session_key(
+            record.get("project", ""),
+            record.get("date", ""),
+            record.get("session_id", ""),
+        )
         for record in sessions
         if record.get("project") and record.get("date") and record.get("session_id")
     }
@@ -260,7 +299,11 @@ def _update_session_index(session_files: list[pathlib.Path], project: str) -> No
     index_path = CORPUS_ROOT / "meta" / "session_index.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        index = json.loads(index_path.read_text()) if index_path.exists() else {"sessions": []}
+        index = (
+            json.loads(index_path.read_text())
+            if index_path.exists()
+            else {"sessions": []}
+        )
     except json.JSONDecodeError:
         index = {"sessions": []}
 
@@ -272,12 +315,14 @@ def _update_session_index(session_files: list[pathlib.Path], project: str) -> No
         session_date = _session_file_date(f)
         key = _session_key(project, session_date, f.stem)
         if key not in existing_keys:
-            index["sessions"].append({
-                "session_id": f.stem,
-                "project": project,
-                "date": session_date,
-                "path": str(f),
-            })
+            index["sessions"].append(
+                {
+                    "session_id": f.stem,
+                    "project": project,
+                    "date": session_date,
+                    "path": str(f),
+                }
+            )
             existing_keys.add(key)
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
@@ -298,7 +343,8 @@ def _update_corpus_stats(project: str, patterns: list[dict]) -> None:
 
     projects = stats.setdefault("projects", {})
     project_stats = projects.setdefault(
-        project, {"episodes": {"style": 0, "architecture": 0, "antipattern": 0, "domain": 0}}
+        project,
+        {"episodes": {"style": 0, "architecture": 0, "antipattern": 0, "domain": 0}},
     )
     episodes = project_stats["episodes"]
     for p in patterns:
@@ -315,5 +361,9 @@ def _record_last_distillation_metrics(
     patterns_gated: int,
 ) -> None:
     metrics.distillation_sessions_last.labels(project=project).set(sessions)
-    metrics.distillation_patterns_extracted_last.labels(project=project).set(patterns_extracted)
-    metrics.distillation_patterns_gated_out_last.labels(project=project).set(patterns_gated)
+    metrics.distillation_patterns_extracted_last.labels(project=project).set(
+        patterns_extracted
+    )
+    metrics.distillation_patterns_gated_out_last.labels(project=project).set(
+        patterns_gated
+    )

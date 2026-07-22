@@ -77,8 +77,14 @@ class Router:
     def active_adapter_ids(self) -> set[str]:
         with self._lock:
             now = datetime.now(tz=timezone.utc)
-            self._routes = {key: value for key, value in self._routes.items() if value.expires_at > now}
-            return {route.adapter_id for route in self._routes.values() if route.adapter_id}
+            self._routes = {
+                key: value
+                for key, value in self._routes.items()
+                if value.expires_at > now
+            }
+            return {
+                route.adapter_id for route in self._routes.values() if route.adapter_id
+            }
 
     def list_approved(self, project: str) -> list[dict[str, Any]]:
         project_id = self._canonical_project(project)

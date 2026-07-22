@@ -49,15 +49,11 @@ class ManagedConfigTests(unittest.TestCase):
                     + [("ui.enable_signup", "false")],
                 )
 
-            self.assertTrue(
-                MANAGED_CONFIG.remove_managed_openai_settings(database)
-            )
+            self.assertTrue(MANAGED_CONFIG.remove_managed_openai_settings(database))
             self.assertTrue(
                 MANAGED_CONFIG.remove_managed_image_generation_settings(database)
             )
-            self.assertTrue(
-                MANAGED_CONFIG.remove_managed_image_edit_settings(database)
-            )
+            self.assertTrue(MANAGED_CONFIG.remove_managed_image_edit_settings(database))
 
             with sqlite3.connect(database) as connection:
                 remaining_keys = {
@@ -95,7 +91,9 @@ class ManagedConfigTests(unittest.TestCase):
 
             self.assertTrue(changed)
             with sqlite3.connect(database) as connection:
-                data = json.loads(connection.execute("SELECT data FROM config").fetchone()[0])
+                data = json.loads(
+                    connection.execute("SELECT data FROM config").fetchone()[0]
+                )
             self.assertNotIn("api_base_urls", data["openai"])
             self.assertNotIn("api_keys", data["openai"])
             self.assertEqual(data["openai"]["api_configs"], {"0": {"enable": True}})
@@ -143,7 +141,9 @@ class ManagedConfigTests(unittest.TestCase):
 
             self.assertTrue(changed)
             with sqlite3.connect(database) as connection:
-                data = json.loads(connection.execute("SELECT data FROM config").fetchone()[0])
+                data = json.loads(
+                    connection.execute("SELECT data FROM config").fetchone()[0]
+                )
             image_generation = data["image_generation"]
             self.assertNotIn("engine", image_generation)
             self.assertNotIn("model", image_generation)
@@ -201,7 +201,9 @@ class ManagedConfigTests(unittest.TestCase):
 
             self.assertTrue(changed)
             with sqlite3.connect(database) as connection:
-                data = json.loads(connection.execute("SELECT data FROM config").fetchone()[0])
+                data = json.loads(
+                    connection.execute("SELECT data FROM config").fetchone()[0]
+                )
             edit = data["images"]["edit"]
             self.assertNotIn("engine", edit)
             self.assertNotIn("model", edit)

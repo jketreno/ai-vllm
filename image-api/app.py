@@ -190,6 +190,25 @@ async def concepts(payload: bytes, media_type: str) -> dict:
         ) from error
 
 
+def _sse_line_delta(line: str) -> tuple[str | None, bool]:
+    """Extract a chat-completion delta from one SSE `data:` line.
+
+    Returns (delta, is_done): is_done signals the `[DONE]` sentinel; delta is
+    None when the line isn't a data line, is the sentinel, or doesn't parse
+    into usable content.
+    """
+    if not line.startswith("data:"):
+        return None, False
+    chunk = line[len("data:"):].strip()
+    if chunk == "[DONE]":
+        return None, True
+    try:
+        delta = json.loads(chunk)["choices"][0]["delta"].get("content")
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return None, False
+    return delta, False
+
+
 async def _concepts_token_deltas(payload: bytes, media_type: str):
     """Yield raw text deltas from the vision model's streamed chat completion."""
     token = _policy_token()
@@ -203,15 +222,9 @@ async def _concepts_token_deltas(payload: bytes, media_type: str):
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                chunk = line[len("data:"):].strip()
-                if chunk == "[DONE]":
+                delta, is_done = _sse_line_delta(line)
+                if is_done:
                     break
-                try:
-                    delta = json.loads(chunk)["choices"][0]["delta"].get("content")
-                except (KeyError, IndexError, TypeError, json.JSONDecodeError):
-                    continue
                 if delta:
                     yield delta
 

@@ -39,12 +39,20 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return base
 
 
-def parse_endpoint_and_route(path: str, header_route_id: str | None) -> tuple[str, str | None]:
+def parse_endpoint_and_route(
+    path: str, header_route_id: str | None
+) -> tuple[str, str | None]:
     endpoint = "/" + path
     route_id = header_route_id
     first, sep, rest = path.partition("/")
-    # Optional route-in-path form: /<route-id>/v1/... for clients that cannot send custom headers.
-    if sep and rest and ("/" + rest) in ALLOWED_ENDPOINTS and first not in {"v1", "health"}:
+    # Optional route-in-path form: /<route-id>/v1/... for clients that cannot
+    # send custom headers.
+    if (
+        sep
+        and rest
+        and ("/" + rest) in ALLOWED_ENDPOINTS
+        and first not in {"v1", "health"}
+    ):
         endpoint = "/" + rest
         route_id = first
     return endpoint, route_id
@@ -109,28 +117,53 @@ async def _dispatch(
         client = httpx.AsyncClient(timeout=VLLM_TIMEOUT)
         try:
             upstream_request = client.build_request(
-                request.method, upstream_url, content=body, headers=upstream_headers,
+                request.method,
+                upstream_url,
+                content=body,
+                headers=upstream_headers,
             )
             upstream = await client.send(upstream_request, stream=True)
         except Exception:
             await client.aclose()
             raise
         return (
-            streaming_response(upstream, client, request_guard, started,
-                               resolved_route_id, project_id, policy_rule, adapter_id),
+            streaming_response(
+                upstream,
+                client,
+                request_guard,
+                started,
+                resolved_route_id,
+                project_id,
+                policy_rule,
+                adapter_id,
+            ),
             True,
         )
 
     async with httpx.AsyncClient(timeout=VLLM_TIMEOUT) as client:
         upstream = await client.request(
-            request.method, upstream_url, content=body, headers=upstream_headers,
+            request.method,
+            upstream_url,
+            content=body,
+            headers=upstream_headers,
         )
-    record_outcome(started, resolved_route_id, project_id, policy_rule, adapter_id, upstream.status_code)
+    record_outcome(
+        started,
+        resolved_route_id,
+        project_id,
+        policy_rule,
+        adapter_id,
+        upstream.status_code,
+    )
     excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
     headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
     return (
-        Response(content=upstream.content, status_code=upstream.status_code,
-                 headers=headers, media_type=upstream.headers.get("content-type")),
+        Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=headers,
+            media_type=upstream.headers.get("content-type"),
+        ),
         False,
     )
 
@@ -147,7 +180,9 @@ async def forward(
     authorization: str | None = Header(default=None),
 ) -> Response:
     endpoint, resolved_route_id = parse_endpoint_and_route(path, x_clare_route_id)
-    if endpoint not in ALLOWED_ENDPOINTS or any(part in endpoint for part in BLOCKED_MANAGEMENT_PARTS):
+    if endpoint not in ALLOWED_ENDPOINTS or any(
+        part in endpoint for part in BLOCKED_MANAGEMENT_PARTS
+    ):
         raise HTTPException(status_code=404, detail="endpoint is not available")
     if endpoint == "/health":
         return Response(content='{"status":"ok"}', media_type="application/json")
@@ -167,7 +202,9 @@ async def forward(
         request_guard.__enter__()
     except RuntimeError as exc:
         if str(exc) == "maintenance":
-            raise HTTPException(status_code=503, detail="inference maintenance") from exc
+            raise HTTPException(
+                status_code=503, detail="inference maintenance"
+            ) from exc
         raise
 
     guard_owned_by_stream = False
@@ -175,13 +212,27 @@ async def forward(
         try:
             if adapter_id:
                 controller.ensure_loaded(adapter_id)
-            body, stream_requested = await _prepare_body(request, endpoint, adapter_id, x_clare2_params)
+            body, stream_requested = await _prepare_body(
+                request, endpoint, adapter_id, x_clare2_params
+            )
             started = time.monotonic()
             upstream_url = f"{VLLM_URL}{endpoint}"
-            upstream_headers = {"content-type": request.headers.get("content-type", "application/json")}
+            upstream_headers = {
+                "content-type": request.headers.get("content-type", "application/json")
+            }
             response, guard_owned_by_stream = await _dispatch(
-                request, endpoint, body, stream_requested, upstream_url, upstream_headers,
-                started, resolved_route_id, project_id, policy_rule, adapter_id, request_guard,
+                request,
+                endpoint,
+                body,
+                stream_requested,
+                upstream_url,
+                upstream_headers,
+                started,
+                resolved_route_id,
+                project_id,
+                policy_rule,
+                adapter_id,
+                request_guard,
             )
             return response
         except httpx.ConnectError:
@@ -209,7 +260,8 @@ def record_outcome(
         metrics.base_fallbacks.inc()
     metrics.proxy_latency.observe(time.monotonic() - started)
     log.info(
-        "route_decision route_id=%s project_id=%s policy_rule=%s adapter_id=%s outcome=%s",
+        "route_decision route_id=%s project_id=%s policy_rule=%s adapter_id=%s "
+        "outcome=%s",
         route_id,
         project_id,
         policy_rule,
@@ -229,7 +281,11 @@ def streaming_response(
     adapter_id: str | None,
 ) -> StreamingResponse:
     excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
-    headers = {key: value for key, value in upstream.headers.items() if key.lower() not in excluded}
+    headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in excluded
+    }
     record_outcome(
         started,
         route_id,

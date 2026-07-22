@@ -43,7 +43,9 @@ class TrainingTrackerTests(unittest.TestCase):
         self.assertEqual(tags["clare2.project_id"], "github:example/project")
         params = self.mlflow.log_params.call_args_list[0].args[0]
         self.assertEqual(params["target_modules"], '["q_proj", "v_proj"]')
-        self.assertEqual(self.mlflow.log_params.call_args_list[1].args[0]["config_hash"], "abc")
+        self.assertEqual(
+            self.mlflow.log_params.call_args_list[1].args[0]["config_hash"], "abc"
+        )
         self.mlflow.log_metric.assert_called_once_with("train.loss", 0.25, step=7)
         self.mlflow.log_artifact.assert_called_once()
         self.assertIn("adapter_config.json", self.mlflow.log_artifact.call_args.args[0])

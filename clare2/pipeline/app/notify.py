@@ -173,7 +173,9 @@ def _outcome_html_sections(
             )
         ]
     if outcome == "skipped_no_new_content":
-        return [_html_section("Training", _html_skipped_reasons_table(_project_summaries()))]
+        return [
+            _html_section("Training", _html_skipped_reasons_table(_project_summaries()))
+        ]
     if outcome == "postponed":
         return [
             _html_section(
@@ -189,7 +191,8 @@ def _outcome_html_sections(
             _html_section(
                 "Failure",
                 f'<p><span class="badge badge-fail">FAILED</span></p>'
-                f"<p><strong>adapter_id:</strong> {_esc(context.get('adapter_id') or 'n/a')}</p>"
+                f"<p><strong>adapter_id:</strong> "
+                f"{_esc(context.get('adapter_id') or 'n/a')}</p>"
                 f"<p><strong>error:</strong> {_esc(context.get('error'))}</p>",
             )
         ]
@@ -234,7 +237,9 @@ def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str
     for project, summary in project_summaries.items():
         result = result_by_project.get(project)
         if result:
-            label = OUTCOME_LABELS.get(result.get("outcome"), str(result.get("outcome")).upper())
+            label = OUTCOME_LABELS.get(
+                result.get("outcome"), str(result.get("outcome")).upper()
+            )
             lines.append(f"TRAINING / EVALUATION — {project} ({label})")
             lines.extend(_evaluation_lines(result))
         else:
@@ -257,7 +262,10 @@ def _compose_batch(run_id: str, results: list[dict[str, Any]]) -> tuple[str, str
         _html_section(
             "Training / Evaluation",
             _html_evaluation_table(
-                [(project, label, result, summary) for project, label, result, summary in eval_entries]
+                [
+                    (project, label, result, summary)
+                    for project, label, result, summary in eval_entries
+                ]
             ),
         ),
     ]
@@ -275,12 +283,15 @@ def _distillation_lines(extra_projects: set[str] | None = None) -> list[str]:
         lines.append(f"  {project}:")
         lines.append(
             "    sessions: "
-            f"{summary['session_count']} captured, {summary['processed_count']} processed, "
+            f"{summary['session_count']} captured, "
+            f"{summary['processed_count']} processed, "
             f"{summary['pending_count']} pending; latest: {summary['latest_session']}"
         )
         lines.append(f"    last_distillation: {summary['last_distillation']}")
         episodes = summary["episodes"]
-        counts = ", ".join(f"{category}: {count}" for category, count in episodes.items())
+        counts = ", ".join(
+            f"{category}: {count}" for category, count in episodes.items()
+        )
         lines.append(f"    episode patterns on file: {counts or 'none'}")
         lines.append(
             "    current corpus: "
@@ -300,7 +311,9 @@ def _load_json(path: Path, default: Any) -> Any:
         return default
 
 
-def _project_summaries(extra_projects: set[str] | None = None) -> dict[str, dict[str, Any]]:
+def _project_summaries(
+    extra_projects: set[str] | None = None
+) -> dict[str, dict[str, Any]]:
     stats = _load_json(corpus.CORPUS_ROOT / "meta" / "corpus_stats.json", {})
     session_index = _load_json(corpus.CORPUS_ROOT / "meta" / "session_index.json", {})
     projects = set(extra_projects or ()) | set(stats.get("projects", {}))
@@ -318,16 +331,22 @@ def _project_summaries(extra_projects: set[str] | None = None) -> dict[str, dict
 
     summaries = {}
     for project in sorted(projects):
-        session_files = list((corpus.CORPUS_ROOT / "sessions" / project).glob("**/*.jsonl"))
+        session_files = list(
+            (corpus.CORPUS_ROOT / "sessions" / project).glob("**/*.jsonl")
+        )
         processed = indexed.get(project, [])
-        session_dates = [record.get("date") for record in processed if record.get("date")]
+        session_dates = [
+            record.get("date") for record in processed if record.get("date")
+        ]
         for session_file in session_files:
             relative_parts = session_file.relative_to(
                 corpus.CORPUS_ROOT / "sessions" / project
             ).parts
             if len(relative_parts) >= 4:
                 session_dates.append("-".join(relative_parts[:3]))
-        manifest = _load_json(corpus.CORPUS_ROOT / "training" / project / "manifest.json", {})
+        manifest = _load_json(
+            corpus.CORPUS_ROOT / "training" / project / "manifest.json", {}
+        )
         project_stats = stats.get("projects", {}).get(project, {})
         summaries[project] = {
             "session_count": len(session_files),
@@ -347,7 +366,10 @@ def _not_trained_reason(summary: dict[str, Any]) -> str:
     if summary["session_count"] == 0:
         return "no captured session activity"
     if summary["pending_count"]:
-        return f"{summary['pending_count']} captured session(s) remain pending distillation"
+        return (
+            f"{summary['pending_count']} captured session(s) remain "
+            "pending distillation"
+        )
     if summary["sft_pairs"] == 0:
         return "no accepted distilled patterns produced an SFT corpus"
     return "current corpus was unchanged or otherwise ineligible for this run"
@@ -371,7 +393,9 @@ def _evaluation_lines(context: dict[str, Any]) -> list[str]:
             f"({baseline.get('passed', '?')}/{baseline.get('total', '?')})"
         )
         lines.append(f"  mandatory_pass: {report.get('mandatory_pass')}")
-        lines.append(f"  no_category_regression: {report.get('no_category_regression')}")
+        lines.append(
+            f"  no_category_regression: {report.get('no_category_regression')}"
+        )
         lines.append(f"  approved: {report.get('approved')}")
     return lines
 
@@ -408,7 +432,8 @@ def _html_wrap(title: str, sections_html: str) -> str:
     margin: 0;
     padding: 0;
     background: #f4f5f7;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+      Arial, sans-serif;
     color: #202124;
   }}
   .wrapper {{
@@ -520,7 +545,8 @@ def _html_section(title: str, inner_html: str) -> str:
 
 def _html_meta_table(rows: list[tuple[str, Any]]) -> str:
     body_rows = "".join(
-        f'<tr><td class="label">{_esc(label)}</td><td class="mono">{_esc(value)}</td></tr>'
+        f'<tr><td class="label">{_esc(label)}</td>'
+        f'<td class="mono">{_esc(value)}</td></tr>'
         for label, value in rows
     )
     return f'<table class="meta"><tbody>{body_rows}</tbody></table>'
@@ -533,7 +559,9 @@ def _html_distillation_table(summaries: dict[str, dict[str, Any]]) -> str:
     for project, summary in summaries.items():
         episodes = summary["episodes"]
         episode_html = (
-            ", ".join(f"{_esc(category)}: {count}" for category, count in episodes.items())
+            ", ".join(
+                f"{_esc(category)}: {count}" for category, count in episodes.items()
+            )
             or '<span class="muted">none</span>'
         )
         rows.append(
@@ -575,9 +603,11 @@ def _html_evaluation_table(
                 f'<td class="mono">{_esc(result.get("adapter_id", "unknown"))}</td>'
                 f'<td class="mono">{_esc(result.get("mlflow_run_id") or "n/a")}</td>'
                 f"<td>{_esc(candidate.get('pass_rate', 'n/a'))} "
-                f"({_esc(candidate.get('passed', '?'))}/{_esc(candidate.get('total', '?'))})</td>"
+                f"({_esc(candidate.get('passed', '?'))}/"
+                f"{_esc(candidate.get('total', '?'))})</td>"
                 f"<td>{_esc(baseline.get('pass_rate', 'n/a'))} "
-                f"({_esc(baseline.get('passed', '?'))}/{_esc(baseline.get('total', '?'))})</td>"
+                f"({_esc(baseline.get('passed', '?'))}/"
+                f"{_esc(baseline.get('total', '?'))})</td>"
                 f"<td>{_bool_cell(report.get('mandatory_pass'))}</td>"
                 f"<td>{_bool_cell(report.get('no_category_regression'))}</td>"
                 f"<td>{_bool_cell(report.get('approved'))}</td>"

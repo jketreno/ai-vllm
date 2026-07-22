@@ -88,13 +88,23 @@ def sync_distill_and_assemble() -> dict:
 def startup() -> None:
     initialize_registry()
     metrics.start_metrics_server()
-    scheduler.add_job(corpus_sync.sync_all, "cron", hour=21, minute=30, id="corpus_sync")
-    scheduler.add_job(sync_distill_and_assemble, "cron", hour=22, minute=0, id="distill_daily")
-    scheduler.add_job(summarizer.run_scheduled, "cron", hour=22, minute=30, id="summarize")
-    scheduler.add_job(corpus.assemble, "cron", hour=23, minute=30, id="corpus_assemble")
-    scheduler.add_job(lifecycle.run_nightly_training, "cron", hour=0, minute=0, id="train")
     scheduler.add_job(
-        lifecycle.reconcile_image_edit_lease, "interval", minutes=1,
+        corpus_sync.sync_all, "cron", hour=21, minute=30, id="corpus_sync"
+    )
+    scheduler.add_job(
+        sync_distill_and_assemble, "cron", hour=22, minute=0, id="distill_daily"
+    )
+    scheduler.add_job(
+        summarizer.run_scheduled, "cron", hour=22, minute=30, id="summarize"
+    )
+    scheduler.add_job(corpus.assemble, "cron", hour=23, minute=30, id="corpus_assemble")
+    scheduler.add_job(
+        lifecycle.run_nightly_training, "cron", hour=0, minute=0, id="train"
+    )
+    scheduler.add_job(
+        lifecycle.reconcile_image_edit_lease,
+        "interval",
+        minutes=1,
         id="image_lease_reconcile",
     )
     scheduler.start()
@@ -222,7 +232,9 @@ def operator_status() -> dict:
 def promote(adapter_id: str) -> dict:
     adapter = registry.read()["adapters"].get(adapter_id)
     if not adapter or not adapter.get("evaluation", {}).get("approved"):
-        raise HTTPException(status_code=409, detail="adapter has no approved evaluation")
+        raise HTTPException(
+            status_code=409, detail="adapter has no approved evaluation"
+        )
     document = registry.promote(adapter_id, adapter["evaluation"])
     return document["aliases"]
 
@@ -246,9 +258,7 @@ def set_maintenance(action: str) -> dict:
     return {"maintenance": maintenance.enabled}
 
 
-@app.post(
-    "/operator/resource-leases/image-edit", dependencies=[Depends(operator_auth)]
-)
+@app.post("/operator/resource-leases/image-edit", dependencies=[Depends(operator_auth)])
 def acquire_image_edit_lease(payload: ImageLeasePayload) -> dict:
     try:
         return lifecycle.acquire_image_edit_lease(payload.request_id)
@@ -323,7 +333,9 @@ def trigger_summarize(
 @app.post("/internal/routes", dependencies=[Depends(internal_route_auth)])
 def create_internal_route(payload: RouteCreatePayload) -> dict:
     try:
-        route = router.create_route(payload.project, payload.task_kind, payload.capabilities)
+        route = router.create_route(
+            payload.project, payload.task_kind, payload.capabilities
+        )
     except RouteError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {

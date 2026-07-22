@@ -6,10 +6,10 @@ set -euo pipefail
 # sessions/ from.
 #
 # Usage:
-#   clare2-corpus-manage.sh list
-#   clare2-corpus-manage.sh subscribe user@host[:port] [remote_corpus_root]
-#   clare2-corpus-manage.sh unsubscribe user@host
-#   clare2-corpus-manage.sh sync
+#   clare2-corpus-manage.sh [-q|--quiet] list
+#   clare2-corpus-manage.sh [-q|--quiet] subscribe user@host[:port] [remote_corpus_root]
+#   clare2-corpus-manage.sh [-q|--quiet] unsubscribe user@host
+#   clare2-corpus-manage.sh [-q|--quiet] sync
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -24,10 +24,13 @@ DEFAULT_PORT=22
 usage() {
   cat <<'EOF'
 Usage:
-  clare2-corpus-manage.sh list
-  clare2-corpus-manage.sh subscribe user@host[:port] [remote_corpus_root]
-  clare2-corpus-manage.sh unsubscribe user@host[:port]
-  clare2-corpus-manage.sh sync
+  clare2-corpus-manage.sh [-q|--quiet] list
+  clare2-corpus-manage.sh [-q|--quiet] subscribe user@host[:port] [remote_corpus_root]
+  clare2-corpus-manage.sh [-q|--quiet] unsubscribe user@host[:port]
+  clare2-corpus-manage.sh [-q|--quiet] sync
+
+  -q, --quiet   Suppress step-by-step progress output (errors and results
+                still print)
 
 Environment overrides:
   CLARE2_CORPUS_SOURCES_FILE   path to corpus_sources.yml
@@ -38,7 +41,17 @@ Environment overrides:
 EOF
 }
 
+QUIET=0
+
 log() { printf '%s\n' "$*" >&2; }
+
+# Narrates progress ("doing step X now") so a long-running command isn't
+# silent while it works. Suppressed by -q/--quiet; log() is not, so errors
+# and final results still print in quiet mode.
+step() {
+  [[ "$QUIET" -eq 1 ]] && return 0
+  printf -- '-- %s\n' "$*" >&2
+}
 
 require_yaml_module() {
   python3 -c 'import yaml' 2>/dev/null || {
@@ -48,6 +61,7 @@ require_yaml_module() {
 }
 
 ensure_sync_keypair() {
+  step "Checking for CLARE2 corpus sync keypair at ${SYNC_KEY}"
   if [[ -f "$SYNC_KEY" && -f "$SYNC_PUB_KEY" ]]; then
     return 0
   fi
@@ -89,6 +103,7 @@ parse_target() {
 }
 
 cmd_list() {
+  step "Reading subscribed sources from ${SOURCES_FILE}"
   require_yaml_module
   python3 - "$SOURCES_FILE" <<'PY'
 import sys
@@ -150,6 +165,7 @@ PY
 # remote path argument must be relative ("."), not the absolute root again.
 probe_access() {
   local user="$1" host="$2" port="$3"
+  step "Probing ${user}@${host}:${port} for existing sync-key access"
   rsync -az --timeout 8 \
     -e "ssh -i ${SYNC_KEY} -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -p ${port}" \
     --list-only \
@@ -171,6 +187,7 @@ install_authorized_key() {
   # interactive ssh session instead. This still may prompt for a password,
   # matching ssh-copy-id's own behavior when no key-based auth exists yet.
   local remote_line="${forced_command} ${pubkey}"
+  step "Connecting to ${user}@${host}:${port} to append the restricted authorized_keys entry"
   ssh -o StrictHostKeyChecking=accept-new -p "$port" "${user}@${host}" bash -s <<REMOTE
 set -euo pipefail
 mkdir -p ~/.ssh
@@ -185,12 +202,14 @@ REMOTE
 add_source_entry() {
   local user="$1" host="$2" port="$3" remote_root="$4"
   local host_key
+  step "Fetching ${host}:${port}'s ed25519 host key via ssh-keyscan"
   host_key="$(ssh-keyscan -T 8 -p "$port" -t ed25519 "$host" 2>/dev/null | grep -v '^#' | head -1)"
   if [[ -z "$host_key" ]]; then
     log "could not fetch a host key for ${host}:${port} via ssh-keyscan"
     exit 1
   fi
 
+  step "Recording ${user}@${host}:${port} in ${SOURCES_FILE}"
   require_yaml_module
   python3 - "$SOURCES_FILE" "$host" "$port" "$user" "$remote_root" "$host_key" <<'PY'
 import sys
@@ -229,6 +248,7 @@ cmd_subscribe() {
 
   parse_target "$target"
   local user="$PARSED_USER" host="$PARSED_HOST" port="$PARSED_PORT"
+  step "Subscribing ${user}@${host}:${port} (remote root=${remote_root})"
 
   ensure_sync_keypair
 
@@ -261,11 +281,13 @@ sync_source() {
 }
 
 cmd_sync() {
+  step "Checking for sync key at ${SYNC_KEY}"
   [[ -f "$SYNC_KEY" ]] || {
     log "Corpus sync key not found at ${SYNC_KEY} — nothing to sync with"
     exit 1
   }
 
+  step "Reading subscribed sources from ${SOURCES_FILE}"
   local rows
   rows="$(_source_rows)"
   if [[ -z "$rows" ]]; then
@@ -282,12 +304,12 @@ cmd_sync() {
   while IFS=$'\t' read -r user host port host_key; do
     [[ -n "$host" ]] || continue
     printf '%s\n' "$host_key" > "$known_hosts"
-    log "Syncing ${user}@${host}:${port} ..."
+    step "Syncing ${user}@${host}:${port} ..."
     if sync_source "$user" "$host" "$port" "$known_hosts"; then
-      log "  ok"
+      step "  ok"
       succeeded=$((succeeded + 1))
     else
-      log "  failed"
+      log "  failed: ${user}@${host}:${port}"
       failures=$((failures + 1))
     fi
   done <<< "$rows"
@@ -301,6 +323,7 @@ cmd_unsubscribe() {
   [[ -n "$target" ]] || { usage >&2; exit 2; }
   parse_target "$target"
   local user="$PARSED_USER" host="$PARSED_HOST"
+  step "Removing ${user}@${host} from ${SOURCES_FILE}"
 
   require_yaml_module
   python3 - "$SOURCES_FILE" "$host" "$user" <<'PY'
@@ -330,6 +353,19 @@ PY
 }
 
 main() {
+  local args=()
+  for arg in "$@"; do
+    case "$arg" in
+      -q | --quiet)
+        QUIET=1
+        ;;
+      *)
+        args+=("$arg")
+        ;;
+    esac
+  done
+  set -- "${args[@]+"${args[@]}"}"
+
   local command="${1:-}"
   [[ $# -gt 0 ]] || { usage >&2; exit 2; }
   shift

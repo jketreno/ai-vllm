@@ -25,16 +25,24 @@ def _call_llm_merge(records: list[dict], level: str) -> list[dict]:
     if not records:
         return []
 
+    threshold = (
+        WEEKLY_GATE
+        if level == "weekly"
+        else MONTHLY_GATE if level == "monthly" else QUARTERLY_GATE
+    )
     prompt = (
-        f"You are compressing a {level} summary of AI session patterns for fine-tuning signal.\n"
-        "Input: a JSON array of pattern records. Each has: category, pattern (description), "
-        "evidence_count, canonical_example, first_seen, last_seen.\n"
+        f"You are compressing a {level} summary of AI session patterns for "
+        "fine-tuning signal.\n"
+        "Input: a JSON array of pattern records. Each has: category, pattern "
+        "(description), evidence_count, canonical_example, first_seen, "
+        "last_seen.\n"
         "Task:\n"
         "1. Group records with the same category AND similar semantic meaning.\n"
-        "2. For each group, merge into one record: sum evidence_count, keep the canonical_example "
-        "from the highest-evidence record, use the earliest first_seen and latest last_seen.\n"
-        "3. Drop any merged record whose final evidence_count is below the threshold for this level "
-        f"({WEEKLY_GATE if level == 'weekly' else MONTHLY_GATE if level == 'monthly' else QUARTERLY_GATE}).\n"
+        "2. For each group, merge into one record: sum evidence_count, keep the "
+        "canonical_example from the highest-evidence record, use the earliest "
+        "first_seen and latest last_seen.\n"
+        "3. Drop any merged record whose final evidence_count is below the "
+        f"threshold for this level ({threshold}).\n"
         "Return ONLY a JSON array of merged records. No commentary.\n\n"
         f"Input records:\n{json.dumps(records, indent=2)}"
     )
@@ -45,7 +53,9 @@ def _call_llm_merge(records: list[dict], level: str) -> list[dict]:
         text,
         lambda error: generate(repair_prompt(text, error), max_tokens=2048),
     )
-    metrics.structured_output_attempts.labels(stage=f"summary_{level}", outcome=outcome).inc()
+    metrics.structured_output_attempts.labels(
+        stage=f"summary_{level}", outcome=outcome
+    ).inc()
     if outcome == "failed":
         metrics.summary_parse_errors.labels(level=level).inc()
         log.error("Summarizer LLM output not valid JSON")
@@ -86,8 +96,12 @@ def _record_summary_metrics(
     output_records: int,
     outcome: str,
 ) -> None:
-    metrics.summary_records_input.labels(project=project, level=level).set(input_records)
-    metrics.summary_records_output.labels(project=project, level=level).set(output_records)
+    metrics.summary_records_input.labels(project=project, level=level).set(
+        input_records
+    )
+    metrics.summary_records_output.labels(project=project, level=level).set(
+        output_records
+    )
     metrics.summary_runs.labels(project=project, level=level, outcome=outcome).inc()
     metrics.summary_last_run_timestamp.labels(project=project, level=level).set(
         datetime.now(tz=timezone.utc).timestamp()
@@ -117,21 +131,34 @@ def _run_weekly_project(project: str, reference_date: datetime) -> dict:
             day_records.extend(_load_jsonl(ep_path))
 
     if not day_records:
-        log.info("No daily episodes found for project %s week ending %s", project, reference_date.date())
+        log.info(
+            "No daily episodes found for project %s week ending %s",
+            project,
+            reference_date.date(),
+        )
         _record_summary_metrics(project, "weekly", 0, 0, "no_input")
         return {"input_records": 0, "output_records": 0}
 
     merged = _call_llm_merge(day_records, "weekly")
     week_str = _iso_week(reference_date)
-    _write_jsonl(CORPUS_ROOT / "summaries" / "weekly" / project / f"{week_str}.jsonl", merged)
+    _write_jsonl(
+        CORPUS_ROOT / "summaries" / "weekly" / project / f"{week_str}.jsonl", merged
+    )
     _record_summary_metrics(project, "weekly", len(day_records), len(merged), "success")
 
-    log.info("Weekly summary %s for %s: %d → %d records", week_str, project, len(day_records), len(merged))
+    log.info(
+        "Weekly summary %s for %s: %d → %d records",
+        week_str,
+        project,
+        len(day_records),
+        len(merged),
+    )
     return {"input_records": len(day_records), "output_records": len(merged)}
 
 
 def run_weekly(reference_date: datetime | None = None) -> dict:
-    """Compress the 7 daily episode files ending on reference_date into project summaries."""
+    """Compress the 7 daily episode files ending on reference_date into project
+    summaries."""
     if reference_date is None:
         reference_date = datetime.now(tz=timezone.utc)
 
@@ -141,7 +168,9 @@ def run_weekly(reference_date: datetime | None = None) -> dict:
         for key in totals:
             totals[key] += result[key]
     if totals["input_records"] == 0:
-        log.info("No project daily episodes found for week ending %s", reference_date.date())
+        log.info(
+            "No project daily episodes found for week ending %s", reference_date.date()
+        )
     return totals
 
 
@@ -170,15 +199,29 @@ def _run_monthly_project(project: str, reference_date: datetime) -> dict:
         week_records.extend(_load_jsonl(weekly_file))
 
     if not week_records:
-        log.info("No weekly summaries found for project %s %d-%02d", project, year, month)
+        log.info(
+            "No weekly summaries found for project %s %d-%02d", project, year, month
+        )
         _record_summary_metrics(project, "monthly", 0, 0, "no_input")
         return {"input_records": 0, "output_records": 0}
 
     merged = _call_llm_merge(week_records, "monthly")
-    _write_jsonl(CORPUS_ROOT / "summaries" / "monthly" / project / f"{year}-{month:02d}.jsonl", merged)
-    _record_summary_metrics(project, "monthly", len(week_records), len(merged), "success")
+    _write_jsonl(
+        CORPUS_ROOT / "summaries" / "monthly" / project / f"{year}-{month:02d}.jsonl",
+        merged,
+    )
+    _record_summary_metrics(
+        project, "monthly", len(week_records), len(merged), "success"
+    )
 
-    log.info("Monthly summary %d-%02d for %s: %d → %d records", year, month, project, len(week_records), len(merged))
+    log.info(
+        "Monthly summary %d-%02d for %s: %d → %d records",
+        year,
+        month,
+        project,
+        len(week_records),
+        len(merged),
+    )
     return {"input_records": len(week_records), "output_records": len(merged)}
 
 
@@ -215,20 +258,43 @@ def _run_quarterly_project(project: str, reference_date: datetime) -> dict:
             month_records.extend(_load_jsonl(mf))
 
     if not month_records:
-        log.info("No monthly summaries found for project %s Q%d %d", project, target_quarter, year)
+        log.info(
+            "No monthly summaries found for project %s Q%d %d",
+            project,
+            target_quarter,
+            year,
+        )
         _record_summary_metrics(project, "quarterly", 0, 0, "no_input")
         return {"input_records": 0, "output_records": 0, "themes_promoted": 0}
 
     merged = _call_llm_merge(month_records, "quarterly")
-    _write_jsonl(CORPUS_ROOT / "summaries" / "quarterly" / project / f"{year}-Q{target_quarter}.jsonl", merged)
+    _write_jsonl(
+        CORPUS_ROOT
+        / "summaries"
+        / "quarterly"
+        / project
+        / f"{year}-Q{target_quarter}.jsonl",
+        merged,
+    )
     themes_promoted = _promote_themes(project)
-    _record_summary_metrics(project, "quarterly", len(month_records), len(merged), "success")
+    _record_summary_metrics(
+        project, "quarterly", len(month_records), len(merged), "success"
+    )
 
     log.info(
         "Quarterly summary Q%d %d for %s: %d → %d records, %d themes promoted",
-        target_quarter, year, project, len(month_records), len(merged), themes_promoted,
+        target_quarter,
+        year,
+        project,
+        len(month_records),
+        len(merged),
+        themes_promoted,
     )
-    return {"input_records": len(month_records), "output_records": len(merged), "themes_promoted": themes_promoted}
+    return {
+        "input_records": len(month_records),
+        "output_records": len(merged),
+        "themes_promoted": themes_promoted,
+    }
 
 
 def run_quarterly(reference_date: datetime | None = None) -> dict:
@@ -278,7 +344,8 @@ def _promote_category(project: str, cat: str, records: list[dict], now_str: str)
 
 
 def _promote_themes(project: str) -> int:
-    """Scan project quarterly summaries and promote cross-quarter patterns to active themes."""
+    """Scan project quarterly summaries and promote cross-quarter patterns to
+    active themes."""
     all_quarterly = _load_quarterly_records(project)
     if not all_quarterly:
         return 0
@@ -290,7 +357,10 @@ def _promote_themes(project: str) -> int:
             by_category[cat].append(r)
 
     now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    return sum(_promote_category(project, cat, records, now_str) for cat, records in by_category.items())
+    return sum(
+        _promote_category(project, cat, records, now_str)
+        for cat, records in by_category.items()
+    )
 
 
 def run_scheduled(reference_date: datetime | None = None) -> dict:

@@ -12,9 +12,14 @@ from .registry import AdapterRegistry, RegistryError
 
 
 class VllmClient(Protocol):
-    def models(self) -> set[str]: ...
-    def load(self, adapter_id: str, path: str) -> None: ...
-    def unload(self, adapter_id: str) -> None: ...
+    def models(self) -> set[str]:
+        ...
+
+    def load(self, adapter_id: str, path: str) -> None:
+        ...
+
+    def unload(self, adapter_id: str) -> None:
+        ...
 
 
 class AdapterController:
@@ -60,11 +65,17 @@ class AdapterController:
             with self._guard:
                 if adapter_id in self._loaded:
                     self._loaded.move_to_end(adapter_id)
-                    metrics.adapter_operations.labels(operation="cache_hit", outcome="success").inc()
+                    metrics.adapter_operations.labels(
+                        operation="cache_hit", outcome="success"
+                    ).inc()
                     return
             registry = self.registry.read()
             adapter = registry["adapters"].get(adapter_id)
-            if adapter is None or adapter["status"] not in {"approved", "loaded", "candidate"}:
+            if adapter is None or adapter["status"] not in {
+                "approved",
+                "loaded",
+                "candidate",
+            }:
                 metrics.adapter_compatibility_failures.inc()
                 raise RegistryError("adapter is not approved for loading")
             self.registry.validate_adapter(adapter)
@@ -73,9 +84,13 @@ class AdapterController:
             try:
                 self.client.load(adapter_id, str(self.registry.adapter_path(adapter)))
             except Exception:
-                metrics.adapter_operations.labels(operation="load", outcome="failure").inc()
+                metrics.adapter_operations.labels(
+                    operation="load", outcome="failure"
+                ).inc()
                 raise
-            metrics.adapter_operation_latency.labels(operation="load").observe(time.monotonic() - started)
+            metrics.adapter_operation_latency.labels(operation="load").observe(
+                time.monotonic() - started
+            )
             metrics.adapter_operations.labels(operation="load", outcome="success").inc()
             with self._guard:
                 self._loaded[adapter_id] = time.monotonic()
@@ -93,7 +108,10 @@ class AdapterController:
             if incoming in self._loaded or len(self._loaded) < self.max_cpu_loras:
                 return
             pinned = self.pinned()
-            victim = next((adapter_id for adapter_id in self._loaded if adapter_id not in pinned), None)
+            victim = next(
+                (adapter_id for adapter_id in self._loaded if adapter_id not in pinned),
+                None,
+            )
         if victim is None:
             raise RegistryError("adapter cache is full and every adapter is pinned")
         self.unload(victim)

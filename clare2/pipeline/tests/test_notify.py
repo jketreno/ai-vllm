@@ -36,7 +36,9 @@ class SendRunNotificationTests(unittest.TestCase):
         self.smtp_cm = MagicMock()
         self.smtp_cm.__enter__.return_value = self.smtp_instance
         self.smtp_cm.__exit__.return_value = False
-        self.smtp_patch = patch.object(notify.smtplib, "SMTP", return_value=self.smtp_cm)
+        self.smtp_patch = patch.object(
+            notify.smtplib, "SMTP", return_value=self.smtp_cm
+        )
         self.smtp_mock = self.smtp_patch.start()
 
     def tearDown(self):
@@ -47,14 +49,16 @@ class SendRunNotificationTests(unittest.TestCase):
         stats_path = self.corpus_root / "meta" / "corpus_stats.json"
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         stats_path.write_text(
-            json.dumps({
-                "projects": {
-                    "ai-vllm": {
-                        "episodes": {"domain": 16},
-                        "last_distillation": "2026-07-12T05:00:28Z",
+            json.dumps(
+                {
+                    "projects": {
+                        "ai-vllm": {
+                            "episodes": {"domain": 16},
+                            "last_distillation": "2026-07-12T05:00:28Z",
+                        }
                     }
                 }
-            }),
+            ),
             encoding="utf-8",
         )
 
@@ -85,7 +89,9 @@ class SendRunNotificationTests(unittest.TestCase):
         self.smtp_mock.assert_not_called()
 
     def test_increments_ok_metric_on_success(self):
-        before = metrics.notification_sent.labels(outcome="promoted", status="ok")._value.get()
+        before = metrics.notification_sent.labels(
+            outcome="promoted", status="ok"
+        )._value.get()
         notify.send_run_notification(
             "promoted",
             adapter_id="adapter-1",
@@ -100,7 +106,9 @@ class SendRunNotificationTests(unittest.TestCase):
             },
             project="ai-vllm",
         )
-        after = metrics.notification_sent.labels(outcome="promoted", status="ok")._value.get()
+        after = metrics.notification_sent.labels(
+            outcome="promoted", status="ok"
+        )._value.get()
         self.assertEqual(after, before + 1)
 
     def test_smtp_failure_is_caught_and_counted_not_raised(self):
@@ -109,9 +117,13 @@ class SendRunNotificationTests(unittest.TestCase):
             notify.smtplib, "SMTP", side_effect=smtplib.SMTPConnectError(421, "down")
         )
         self.smtp_patch.start()
-        before = metrics.notification_sent.labels(outcome="failed", status="error")._value.get()
+        before = metrics.notification_sent.labels(
+            outcome="failed", status="error"
+        )._value.get()
         notify.send_run_notification("failed", run_id="run-1", error="boom")
-        after = metrics.notification_sent.labels(outcome="failed", status="error")._value.get()
+        after = metrics.notification_sent.labels(
+            outcome="failed", status="error"
+        )._value.get()
         self.assertEqual(after, before + 1)
 
     def test_missing_corpus_stats_does_not_raise(self):
@@ -128,18 +140,20 @@ class SendRunNotificationTests(unittest.TestCase):
         stats_path = self.corpus_root / "meta" / "corpus_stats.json"
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         stats_path.write_text(
-            json.dumps({
-                "projects": {
-                    "ai-vllm": {
-                        "episodes": {"domain": 25},
-                        "last_distillation": "2026-07-16T05:02:22Z",
-                    },
-                    "clare": {
-                        "episodes": {"style": 3},
-                        "last_distillation": "2026-07-16T05:03:10Z",
-                    },
+            json.dumps(
+                {
+                    "projects": {
+                        "ai-vllm": {
+                            "episodes": {"domain": 25},
+                            "last_distillation": "2026-07-16T05:02:22Z",
+                        },
+                        "clare": {
+                            "episodes": {"style": 3},
+                            "last_distillation": "2026-07-16T05:03:10Z",
+                        },
+                    }
                 }
-            }),
+            ),
             encoding="utf-8",
         )
         notify.send_run_notification("skipped_no_new_content", run_id="run-1")
@@ -155,7 +169,9 @@ class SendRunNotificationTests(unittest.TestCase):
         session_path.write_text("{}\n")
         notify.send_run_notification("skipped_no_new_content", run_id="run-1")
         body = _text_body(self.smtp_instance.send_message.call_args[0][0])
-        self.assertIn("backstory: 1 captured session(s) remain pending distillation", body)
+        self.assertIn(
+            "backstory: 1 captured session(s) remain pending distillation", body
+        )
 
     def test_sends_multipart_message_with_html_alternative(self):
         self._write_corpus_stats()
@@ -198,7 +214,9 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         self.smtp_cm = MagicMock()
         self.smtp_cm.__enter__.return_value = self.smtp_instance
         self.smtp_cm.__exit__.return_value = False
-        self.smtp_patch = patch.object(notify.smtplib, "SMTP", return_value=self.smtp_cm)
+        self.smtp_patch = patch.object(
+            notify.smtplib, "SMTP", return_value=self.smtp_cm
+        )
         self.smtp_mock = self.smtp_patch.start()
 
     def tearDown(self):
@@ -238,25 +256,35 @@ class SendBatchRunNotificationTests(unittest.TestCase):
     def _write_project_inventory(self):
         stats_path = self.corpus_root / "meta" / "corpus_stats.json"
         stats_path.parent.mkdir(parents=True, exist_ok=True)
-        stats_path.write_text(json.dumps({
-            "projects": {
-                "ai-vllm": {
-                    "episodes": {"domain": 8},
-                    "last_distillation": "2026-07-18T05:04:40Z",
-                }
-            }
-        }))
-        index_path = self.corpus_root / "meta" / "session_index.json"
-        index_path.write_text(json.dumps({
-            "sessions": [
+        stats_path.write_text(
+            json.dumps(
                 {
-                    "project": "backstory",
-                    "date": "2026-07-06",
-                    "session_id": "session-1",
+                    "projects": {
+                        "ai-vllm": {
+                            "episodes": {"domain": 8},
+                            "last_distillation": "2026-07-18T05:04:40Z",
+                        }
+                    }
                 }
-            ]
-        }))
-        session_path = self.corpus_root / "sessions/backstory/2026/07/06/session-1.jsonl"
+            )
+        )
+        index_path = self.corpus_root / "meta" / "session_index.json"
+        index_path.write_text(
+            json.dumps(
+                {
+                    "sessions": [
+                        {
+                            "project": "backstory",
+                            "date": "2026-07-06",
+                            "session_id": "session-1",
+                        }
+                    ]
+                }
+            )
+        )
+        session_path = (
+            self.corpus_root / "sessions/backstory/2026/07/06/session-1.jsonl"
+        )
         session_path.parent.mkdir(parents=True)
         session_path.write_text("{}\n")
         ze_session = self.corpus_root / "sessions/ze-monitor/2026/07/11/session-2.jsonl"
@@ -264,11 +292,15 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         ze_session.write_text("{}\n")
         manifest_path = self.corpus_root / "training/ai-vllm/manifest.json"
         manifest_path.parent.mkdir(parents=True)
-        manifest_path.write_text(json.dumps({
-            "last_updated": "2026-07-18T05:05:00Z",
-            "total_sft_pairs": 15,
-            "total_tokens": 4200,
-        }))
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "last_updated": "2026-07-18T05:05:00Z",
+                    "total_sft_pairs": 15,
+                    "total_tokens": 4200,
+                }
+            )
+        )
 
     def test_sends_one_email_covering_every_project(self):
         self._write_project_inventory()
@@ -288,7 +320,9 @@ class SendBatchRunNotificationTests(unittest.TestCase):
 
         self.assertIn("backstory:", body)
         self.assertIn("1 captured, 1 processed, 0 pending; latest: 2026-07-06", body)
-        self.assertIn("current corpus: 0 SFT pair(s), ~0 tokens; last updated: never", body)
+        self.assertIn(
+            "current corpus: 0 SFT pair(s), ~0 tokens; last updated: never", body
+        )
         self.assertIn("TRAINING / EVALUATION — backstory (NOT TRAINED)", body)
         self.assertIn("no accepted distilled patterns produced an SFT corpus", body)
 
@@ -312,7 +346,9 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         body = _text_body(self.smtp_instance.send_message.call_args[0][0])
         lines = body.split("\n")
         project_header_indices = [
-            i for i, line in enumerate(lines) if line.strip().endswith(":") and line.startswith("  ")
+            i
+            for i, line in enumerate(lines)
+            if line.strip().endswith(":") and line.startswith("  ")
         ]
         self.assertGreater(len(project_header_indices), 1)
         for idx in project_header_indices[1:]:
@@ -341,9 +377,13 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         self.smtp_mock.assert_not_called()
 
     def test_increments_ok_metric_on_success(self):
-        before = metrics.notification_sent.labels(outcome="batch_complete", status="ok")._value.get()
+        before = metrics.notification_sent.labels(
+            outcome="batch_complete", status="ok"
+        )._value.get()
         notify.send_batch_run_notification(run_id="run-1", results=self._results())
-        after = metrics.notification_sent.labels(outcome="batch_complete", status="ok")._value.get()
+        after = metrics.notification_sent.labels(
+            outcome="batch_complete", status="ok"
+        )._value.get()
         self.assertEqual(after, before + 1)
 
     def test_empty_results_does_not_raise(self):

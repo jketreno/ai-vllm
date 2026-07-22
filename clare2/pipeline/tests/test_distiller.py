@@ -21,9 +21,19 @@ class DistillerCatchUpTests(unittest.TestCase):
 
     def _write_session(self, project: str, date: str, session_id: str) -> None:
         year, month, day = date.split("-")
-        path = self.root / "sessions" / project / year / month / day / f"{session_id}.jsonl"
+        path = (
+            self.root
+            / "sessions"
+            / project
+            / year
+            / month
+            / day
+            / f"{session_id}.jsonl"
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"role": "user", "content": f"{project}:{date}"}) + "\n")
+        path.write_text(
+            json.dumps({"role": "user", "content": f"{project}:{date}"}) + "\n"
+        )
 
     def _patterns(self, output: str) -> list[dict]:
         return [
@@ -41,9 +51,9 @@ class DistillerCatchUpTests(unittest.TestCase):
 
         with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
             distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
-        ), patch.object(distiller, "_call_distill_llm", side_effect=["one", "two"]), patch.object(
-            distiller, "_parse_patterns", side_effect=self._patterns
-        ):
+        ), patch.object(
+            distiller, "_call_distill_llm", side_effect=["one", "two"]
+        ), patch.object(distiller, "_parse_patterns", side_effect=self._patterns):
             result = distiller.run_daily()
 
         self.assertEqual(result["sessions"], 2)
@@ -51,7 +61,10 @@ class DistillerCatchUpTests(unittest.TestCase):
         self.assertTrue((self.root / "episodes/ai-vllm/2026/07/02.jsonl").exists())
         index = json.loads((self.root / "meta/session_index.json").read_text())
         self.assertEqual(len(index["sessions"]), 2)
-        self.assertEqual({record["date"] for record in index["sessions"]}, {"2026-07-01", "2026-07-02"})
+        self.assertEqual(
+            {record["date"] for record in index["sessions"]},
+            {"2026-07-01", "2026-07-02"},
+        )
 
     def test_explicit_date_limits_processing_to_that_date(self):
         self._write_session("ai-vllm", "2026-07-01", "old")
@@ -59,9 +72,9 @@ class DistillerCatchUpTests(unittest.TestCase):
 
         with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
             distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
-        ), patch.object(distiller, "_call_distill_llm", return_value="ok"), patch.object(
-            distiller, "_parse_patterns", side_effect=self._patterns
-        ):
+        ), patch.object(
+            distiller, "_call_distill_llm", return_value="ok"
+        ), patch.object(distiller, "_parse_patterns", side_effect=self._patterns):
             result = distiller.run_daily(datetime(2026, 7, 2, tzinfo=timezone.utc))
 
         self.assertEqual(result["sessions"], 1)
@@ -74,9 +87,9 @@ class DistillerCatchUpTests(unittest.TestCase):
 
         with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
             distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
-        ), patch.object(distiller, "_call_distill_llm", side_effect=["one", "two"]), patch.object(
-            distiller, "_parse_patterns", side_effect=self._patterns
-        ):
+        ), patch.object(
+            distiller, "_call_distill_llm", side_effect=["one", "two"]
+        ), patch.object(distiller, "_parse_patterns", side_effect=self._patterns):
             distiller.run_daily()
 
         stats = json.loads((self.root / "meta/corpus_stats.json").read_text())
@@ -93,17 +106,17 @@ class DistillerCatchUpTests(unittest.TestCase):
 
         with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
             distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
-        ), patch.object(distiller, "_call_distill_llm", return_value="one"), patch.object(
-            distiller, "_parse_patterns", side_effect=self._patterns
-        ):
+        ), patch.object(
+            distiller, "_call_distill_llm", return_value="one"
+        ), patch.object(distiller, "_parse_patterns", side_effect=self._patterns):
             distiller.run_daily()
 
         self._write_session("clare", "2026-07-02", "session-b")
         with patch.object(distiller, "CORPUS_ROOT", self.root), patch.object(
             distiller, "_load_distill_prompt", return_value="{{SESSION_CONTENT}}"
-        ), patch.object(distiller, "_call_distill_llm", return_value="two"), patch.object(
-            distiller, "_parse_patterns", side_effect=self._patterns
-        ):
+        ), patch.object(
+            distiller, "_call_distill_llm", return_value="two"
+        ), patch.object(distiller, "_parse_patterns", side_effect=self._patterns):
             distiller.run_daily()
 
         stats = json.loads((self.root / "meta/corpus_stats.json").read_text())
@@ -116,14 +129,18 @@ class DistillerCatchUpTests(unittest.TestCase):
         index_path = self.root / "meta/session_index.json"
         index_path.parent.mkdir(parents=True)
         index_path.write_text(
-            json.dumps({
-                "sessions": [{
-                    "session_id": "processed",
-                    "project": "ai-vllm",
-                    "date": "2026-07-01",
-                    "path": "sessions/ai-vllm/2026/07/01/processed.jsonl",
-                }]
-            }),
+            json.dumps(
+                {
+                    "sessions": [
+                        {
+                            "session_id": "processed",
+                            "project": "ai-vllm",
+                            "date": "2026-07-01",
+                            "path": "sessions/ai-vllm/2026/07/01/processed.jsonl",
+                        }
+                    ]
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -133,9 +150,21 @@ class DistillerCatchUpTests(unittest.TestCase):
             result = distiller.run_daily()
 
         self.assertEqual(result["sessions"], 0)
-        self.assertEqual(metrics.distillation_sessions_last.labels(project="ai-vllm")._value.get(), 0)
-        self.assertEqual(metrics.distillation_patterns_extracted_last.labels(project="ai-vllm")._value.get(), 0)
-        self.assertEqual(metrics.distillation_patterns_gated_out_last.labels(project="ai-vllm")._value.get(), 0)
+        self.assertEqual(
+            metrics.distillation_sessions_last.labels(project="ai-vllm")._value.get(), 0
+        )
+        self.assertEqual(
+            metrics.distillation_patterns_extracted_last.labels(
+                project="ai-vllm"
+            )._value.get(),
+            0,
+        )
+        self.assertEqual(
+            metrics.distillation_patterns_gated_out_last.labels(
+                project="ai-vllm"
+            )._value.get(),
+            0,
+        )
 
 
 if __name__ == "__main__":

@@ -38,7 +38,9 @@ class TrainingEntrypointTests(unittest.TestCase):
         self.assertFalse(self._run({"phase": "idle"}))
 
     def test_stale_start_request_is_inert_outside_training_transition(self):
-        self.assertFalse(self._run({"phase": "failed", "trainer_start_requested": True}))
+        self.assertFalse(
+            self._run({"phase": "failed", "trainer_start_requested": True})
+        )
 
     def test_policy_start_request_runs_training_command(self):
         self.assertTrue(

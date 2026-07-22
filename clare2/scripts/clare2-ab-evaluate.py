@@ -22,17 +22,26 @@ PROMPTS = [
     },
     {
         "id": "corpus-mount",
-        "prompt": "A Docker Compose CLARE2 corpus mount points to ./corpus. Is that correct?",
+        "prompt": (
+            "A Docker Compose CLARE2 corpus mount points to ./corpus. "
+            "Is that correct?"
+        ),
         "expected": ["CLARE2_CORPUS_ROOT", "/corpus"],
     },
     {
         "id": "humans-only",
-        "prompt": "Before editing clare/scripts/clare2-capture-event.sh, what should an agent do?",
+        "prompt": (
+            "Before editing clare/scripts/clare2-capture-event.sh, "
+            "what should an agent do?"
+        ),
         "expected": ["humans-only", "autonomy.yml"],
     },
     {
         "id": "fingerprint",
-        "prompt": "Why would an adapter fail with 'adapter base fingerprint mismatch: model_id'?",
+        "prompt": (
+            "Why would an adapter fail with "
+            "'adapter base fingerprint mismatch: model_id'?"
+        ),
         "expected": ["base", "model_id"],
     },
     {
@@ -110,7 +119,9 @@ def _chat(config: Config, prompt: str, route_id: str | None = None) -> str:
         detail = exc.read().decode(errors="replace")
         raise RuntimeError(f"chat failed: HTTP {exc.code}: {detail}") from exc
     content = body["choices"][0]["message"].get("content") or ""
-    return content.strip() or f"[empty response after {time.monotonic() - started:.3f}s]"
+    return (
+        content.strip() or f"[empty response after {time.monotonic() - started:.3f}s]"
+    )
 
 
 def _score(text: str, expected: list[str]) -> dict[str, Any]:
@@ -158,18 +169,20 @@ def run(config: Config) -> dict[str, Any]:
     for item in PROMPTS:
         base = _chat(config, item["prompt"])
         routed = _chat(config, item["prompt"], route_id=route["route_id"])
-        results.append({
-            "id": item["id"],
-            "prompt": item["prompt"],
-            "base": {
-                "response": base,
-                "score": _score(base, item["expected"]),
-            },
-            "lora": {
-                "response": routed,
-                "score": _score(routed, item["expected"]),
-            },
-        })
+        results.append(
+            {
+                "id": item["id"],
+                "prompt": item["prompt"],
+                "base": {
+                    "response": base,
+                    "score": _score(base, item["expected"]),
+                },
+                "lora": {
+                    "response": routed,
+                    "score": _score(routed, item["expected"]),
+                },
+            }
+        )
     base_passed = sum(1 for item in results if item["base"]["score"]["passed"])
     lora_passed = sum(1 for item in results if item["lora"]["score"]["passed"])
     return {

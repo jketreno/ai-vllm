@@ -1,0 +1,20 @@
+[tool.pytest.ini_options]
+# Each service directory under this monorepo is its own independent package
+# root (its tests import bare module names like `app.corpus`, `api`,
+# `image_ops`, `mlflow_tracking`, `prepare_models`, `exporter`) and several
+# services reuse the same test/module basename (e.g. two `test_api.py`
+# files, two `app` packages). --import-mode=importlib gives every collected
+# test file a unique fully-qualified module name derived from its path
+# instead of colliding on top-level names, so no per-directory conftest.py
+# or __init__.py shimming is needed to keep them apart.
+addopts = "--import-mode=importlib"
+pythonpath = [
+    ".",
+    "clare2/pipeline",
+    "clare2/setup",
+    "clare2/train",
+    "image-api",
+    "qwen-image-edit",
+    "spam-classifier",
+    "monitoring/model-memory",
+]

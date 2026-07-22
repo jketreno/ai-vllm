@@ -62,7 +62,10 @@ def text_hash(value: str) -> str:
 
 
 def memory_snapshot(stage: str) -> dict[str, Any]:
-    snapshot: dict[str, Any] = {"stage": stage, "timestamp": datetime.now(tz=timezone.utc).isoformat()}
+    snapshot: dict[str, Any] = {
+        "stage": stage,
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+    }
     try:
         meminfo = pathlib.Path("/proc/meminfo").read_text(encoding="utf-8")
         for line in meminfo.splitlines():
@@ -93,7 +96,9 @@ def inference_base_from_env(
     train_base: dict[str, Any],
 ) -> dict[str, Any]:
     inference_model = os.environ.get("CLARE2_INFERENCE_MODEL", train_base["model_id"])
-    inference_revision = os.environ.get("CLARE2_INFERENCE_REVISION", train_base["revision"])
+    inference_revision = os.environ.get(
+        "CLARE2_INFERENCE_REVISION", train_base["revision"]
+    )
     return {
         "model_id": inference_model,
         "revision": inference_revision,
@@ -101,9 +106,15 @@ def inference_base_from_env(
             "CLARE2_BASE_ARCHITECTURE",
             train_base.get("architecture", "unknown"),
         ),
-        "config_hash": os.environ.get("CLARE2_BASE_CONFIG_HASH", train_base["config_hash"]),
-        "tokenizer_hash": os.environ.get("CLARE2_TOKENIZER_HASH", train_base["tokenizer_hash"]),
-        "inference_quantization": os.environ.get("CLARE2_INFERENCE_QUANTIZATION", "fp8"),
+        "config_hash": os.environ.get(
+            "CLARE2_BASE_CONFIG_HASH", train_base["config_hash"]
+        ),
+        "tokenizer_hash": os.environ.get(
+            "CLARE2_TOKENIZER_HASH", train_base["tokenizer_hash"]
+        ),
+        "inference_quantization": os.environ.get(
+            "CLARE2_INFERENCE_QUANTIZATION", "fp8"
+        ),
     }
 
 
@@ -134,7 +145,9 @@ def _process_line(
     prompt_messages = [{"role": "user", "content": prompt}]
     completion_messages = [{"role": "assistant", "content": completion}]
     full_text = tokenizer.apply_chat_template(
-        prompt_messages + completion_messages, tokenize=False, add_generation_prompt=False
+        prompt_messages + completion_messages,
+        tokenize=False,
+        add_generation_prompt=False,
     )
     tokens = tokenizer(full_text, add_special_tokens=False)["input_ids"]
     if not tokens:
@@ -237,8 +250,12 @@ def main() -> None:
         training_mode = effective_training_mode(model, args.base_model_id)
         text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         config_hash = text_hash(model.config.to_json_string())
-        tokenizer_hash = text_hash(json.dumps(text_tokenizer.init_kwargs, sort_keys=True, default=str))
-        architecture = getattr(model.config, "architectures", None) or [model.config.__class__.__name__]
+        tokenizer_hash = text_hash(
+            json.dumps(text_tokenizer.init_kwargs, sort_keys=True, default=str)
+        )
+        architecture = getattr(model.config, "architectures", None) or [
+            model.config.__class__.__name__
+        ]
         train_base = {
             "model_id": args.base_model_id,
             "revision": args.revision,

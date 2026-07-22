@@ -47,10 +47,13 @@ def compare(
     baseline = _summary(baseline_results)
     categories = set(candidate["categories"]) | set(baseline["categories"])
     no_regression = all(
-        candidate["categories"].get(category, 0) >= baseline["categories"].get(category, 0)
+        candidate["categories"].get(category, 0)
+        >= baseline["categories"].get(category, 0)
         for category in categories
     )
-    mandatory_pass = all(item["passed"] for item in candidate_results if item["mandatory"])
+    mandatory_pass = all(
+        item["passed"] for item in candidate_results if item["mandatory"]
+    )
     approved = mandatory_pass and candidate["pass_rate"] >= 0.90 and no_regression
     for category, score in candidate["categories"].items():
         metrics.evaluation_score.labels(
