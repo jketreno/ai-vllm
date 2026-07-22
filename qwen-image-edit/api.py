@@ -30,12 +30,11 @@ import torch
 from diffusers import (
     AutoModel,
     FlowMatchEulerDiscreteScheduler,
-    QwenImageEditInpaintPipeline,
     QwenImageEditPlusPipeline,
     TorchAoConfig,
 )
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageFilter, UnidentifiedImageError
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from torchao.quantization import Float8WeightOnlyConfig
 from transformers import Qwen2_5_VLForConditionalGeneration
@@ -69,15 +68,6 @@ REQUIRED_GIB = {
         os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_TEXT_ENCODER_GIB", "15")
     ),
     "pipeline": float(os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_PIPELINE_GIB", "2")),
-    # QwenImageEditInpaintPipeline is constructed directly from the edit pipeline's
-    # already-loaded scheduler/vae/text_encoder/tokenizer/processor/transformer by
-    # reference rather than loading a second copy -- the only new allocation is the
-    # small Python wrapper object itself. (Not built via DiffusionPipeline.from_pipe():
-    # it unconditionally ends with new_pipeline.to(dtype=...), which torchao's
-    # fp8-quantized transformer rejects.)
-    "inpaint_pipeline": float(
-        os.environ.get("QWEN_IMAGE_EDIT_REQUIRED_INPAINT_PIPELINE_GIB", "0.5")
-    ),
 }
 SAFETY_MARGIN_GIB = float(os.environ.get("QWEN_IMAGE_EDIT_SAFETY_MARGIN_GIB", "4"))
 INFERENCE_REQUIRED_GIB = float(
@@ -95,6 +85,10 @@ log = logging.getLogger("qwen_image_edit")
 PROGRESS_RETENTION_SECONDS = int(
     os.environ.get("QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS", "86400")
 )
+
+MARKER_COLOR = (255, 0, 255)
+MARKER_HALO_COLOR = (255, 255, 255)
+MARKER_NEGATIVE_PROMPT = "editing annotation, selection border, contour marker"
 
 LATENCY_BUCKETS = (10, 30, 60, 120, 300, 600, 900, 1200, 1800)
 
@@ -165,7 +159,6 @@ MAX_ATTACHMENT_BYTES = int(
 
 app = FastAPI(title="ai-vllm Qwen-Image-Edit API", version="1.0.0")
 _pipeline = None
-_inpaint_pipeline = None
 _pipeline_lock = threading.Lock()
 
 # Per-request diffusion-step progress, keyed by the RPC manifest's request_id (see
@@ -445,39 +438,20 @@ def _load_pipeline():
         status.note("lightning_weight", LIGHTNING_WEIGHT)
     status.record_done("pipeline", time.time() - t0)
 
-    status.gate("inpaint_pipeline")
-    t0 = time.time()
-    # Constructed directly (not via from_pipe()) sharing this pipeline's already-loaded
-    # transformer/text_encoder/vae/scheduler by reference -- no second copy of the
-    # weights is allocated. from_pipe() always ends by casting the new pipeline to a
-    # dtype (torch.float32 unless overridden), which torchao's fp8-quantized
-    # transformer rejects outright (ValueError: "Casting a quantized model to a new
-    # dtype is unsupported"), so from_pipe() can never succeed here.
-    inpaint_pipeline = QwenImageEditInpaintPipeline(
-        scheduler=pipeline.scheduler,
-        vae=pipeline.vae,
-        text_encoder=pipeline.text_encoder,
-        tokenizer=pipeline.tokenizer,
-        processor=pipeline.processor,
-        transformer=pipeline.transformer,
-    )
-    status.record_done("inpaint_pipeline", time.time() - t0)
-
     status._write({"state": "ready", "profile": PROFILE})
-    return pipeline, inpaint_pipeline
+    return pipeline
 
 
 @app.on_event("startup")
 def startup():
-    global _pipeline, _inpaint_pipeline
+    global _pipeline
     start_http_server(METRICS_PORT)
     try:
-        _pipeline, _inpaint_pipeline = _load_pipeline()
+        _pipeline = _load_pipeline()
         update_cuda_metrics()
     except LoadAborted as error:
-        # Leave _pipeline/_inpaint_pipeline as None; /health reports not-ready and the
-        # inference endpoints return 503. The process stays up so the status file and
-        # logs remain inspectable rather than the container silently restart-looping.
+        # Leave _pipeline as None; /health reports not-ready and inference endpoints
+        # return 503. The process stays up so status and logs remain inspectable.
         print(f"qwen-image-edit: {error}", flush=True)
 
 
@@ -501,8 +475,7 @@ def _decode_mask(mask_data_uri: str) -> Image.Image:
     """Decode a mask given as a `data:image/png;base64,...` string -- the exact
     format SAM3's /v1/segment endpoint emits for each segment (see sam3/api.py
     `_mask_to_data_uri`), so a SAM3 mask can be forwarded here unmodified. White
-    (255) marks the region to repaint; black (0) is preserved, matching
-    QwenImageEditInpaintPipeline's mask_image convention."""
+    (255) marks the region to replace during compositing; black (0) is preserved."""
     match = _DATA_URI_RE.match(mask_data_uri.strip())
     if not match:
         raise HTTPException(400, "mask must be a data:image/...;base64,... URI")
@@ -544,11 +517,60 @@ def _inpaint_region(
     return image.crop(box), mask.crop(box), box
 
 
+def _visual_marker_width(image: Image.Image) -> int:
+    """Return a contour width that survives Qwen's vision-input downscaling."""
+    return max(6, min(16, round(min(image.size) * 0.008)))
+
+
+def _annotate_inpaint_region(
+    image: Image.Image, mask: Image.Image, mask_label: str = ""
+) -> tuple[Image.Image, str, str]:
+    """Mark the selected object for prompt-driven Qwen Edit Plus inference.
+
+    The colored bands are outside the compositing mask, so even a model that
+    reproduces the temporary annotation cannot leak it directly into the result.
+    """
+    mask = mask.convert("L").point(lambda value: 255 if value else 0)
+    marker_width = _visual_marker_width(image)
+    inner = mask.filter(ImageFilter.MaxFilter(marker_width * 2 + 1))
+    outer = mask.filter(ImageFilter.MaxFilter(marker_width * 4 + 1))
+    marker_band = ImageChops.subtract(inner, mask)
+    halo_band = ImageChops.subtract(outer, inner)
+
+    annotated = Image.composite(
+        Image.new("RGB", image.size, MARKER_HALO_COLOR), image.convert("RGB"), halo_band
+    )
+    annotated = Image.composite(
+        Image.new("RGB", image.size, MARKER_COLOR), annotated, marker_band
+    )
+    label = mask_label.strip()[:200]
+    label_context = (
+        f'The object enclosed by the contour is labeled "{label}". '
+        if label
+        else ""
+    )
+    prompt_prefix = (
+        "The bright magenta contour with a white halo is a temporary editing "
+        "marker and the outer limit of the permitted edit. "
+        f"{label_context}Replace the labeled object enclosed by that contour according "
+        "to the user's instruction. Do not reproduce the contour or halo, and do "
+        "not change anything beyond it. User edit instruction: "
+    )
+    negative_addition = _append_negative_prompt(label, MARKER_NEGATIVE_PROMPT)
+    return annotated, prompt_prefix, negative_addition
+
+
+def _append_negative_prompt(negative_prompt: str, addition: str) -> str:
+    parts = [value.strip() for value in (negative_prompt, addition) if value.strip()]
+    return ", ".join(parts)
+
+
 def _composite_generated_region(
     source: Image.Image,
     source_mask: Image.Image,
     generated: Image.Image,
     region_box: tuple[int, int, int, int],
+    strength: float = 1.0,
 ) -> Image.Image:
     """Return the source-sized canvas with only masked pixels replaced."""
     left, top, right, bottom = region_box
@@ -558,6 +580,8 @@ def _composite_generated_region(
         generated = generated.resize(region_size, Image.Resampling.LANCZOS)
     source_region = source.crop(region_box)
     mask_region = source_mask.crop(region_box)
+    if strength < 1.0:
+        mask_region = mask_region.point(lambda value: round(value * strength))
     composited_region = Image.composite(generated, source_region, mask_region)
     result = source.copy()
     result.paste(composited_region, (left, top))
@@ -568,6 +592,27 @@ def _clamp_steps(num_inference_steps: int) -> int:
     return max(1, min(num_inference_steps, 100))
 
 
+def _edit_plus_image(
+    image,
+    prompt,
+    negative_prompt,
+    num_inference_steps,
+    true_cfg_scale,
+    generator,
+    callback,
+):
+    return _pipeline(
+        image=image,
+        prompt=prompt,
+        negative_prompt=negative_prompt or None,
+        num_inference_steps=num_inference_steps,
+        true_cfg_scale=true_cfg_scale,
+        guidance_scale=1.0,
+        generator=generator,
+        **({"callback_on_step_end": callback} if callback else {}),
+    ).images[0]
+
+
 @app.get("/health/live")
 def live():
     return {"status": "ok"}
@@ -575,12 +620,12 @@ def live():
 
 @app.get("/health/ready")
 def ready():
-    if _pipeline is None or _inpaint_pipeline is None:
+    if _pipeline is None:
         raise HTTPException(503, "model is still loading")
     return {
         "status": "ready",
         "model_loaded": _pipeline is not None,
-        "inpaint_model_loaded": _inpaint_pipeline is not None,
+        "inpaint_model_loaded": _pipeline is not None,
     }
 
 
@@ -662,6 +707,7 @@ async def inpaint(
     file: UploadFile = File(...),
     mask: str = Form(...),
     prompt: str = Form(...),
+    mask_label: str = Form(""),
     negative_prompt: str = Form(""),
     strength: float = Form(1.0),
     num_inference_steps: int = Form(20),
@@ -674,11 +720,10 @@ async def inpaint(
     region) per `prompt`, leaving the rest of the image untouched. `mask` is a
     `data:image/png;base64,...` string -- SAM3's /v1/segment mask field can be
     passed through as-is. `strength` (0-1) controls how strongly the masked region
-    is regenerated; 1.0 fully replaces it, matching Alibaba's "add/remove/move
-    objects" edit but constrained to a specific region instead of the whole image.
+    is blended into the masked region after generation; 1.0 fully replaces it.
     `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
     correlation key for GET /v1/invoke/{request_id}/progress step polling."""
-    if _pipeline is None or _inpaint_pipeline is None:
+    if _pipeline is None:
         raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
     mask_image = _decode_mask(mask)
@@ -693,6 +738,13 @@ async def inpaint(
     inference_image, inference_mask, region_box = _inpaint_region(
         image, mask_image, padding_mask_crop
     )
+    conditioning_image, prompt_prefix, marker_negative = _annotate_inpaint_region(
+        inference_image, inference_mask, mask_label
+    )
+    conditioned_prompt = f"{prompt_prefix}{prompt.strip()}"
+    conditioned_negative_prompt = _append_negative_prompt(
+        negative_prompt, marker_negative
+    )
     _gate_inference("inpaint", request_id, num_inference_steps)
     _observe_dimensions("inpaint", image)
 
@@ -704,20 +756,22 @@ async def inpaint(
     def _run():
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
             try:
-                out = _inpaint_pipeline(
-                    image=inference_image,
-                    mask_image=inference_mask,
-                    prompt=prompt,
-                    negative_prompt=negative_prompt or None,
-                    strength=strength,
-                    num_inference_steps=num_inference_steps,
-                    true_cfg_scale=true_cfg_scale,
-                    padding_mask_crop=None,
-                    generator=generator,
-                    **({"callback_on_step_end": callback} if callback else {}),
-                ).images[0]
+                # Qwen-Image-Edit-2511 is prompt-driven rather than mask-conditioned.
+                # Give it a temporary visual selection marker, then enforce the
+                # original SAM mask during compositing below.
+                out = _edit_plus_image(
+                    conditioning_image,
+                    conditioned_prompt,
+                    conditioned_negative_prompt,
+                    num_inference_steps,
+                    true_cfg_scale,
+                    generator,
+                    callback,
+                )
                 _set_progress_stage(request_id, "compositing")
-                result = _composite_generated_region(image, mask_image, out, region_box)
+                result = _composite_generated_region(
+                    image, mask_image, out, region_box, strength
+                )
                 update_cuda_metrics()
                 INFERENCE_REQUESTS.labels("inpaint", "success", PROFILE).inc()
                 _finish_progress(request_id, "succeeded")
@@ -734,6 +788,9 @@ async def inpaint(
     response["pre_composite_image_png_base64"] = _encode_image_response(pre_composite)[
         "image_png_base64"
     ]
+    response["conditioning_image_png_base64"] = _encode_image_response(
+        conditioning_image
+    )["image_png_base64"]
     return response
 
 
@@ -787,11 +844,11 @@ async def outpaint(
 ):
     """Expand the canvas: place the source image at `anchor` within a new
     `target_width` x `target_height` canvas and fill the newly exposed border via
-    masked inpainting (strength fixed at 1.0, since the border starts blank).
+    prompt-driven editing followed by mask compositing.
     `prompt` should describe the extended scene (e.g. "extend the beach and sky").
     `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
     correlation key for GET /v1/invoke/{request_id}/progress step polling."""
-    if _pipeline is None or _inpaint_pipeline is None:
+    if _pipeline is None:
         raise HTTPException(503, "model is not loaded")
     if target_width > MAX_CANVAS_DIMENSION or target_height > MAX_CANVAS_DIMENSION:
         raise HTTPException(
@@ -816,17 +873,15 @@ async def outpaint(
     def _run():
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
             try:
-                out = _inpaint_pipeline(
-                    image=canvas,
-                    mask_image=mask_image,
-                    prompt=prompt,
-                    negative_prompt=negative_prompt or None,
-                    strength=1.0,
-                    num_inference_steps=num_inference_steps,
-                    true_cfg_scale=true_cfg_scale,
-                    generator=generator,
-                    **({"callback_on_step_end": callback} if callback else {}),
-                ).images[0]
+                out = _edit_plus_image(
+                    canvas,
+                    prompt,
+                    negative_prompt,
+                    num_inference_steps,
+                    true_cfg_scale,
+                    generator,
+                    callback,
+                )
                 _set_progress_stage(request_id, "compositing")
                 result = _composite_generated_region(
                     canvas, mask_image, out, (0, 0, canvas.width, canvas.height)
@@ -974,6 +1029,15 @@ def _rpc_result(request, result, started):
                 "data_base64": pre_composite,
             }
         )
+    conditioning = result.get("conditioning_image_png_base64")
+    if conditioning:
+        attachments.append(
+            {
+                "name": "conditioning_image",
+                "media_type": "image/png",
+                "data_base64": conditioning,
+            }
+        )
     return {
         "protocol_version": PROTOCOL_VERSION,
         "request_id": request.get("request_id", str(uuid.uuid4())),
@@ -1035,6 +1099,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
             file=image,
             mask=f"data:image/png;base64,{mask_payload}",
             prompt=prompt,
+            mask_label=str(parameters.get("mask_label", "")),
             negative_prompt=str(parameters.get("negative_prompt", "")),
             strength=float(parameters.get("strength", 1.0)),
             num_inference_steps=int(parameters.get("num_inference_steps", 20)),

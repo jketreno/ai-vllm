@@ -279,6 +279,11 @@ async def invoke_edit(
         response["pre_composite_image_png_base64"] = image_response(pre_composite)[
             "image_png_base64"
         ]
+    conditioning = optional_rpc_image(result, "conditioning_image")
+    if conditioning is not None:
+        response["conditioning_image_png_base64"] = image_response(conditioning)[
+            "image_png_base64"
+        ]
     return response
 
 
@@ -324,6 +329,7 @@ async def inpaint(
     file: UploadFile = File(...),
     mask: str = Form(...),
     prompt: str = Form(...),
+    mask_label: str = Form(""),
     negative_prompt: str = Form(""),
     strength: float = Form(1.0),
     num_inference_steps: int = Form(20),
@@ -339,6 +345,7 @@ async def inpaint(
         num_inference_steps,
         true_cfg_scale,
         seed,
+        mask_label=mask_label,
         strength=strength,
         padding_mask_crop=padding_mask_crop,
     )

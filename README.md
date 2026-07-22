@@ -275,18 +275,14 @@ official Qwen checkpoint and is deliberately not enabled by default.
 Alibaba's hosted Qwen-Image-Edit API (see
 [the Model Studio docs](https://www.alibabacloud.com/help/en/model-studio/qwen-image-edit-api))
 is purely prompt-driven — it has no mask, inpaint, outpaint, crop, or rotate
-parameter. This service exposes the same prompt-driven editing plus additional
-endpoints built on `diffusers`' `QwenImageEditInpaintPipeline`, which *does*
-support a mask, so mask-guided workflows (e.g. `sam3`-selected regions from
-`auto-sam`) don't need to be implemented as bespoke composition logic in every
-client. `QwenImageEditInpaintPipeline` is constructed once at startup directly
-from the edit pipeline's already-loaded scheduler/vae/text_encoder/tokenizer/
-processor/transformer, which shares them by reference rather than loading a
-second copy. Load status records it as a fourth section (`inpaint_pipeline`).
-(Not built via `DiffusionPipeline.from_pipe()`: it
-unconditionally ends with a `.to(dtype=...)` cast, which torchao's
-fp8-quantized transformer rejects with `ValueError: Casting a quantized model
-to a new dtype is unsupported`.)
+parameter. This service adds mask-guided endpoints around the supported
+`QwenImageEditPlusPipeline`: it draws a temporary high-contrast contour around
+the SAM-selected object on a padded crop, tells Qwen to apply the requested edit
+inside that marker, then composites only masked pixels back onto the untouched
+source. The annotated conditioning crop and raw pre-composite generation are
+returned as diagnostic artifacts. This preserves exact source pixels outside the
+mask without pairing the 2511 Edit Plus checkpoint with the older
+`QwenImageEditInpaintPipeline` intended for `Qwen/Qwen-Image-Edit`.
 
 - `POST /v1/images/edit` — whole-image, prompt-driven edit (text editing, object
   add/remove/move, pose changes, style transfer, detail enhancement). Accepts

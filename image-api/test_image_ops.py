@@ -51,6 +51,14 @@ class RpcImageArtifactTests(unittest.TestCase):
             optional_rpc_image({"attachments": []}, "pre_composite_image")
         )
 
+    def test_returns_conditioning_image_artifact(self):
+        result = {"attachments": [_attachment("conditioning_image", "magenta")]}
+
+        image = optional_rpc_image(result, "conditioning_image")
+
+        self.assertIsNotNone(image)
+        self.assertEqual(image.getpixel((0, 0)), (255, 0, 255))
+
 
 if __name__ == "__main__":
     unittest.main()

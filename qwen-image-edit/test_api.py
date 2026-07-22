@@ -243,6 +243,26 @@ class RpcResultTests(unittest.TestCase):
             attachments["pre_composite_image"]["data_base64"], pre_composite
         )
 
+    def test_includes_conditioning_image_when_worker_returns_one(self):
+        final = base64.b64encode(b"final").decode("ascii")
+        conditioning = base64.b64encode(b"conditioning").decode("ascii")
+
+        response = api._rpc_result(
+            {"request_id": "request-id"},
+            {
+                "width": 4,
+                "height": 4,
+                "image_png_base64": final,
+                "conditioning_image_png_base64": conditioning,
+            },
+            api.time.monotonic(),
+        )
+
+        attachments = {item["name"]: item for item in response["attachments"]}
+        self.assertEqual(
+            attachments["conditioning_image"]["data_base64"], conditioning
+        )
+
 
 class InpaintCompositionTests(unittest.TestCase):
     def test_portrait_crop_keeps_image_and_mask_dimensions_aligned(self):
@@ -271,6 +291,46 @@ class InpaintCompositionTests(unittest.TestCase):
             result_pixels[mask_pixels == 0], source_pixels[mask_pixels == 0]
         )
         self.assertEqual(result.size, source.size)
+
+    def test_strength_blends_generated_pixels_inside_mask(self):
+        source = _make_image(4, 4, color=(0, 0, 0))
+        mask = Image.new("L", source.size, 255)
+        generated = _make_image(4, 4, color=(200, 100, 50))
+
+        result = api._composite_generated_region(
+            source, mask, generated, (0, 0, 4, 4), strength=0.5
+        )
+
+        self.assertEqual(result.getpixel((0, 0)), (100, 50, 25))
+
+    def test_visual_marker_surrounds_mask_without_changing_selected_pixels(self):
+        source = _make_image(100, 100, color=(10, 20, 30))
+        mask = Image.new("L", source.size, 0)
+        mask.paste(255, (30, 30, 70, 70))
+
+        annotated, prompt_prefix, negative_addition = api._annotate_inpaint_region(
+            source, mask, "Christmas tree"
+        )
+
+        self.assertEqual(annotated.getpixel((50, 50)), source.getpixel((50, 50)))
+        self.assertEqual(annotated.getpixel((28, 50)), api.MARKER_COLOR)
+        self.assertEqual(annotated.getpixel((20, 50)), api.MARKER_HALO_COLOR)
+        self.assertEqual(annotated.getpixel((0, 0)), source.getpixel((0, 0)))
+        self.assertIn("magenta contour", prompt_prefix)
+        self.assertIn('labeled "Christmas tree"', prompt_prefix)
+        self.assertIn("Christmas tree", negative_addition)
+        self.assertIn("selection border", negative_addition)
+
+    def test_marker_width_scales_and_is_bounded(self):
+        self.assertEqual(api._visual_marker_width(_make_image(100, 100)), 6)
+        self.assertEqual(api._visual_marker_width(_make_image(1000, 800)), 6)
+        self.assertEqual(api._visual_marker_width(_make_image(4000, 4000)), 16)
+
+    def test_marker_negative_prompt_preserves_user_terms(self):
+        result = api._append_negative_prompt("tree", api.MARKER_NEGATIVE_PROMPT)
+
+        self.assertIn("tree", result)
+        self.assertIn("contour marker", result)
 
     def test_empty_mask_uses_full_canvas_without_changing_dimensions(self):
         source = _make_image(1204, 1599)
@@ -303,6 +363,37 @@ class InpaintCompositionTests(unittest.TestCase):
             _, _, box = api._inpaint_region(source, mask, 64)
             result = api._composite_generated_region(source, mask, generated, box)
             self.assertEqual(result.size, source.size)
+
+
+class InpaintPipelineTests(unittest.TestCase):
+    def test_uses_edit_plus_pipeline_without_legacy_mask_arguments(self):
+        class RecordingPipeline:
+            def __init__(self):
+                self.kwargs = None
+
+            def __call__(self, **kwargs):
+                self.kwargs = kwargs
+                return types.SimpleNamespace(
+                    images=[_make_image(8, 8, color=(200, 100, 50))]
+                )
+
+        pipeline = RecordingPipeline()
+        with mock.patch.object(api, "_pipeline", pipeline):
+            api._edit_plus_image(
+                _make_image(8, 8),
+                "replace with fireworks",
+                " ",
+                2,
+                4.0,
+                api.torch.Generator(device="cuda").manual_seed(0),
+                None,
+            )
+
+        self.assertEqual(pipeline.kwargs["num_inference_steps"], 2)
+        self.assertEqual(pipeline.kwargs["true_cfg_scale"], 4.0)
+        self.assertEqual(pipeline.kwargs["guidance_scale"], 1.0)
+        self.assertNotIn("mask_image", pipeline.kwargs)
+        self.assertNotIn("strength", pipeline.kwargs)
 
 
 class InvokeProgressTests(unittest.TestCase):
