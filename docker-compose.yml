@@ -168,7 +168,7 @@ services:
       - --tensor-parallel-size
       - "1"
       - --gpu-memory-utilization
-      - "${CLARE2_GPU_MEMORY_UTILIZATION:-0.85}"
+      - "${CLARE2_GPU_MEMORY_UTILIZATION:-0.45}"
       - --max-model-len
       - "${CLARE2_MAX_MODEL_LEN:-131072}"
       - --kv-cache-dtype
@@ -271,7 +271,7 @@ services:
     environment:
       HF_TOKEN_FILE: /run/secrets/huggingface_token
       QWEN_IMAGE_EDIT_PROFILE: ${QWEN_IMAGE_EDIT_PROFILE:-base}
-      QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB: ${QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB:-16}
+      QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB: ${QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB:-42}
       QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS: ${QWEN_IMAGE_EDIT_PROGRESS_RETENTION_SECONDS:-86400}
       QWEN_IMAGE_EDIT_LIGHTNING_REPO: ${QWEN_IMAGE_EDIT_LIGHTNING_REPO:-lightx2v/Qwen-Image-Edit-2511-Lightning}
       QWEN_IMAGE_EDIT_LIGHTNING_WEIGHT: ${QWEN_IMAGE_EDIT_LIGHTNING_WEIGHT:-Qwen-Image-Edit-2511-Lightning-4steps-V1.0-fp32.safetensors}
