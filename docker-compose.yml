@@ -137,7 +137,7 @@ services:
     networks: [control, operator]
 
   vllm-engine:
-    image: nvcr.io/nvidia/vllm:26.04-py3
+    image: nvcr.io/nvidia/vllm:26.06-py3
     container_name: vllm-engine
     restart: unless-stopped
     gpus: all
