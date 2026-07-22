@@ -1,0 +1,55 @@
+name: ai-vllm-code-indexing
+
+services:
+  ollama:
+    profiles: [code-indexing]
+    image: ollama/ollama:${OLLAMA_CODE_INDEXING_TAG:-latest}
+    restart: unless-stopped
+    devices:
+      - ${OLLAMA_CODE_INDEXING_INTEL_DEVICE:-/dev/dri/renderD128}:${OLLAMA_CODE_INDEXING_INTEL_DEVICE:-/dev/dri/renderD128}
+    group_add:
+      - ${OLLAMA_CODE_INDEXING_INTEL_DEVICE_GID:-992}
+    environment:
+      OLLAMA_KEEP_ALIVE: -1
+      OLLAMA_MAX_LOADED_MODELS: 1
+    volumes:
+      - ollama_code_indexing_data:/root/.ollama
+    ports:
+      - "${OLLAMA_CODE_INDEXING_BIND_ADDRESS:-0.0.0.0}:${OLLAMA_CODE_INDEXING_PORT:-11434}:11434"
+    networks: [frontend]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/11434 && printf 'GET /api/tags HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200 OK'"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  qdrant:
+    profiles: [code-indexing]
+    image: qdrant/qdrant:v1.13.6
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_CODE_INDEXING_PORT:-6333}:6333"
+      - "${QDRANT_CODE_INDEXING_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_code_indexing_storage:/qdrant/storage
+    networks: [frontend]
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200 OK'"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+networks:
+  frontend:
+    name: ai-vllm_frontend
+    external: true
+
+volumes:
+  ollama_code_indexing_data: {}
+  qdrant_code_indexing_storage: {}
