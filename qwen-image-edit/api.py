@@ -262,12 +262,19 @@ def _encode_step_preview(image: Image.Image) -> bytes:
 def _preview_renderer(
     inference_image: Image.Image,
     compositor=None,
+    step_aware: bool = False,
 ):
     width, height = _pipeline_dimensions(inference_image)
 
-    def render(pipe, packed_latents) -> bytes:
+    def render(pipe, packed_latents, step=None, total_steps=None) -> bytes:
         generated = _decode_step_preview(pipe, packed_latents, width, height)
-        return _encode_step_preview(compositor(generated) if compositor else generated)
+        if compositor is None:
+            composited = generated
+        elif step_aware:
+            composited = compositor(generated, step, total_steps)
+        else:
+            composited = compositor(generated)
+        return _encode_step_preview(composited)
 
     return render
 
@@ -299,7 +306,12 @@ def _make_step_callback(
         preview_version = None
         if preview_renderer is not None and "latents" in callback_kwargs:
             try:
-                preview = preview_renderer(pipe, callback_kwargs["latents"])
+                preview = preview_renderer(
+                    pipe,
+                    callback_kwargs["latents"],
+                    step=completed_steps,
+                    total_steps=total_steps,
+                )
                 preview_version = completed_steps
             except Exception:  # noqa: BLE001 -- preview failure must not fail inference
                 log.exception(
@@ -619,27 +631,6 @@ def _encode_image_response(result: Image.Image) -> dict:
     }
 
 
-def _inpaint_region(
-    image: Image.Image, mask: Image.Image, padding: int | None
-) -> tuple[Image.Image, Image.Image, tuple[int, int, int, int]]:
-    """Crop image and mask together, avoiding Diffusers' mismatched overlay path."""
-    full_box = (0, 0, image.width, image.height)
-    if padding is None:
-        return image, mask, full_box
-    bbox = mask.getbbox()
-    if bbox is None:
-        return image, mask, full_box
-    pad = max(0, int(padding))
-    left, top, right, bottom = bbox
-    box = (
-        max(0, left - pad),
-        max(0, top - pad),
-        min(image.width, right + pad),
-        min(image.height, bottom + pad),
-    )
-    return image.crop(box), mask.crop(box), box
-
-
 def _visual_marker_width(image: Image.Image) -> int:
     """Return a contour width that survives Qwen's vision-input downscaling."""
     return max(6, min(16, round(min(image.size) * 0.008)))
@@ -665,6 +656,23 @@ def _annotate_inpaint_region(image: Image.Image, mask: Image.Image) -> Image.Ima
         Image.new("RGB", image.size, MARKER_COLOR), annotated, marker_band
     )
     return annotated
+
+
+def _fade_preview(
+    original: Image.Image,
+    generated: Image.Image,
+    step: int | None,
+    total_steps: int | None,
+) -> Image.Image:
+    """Cross-fade the original image into the live-decoded preview frame as
+    denoising progresses, so the preview starts close to the source and
+    converges to the generated frame by the final step."""
+    alpha = 1.0 if not total_steps else max(0.0, min(1.0, (step or 0) / total_steps))
+    original = original.convert("RGB")
+    generated = generated.convert("RGB")
+    if generated.size != original.size:
+        generated = generated.resize(original.size, Image.Resampling.LANCZOS)
+    return Image.blend(original, generated, alpha)
 
 
 def _composite_generated_region(
@@ -826,13 +834,14 @@ async def inpaint(
     padding_mask_crop: int | None = Form(None),
     request_id: str | None = None,
 ):
-    """Mask-guided region edit: repaint only the masked area (e.g. a SAM-selected
-    region) per `prompt`, leaving the rest of the image untouched. `mask` is a
-    `data:image/png;base64,...` string -- SAM3's /v1/segment mask field can be
-    passed through as-is. `strength` (0-1) controls how strongly the masked region
-    is blended into the masked region after generation; 1.0 fully replaces it.
-    `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
-    correlation key for GET /v1/invoke/{request_id}/progress step polling."""
+    """Mask-guided region edit: repaint the masked area (e.g. a SAM-selected
+    region) per `prompt`. `mask` is a `data:image/png;base64,...` string --
+    SAM3's /v1/segment mask field can be passed through as-is. The full frame
+    is sent to the model and its full-frame output is returned unmodified, so
+    `strength` and `padding_mask_crop` are accepted for backward compatibility
+    but have no effect. `request_id` (if given) is the /v1/invoke manifest's
+    request_id, used as the correlation key for
+    GET /v1/invoke/{request_id}/progress step polling."""
     if _pipeline is None:
         raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
@@ -844,11 +853,7 @@ async def inpaint(
     num_inference_steps, true_cfg_scale = _generation_settings(
         num_inference_steps, true_cfg_scale
     )
-    strength = max(0.0, min(strength, 1.0))
-    inference_image, inference_mask, region_box = _inpaint_region(
-        image, mask_image, padding_mask_crop
-    )
-    conditioning_image = _annotate_inpaint_region(inference_image, inference_mask)
+    conditioning_image = _annotate_inpaint_region(image, mask_image)
     _gate_inference("inpaint", request_id, num_inference_steps)
     _observe_dimensions("inpaint", image)
 
@@ -858,10 +863,11 @@ async def inpaint(
             request_id,
             num_inference_steps,
             _preview_renderer(
-                conditioning_image,
-                lambda generated: _composite_generated_region(
-                    image, mask_image, generated, region_box, strength
+                image,
+                lambda generated, step, total_steps: _fade_preview(
+                    image, generated, step, total_steps
                 ),
+                step_aware=True,
             ),
         )
         if request_id
@@ -872,9 +878,9 @@ async def inpaint(
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
             try:
                 # Qwen-Image-Edit-2511 is prompt-driven rather than mask-conditioned.
-                # Give it a temporary visual selection marker, then enforce the
-                # original SAM mask during compositing below.
-                out = _edit_plus_image(
+                # Give it a temporary visual selection marker; the model's full-frame
+                # output is returned as-is, with no cropping or compositing.
+                result = _edit_plus_image(
                     conditioning_image,
                     prompt.strip(),
                     negative_prompt,
@@ -883,14 +889,10 @@ async def inpaint(
                     generator,
                     callback,
                 )
-                _set_progress_stage(request_id, "compositing")
-                result = _composite_generated_region(
-                    image, mask_image, out, region_box, strength
-                )
                 update_cuda_metrics()
                 INFERENCE_REQUESTS.labels("inpaint", "success", PROFILE).inc()
                 _finish_progress(request_id, "succeeded")
-                return result, out
+                return result
             except InferenceCancelled:
                 _record_cancelled("inpaint", request_id)
                 raise
@@ -901,11 +903,8 @@ async def inpaint(
             finally:
                 _observe_post_inference_memory()
 
-    result, pre_composite = await asyncio.to_thread(_run)
+    result = await asyncio.to_thread(_run)
     response = _encode_image_response(result)
-    response["pre_composite_image_png_base64"] = _encode_image_response(pre_composite)[
-        "image_png_base64"
-    ]
     response["conditioning_image_png_base64"] = _encode_image_response(
         conditioning_image
     )["image_png_base64"]

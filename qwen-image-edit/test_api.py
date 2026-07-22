@@ -234,27 +234,6 @@ class ClampStepsTests(unittest.TestCase):
 
 
 class RpcResultTests(unittest.TestCase):
-    def test_includes_pre_composite_image_when_worker_returns_one(self):
-        final = base64.b64encode(b"final").decode("ascii")
-        pre_composite = base64.b64encode(b"generated").decode("ascii")
-
-        response = api._rpc_result(
-            {"request_id": "request-id"},
-            {
-                "width": 4,
-                "height": 4,
-                "image_png_base64": final,
-                "pre_composite_image_png_base64": pre_composite,
-            },
-            api.time.monotonic(),
-        )
-
-        attachments = {item["name"]: item for item in response["attachments"]}
-        self.assertEqual(attachments["image"]["data_base64"], final)
-        self.assertEqual(
-            attachments["pre_composite_image"]["data_base64"], pre_composite
-        )
-
     def test_includes_conditioning_image_when_worker_returns_one(self):
         final = base64.b64encode(b"final").decode("ascii")
         conditioning = base64.b64encode(b"conditioning").decode("ascii")
@@ -277,21 +256,11 @@ class RpcResultTests(unittest.TestCase):
 
 
 class InpaintCompositionTests(unittest.TestCase):
-    def test_portrait_crop_keeps_image_and_mask_dimensions_aligned(self):
-        source = _make_image(1204, 1599, color=(10, 20, 30))
-        mask = Image.new("L", source.size, 0)
-        mask.paste(255, (500, 700, 620, 840))
-
-        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 64)
-
-        self.assertEqual(cropped_image.size, cropped_mask.size)
-        self.assertEqual(box, (436, 636, 684, 904))
-
     def test_composite_preserves_every_unmasked_source_pixel(self):
         source = _make_image(80, 120, color=(10, 20, 30))
         mask = Image.new("L", source.size, 0)
         mask.paste(255, (20, 30, 40, 50))
-        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 8)
+        box = (0, 0, source.width, source.height)
         generated = _make_image(1024, 1024, color=(200, 100, 50))
 
         result = api._composite_generated_region(source, mask, generated, box)
@@ -332,37 +301,51 @@ class InpaintCompositionTests(unittest.TestCase):
         self.assertEqual(api._visual_marker_width(_make_image(1000, 800)), 6)
         self.assertEqual(api._visual_marker_width(_make_image(4000, 4000)), 16)
 
-    def test_empty_mask_uses_full_canvas_without_changing_dimensions(self):
-        source = _make_image(1204, 1599)
-        mask = Image.new("L", source.size, 0)
-
-        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 64)
-
-        self.assertEqual(cropped_image.size, source.size)
-        self.assertEqual(cropped_mask.size, source.size)
-        self.assertEqual(box, (0, 0, 1204, 1599))
-
-    def test_landscape_edge_touching_mask_is_clamped_to_canvas(self):
-        source = _make_image(1599, 1204)
-        mask = Image.new("L", source.size, 0)
-        mask.paste(255, (0, 100, 20, 300))
-
-        cropped_image, cropped_mask, box = api._inpaint_region(source, mask, 64)
-
-        self.assertEqual(box, (0, 36, 84, 364))
-        self.assertEqual(cropped_image.size, cropped_mask.size)
-
     def test_full_mask_and_multi_object_mask_preserve_source_dimensions(self):
         source = _make_image(320, 180, color=(1, 2, 3))
         generated = _make_image(512, 512, color=(9, 8, 7))
         masks = [Image.new("L", source.size, 255), Image.new("L", source.size, 0)]
         masks[1].paste(255, (10, 10, 30, 30))
         masks[1].paste(255, (250, 120, 300, 160))
+        box = (0, 0, source.width, source.height)
 
         for mask in masks:
-            _, _, box = api._inpaint_region(source, mask, 64)
             result = api._composite_generated_region(source, mask, generated, box)
             self.assertEqual(result.size, source.size)
+
+
+class FadePreviewTests(unittest.TestCase):
+    def test_early_step_stays_close_to_the_original(self):
+        original = _make_image(4, 4, color=(0, 0, 0))
+        generated = _make_image(4, 4, color=(200, 100, 50))
+
+        result = api._fade_preview(original, generated, step=1, total_steps=20)
+
+        self.assertEqual(result.getpixel((0, 0)), (10, 5, 2))
+
+    def test_final_step_equals_the_generated_frame(self):
+        original = _make_image(4, 4, color=(0, 0, 0))
+        generated = _make_image(4, 4, color=(200, 100, 50))
+
+        result = api._fade_preview(original, generated, step=20, total_steps=20)
+
+        self.assertEqual(result.getpixel((0, 0)), (200, 100, 50))
+
+    def test_missing_total_steps_returns_the_generated_frame(self):
+        original = _make_image(4, 4, color=(0, 0, 0))
+        generated = _make_image(4, 4, color=(200, 100, 50))
+
+        result = api._fade_preview(original, generated, step=None, total_steps=None)
+
+        self.assertEqual(result.getpixel((0, 0)), (200, 100, 50))
+
+    def test_resizes_generated_frame_to_match_original(self):
+        original = _make_image(8, 8, color=(0, 0, 0))
+        generated = _make_image(4, 4, color=(200, 100, 50))
+
+        result = api._fade_preview(original, generated, step=20, total_steps=20)
+
+        self.assertEqual(result.size, original.size)
 
 
 class InpaintPipelineTests(unittest.TestCase):
@@ -455,7 +438,7 @@ class InvokeProgressTests(unittest.TestCase):
     def test_step_callback_publishes_latest_preview_by_version(self):
         callback = api._make_step_callback(
             "req-preview", total_steps=2,
-            preview_renderer=lambda _pipe, _latents: b"jpeg-preview",
+            preview_renderer=lambda _pipe, _latents, **_kwargs: b"jpeg-preview",
         )
 
         callback(None, 0, None, {"latents": object()})
