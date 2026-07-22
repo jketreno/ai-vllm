@@ -63,6 +63,29 @@ async def policy_ready() -> bool:
         return False
 
 
+def service_statuses(
+    sam_ready: bool, edit_ready: bool, vision_ready: bool
+) -> dict[str, dict]:
+    """Describe dependency readiness in terms suitable for API consumers."""
+    return {
+        "sam3-worker": {
+            "name": "SAM3 worker",
+            "status": "ready" if sam_ready else "unavailable",
+            "capabilities": ["analyze", "segment"],
+        },
+        "qwen-image-edit-worker": {
+            "name": "Qwen image edit worker",
+            "status": "ready" if edit_ready else "unavailable",
+            "capabilities": ["edit", "inpaint", "outpaint"],
+        },
+        "vision-policy": {
+            "name": "Vision policy service",
+            "status": "ready" if vision_ready else "unavailable",
+            "capabilities": ["analyze"],
+        },
+    }
+
+
 async def read_image(file: UploadFile) -> tuple[bytes, str, Image.Image]:
     media_type = file.content_type or ""
     if media_type not in {"image/jpeg", "image/png", "image/webp"}:
@@ -291,6 +314,7 @@ async def ready():
     return {
         "status": "ready" if all(statuses.values()) else "degraded",
         "capabilities": statuses,
+        "services": service_statuses(sam_ready, edit_ready, vision_ready),
     }
 
 
@@ -310,6 +334,7 @@ async def capabilities():
             "outpaint": "ready" if edit_ready else "unavailable",
             "transform": "ready",
         },
+        "services": service_statuses(sam_ready, edit_ready, vision_ready),
         "image_edit": edit_profile,
     }
 

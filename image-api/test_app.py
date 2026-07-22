@@ -66,6 +66,45 @@ class ConceptsCaptionTests(unittest.IsolatedAsyncioTestCase):
                 await app.concepts(b"fake-image-bytes", "image/png")
 
 
+class CapabilityReadinessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capabilities_identify_the_unavailable_service(self):
+        with (
+            patch.object(app.sam, "ready", new_callable=AsyncMock, return_value=True),
+            patch.object(
+                app.editor, "ready", new_callable=AsyncMock, return_value=False
+            ),
+            patch.object(
+                app, "policy_ready", new_callable=AsyncMock, return_value=True
+            ),
+        ):
+            result = await app.capabilities()
+
+        self.assertEqual(result["capabilities"]["inpaint"], "unavailable")
+        self.assertEqual(
+            result["services"]["qwen-image-edit-worker"],
+            {
+                "name": "Qwen image edit worker",
+                "status": "unavailable",
+                "capabilities": ["edit", "inpaint", "outpaint"],
+            },
+        )
+
+    async def test_ready_reports_dependencies_even_while_degraded(self):
+        with (
+            patch.object(app.sam, "ready", new_callable=AsyncMock, return_value=False),
+            patch.object(
+                app.editor, "ready", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                app, "policy_ready", new_callable=AsyncMock, return_value=True
+            ),
+        ):
+            result = await app.ready()
+
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["services"]["sam3-worker"]["status"], "unavailable")
+
+
 class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_lease_is_released_when_inference_fails(self):
         response = unittest.mock.Mock(status_code=200)
@@ -110,7 +149,10 @@ class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
             "data": {"width": 1, "height": 1},
             "attachments": [{
                 "name": "image", "media_type": "image/png",
-                "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                "data_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE"
+                    "QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
             }],
         }
         image = app.Image.new("RGB", (1, 1))
