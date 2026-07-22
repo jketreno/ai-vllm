@@ -2,7 +2,9 @@
 
 `corpus_sources.yml` in this directory lists the developer machines that the
 nightly `corpus_sync` job (runs at 21:30 UTC, before distillation) pulls
-captured sessions from. See the comments in that file for the entry format.
+captured sessions from. It contains real hostnames, usernames, and pinned SSH
+host keys for your machines, so it is gitignored and never committed — see
+`corpus_sources.example.yml` in this directory for the entry format.
 
 The easiest way to manage subscriptions is
 `clare2/scripts/clare2-corpus-manage.sh`, which handles keypair generation,

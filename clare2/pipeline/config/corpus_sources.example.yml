@@ -1,0 +1,6 @@
+sources:
+- host: dev-laptop.example.com
+  port: 22
+  user: devuser
+  remote_corpus_root: ~/.config/clare/corpus
+  host_key: dev-laptop.example.com ssh-ed25519 AAAA...

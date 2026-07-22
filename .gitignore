@@ -6,6 +6,7 @@ logs/*.log
 models/adapters/*
 !models/adapters/.gitkeep
 !models/adapters/registry.example.json
+clare2/pipeline/config/corpus_sources.yml
 models/huggingface/
 /mlflow/
 corpus/meta/lifecycle.json
