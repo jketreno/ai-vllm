@@ -52,6 +52,30 @@ reasoning and the visible answer:
 }
 ```
 
+### Clients That Cannot Set a Custom Request Body
+
+Some clients only expose a UI for custom HTTP headers and give no way to add
+fields to the JSON body (Roo Code / Zoo Code's "Custom Headers" setting is a
+common example). For these, send the same fields as a JSON object in the
+`X-CLARE2-Params` header instead; the proxy deep-merges it into the request
+body before forwarding upstream. Nested objects are folded key by key rather
+than replaced wholesale — a body `chat_template_kwargs.preserve_thinking` and
+a header `chat_template_kwargs.enable_thinking` both survive in the merged
+result, with the header winning only on keys present in both:
+
+Header name: `X-CLARE2-Params`
+
+Header value:
+
+```json
+{"chat_template_kwargs": {"enable_thinking": false}, "thinking_token_budget": 1500}
+```
+
+The header value must be valid JSON and must be an object, or the proxy
+returns `400`. Like the JSON body's `model` field, `model` cannot be set
+through this header — the proxy always overwrites it with the resolved route
+or base model.
+
 ## Routing Behavior
 
 The proxy overwrites the request's `model` field with either the configured base

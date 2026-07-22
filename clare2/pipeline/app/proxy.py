@@ -30,6 +30,15 @@ ALLOWED_ENDPOINTS = {
 BLOCKED_MANAGEMENT_PARTS = {"load_lora_adapter", "unload_lora_adapter"}
 
 
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 def parse_endpoint_and_route(path: str, header_route_id: str | None) -> tuple[str, str | None]:
     endpoint = "/" + path
     route_id = header_route_id
@@ -55,6 +64,7 @@ async def _prepare_body(
     request: Request,
     endpoint: str,
     adapter_id: str | None,
+    extra_params_header: str | None,
 ) -> tuple[bytes, bool]:
     body = await request.body()
     stream_requested = False
@@ -64,6 +74,18 @@ async def _prepare_body(
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid JSON request") from exc
+    if extra_params_header:
+        try:
+            extra_params = json.loads(extra_params_header)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail="invalid JSON in X-CLARE2-Params header"
+            ) from exc
+        if not isinstance(extra_params, dict):
+            raise HTTPException(
+                status_code=400, detail="X-CLARE2-Params header must be a JSON object"
+            )
+        _deep_merge(payload, extra_params)
     payload["model"] = adapter_id or BASE_MODEL_ID
     stream_requested = payload.get("stream") is True
     return json.dumps(payload).encode(), stream_requested
@@ -121,6 +143,7 @@ async def forward(
     path: str,
     request: Request,
     x_clare_route_id: str | None = Header(default=None),
+    x_clare2_params: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> Response:
     endpoint, resolved_route_id = parse_endpoint_and_route(path, x_clare_route_id)
@@ -152,7 +175,7 @@ async def forward(
         try:
             if adapter_id:
                 controller.ensure_loaded(adapter_id)
-            body, stream_requested = await _prepare_body(request, endpoint, adapter_id)
+            body, stream_requested = await _prepare_body(request, endpoint, adapter_id, x_clare2_params)
             started = time.monotonic()
             upstream_url = f"{VLLM_URL}{endpoint}"
             upstream_headers = {"content-type": request.headers.get("content-type", "application/json")}

@@ -396,6 +396,29 @@ Qwen thinking is enabled but bounded by default for chat-completion callers.
 See `THINKING-CONFIG.md` for the caller-configurable `extra_body` fields,
 LangGraph examples, and no-thinking request form.
 
+### Extra Body Parameters via Header
+
+Clients that can only set custom HTTP headers (no raw JSON body control — e.g.
+Roo Code / Zoo Code's "Custom Headers" UI) can still pass extra vLLM
+request fields using `X-CLARE2-Params`. The header value must be a JSON
+object; the proxy deep-merges its keys into the request body before
+forwarding upstream — nested objects are folded key by key (e.g. a body
+`chat_template_kwargs.preserve_thinking` and a header
+`chat_template_kwargs.enable_thinking` both survive in the merged object),
+and the header's value wins only for leaf keys that appear in both. Invalid
+JSON, or a JSON value that is not an object, returns `400`. As with the
+request body, `model` is always overwritten by the resolved route or base
+model — it cannot be set via this header either.
+
+```text
+Authorization: Bearer <clare2_proxy_token>
+X-CLARE-Route-ID: <opaque route id>
+X-CLARE2-Params: {"chat_template_kwargs": {"enable_thinking": false}, "thinking_token_budget": 1500}
+```
+
+See `THINKING-CONFIG.md` for the full set of thinking-related fields this
+header is commonly used for.
+
 Policy order:
 
 1. Approved project adapter matching all requested capabilities.

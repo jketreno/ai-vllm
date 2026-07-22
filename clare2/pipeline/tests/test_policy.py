@@ -772,6 +772,168 @@ class ProxyIntegrationTests(unittest.TestCase):
             {"enable_thinking": False, "preserve_thinking": False},
         )
 
+    def test_proxy_merges_x_clare2_params_header_into_body(self):
+        captured: dict = {}
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def request(self, method, url, content, headers):
+                del method, url, headers
+                captured.update(json.loads(content))
+                return httpx.Response(
+                    200,
+                    json={"choices": []},
+                    headers={"content-type": "application/json"},
+                )
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient", FakeAsyncClient
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "X-CLARE2-Params": json.dumps({
+                        "chat_template_kwargs": {"enable_thinking": False},
+                        "thinking_token_budget": 512,
+                    }),
+                },
+                json={"model": "ignored", "messages": []},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            captured["chat_template_kwargs"], {"enable_thinking": False}
+        )
+        self.assertEqual(captured["thinking_token_budget"], 512)
+
+    def test_proxy_x_clare2_params_deep_merges_nested_objects(self):
+        captured: dict = {}
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def request(self, method, url, content, headers):
+                del method, url, headers
+                captured.update(json.loads(content))
+                return httpx.Response(
+                    200,
+                    json={"choices": []},
+                    headers={"content-type": "application/json"},
+                )
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient", FakeAsyncClient
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "X-CLARE2-Params": json.dumps({
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    }),
+                },
+                json={
+                    "model": "ignored",
+                    "messages": [],
+                    "chat_template_kwargs": {"preserve_thinking": False},
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            captured["chat_template_kwargs"],
+            {"enable_thinking": False, "preserve_thinking": False},
+        )
+
+    def test_proxy_x_clare2_params_cannot_override_model(self):
+        captured: dict = {}
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def request(self, method, url, content, headers):
+                del method, url, headers
+                captured.update(json.loads(content))
+                return httpx.Response(
+                    200,
+                    json={"choices": []},
+                    headers={"content-type": "application/json"},
+                )
+
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}), patch(
+            "app.proxy.httpx.AsyncClient", FakeAsyncClient
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "X-CLARE2-Params": json.dumps({"model": "attacker-selected"}),
+                },
+                json={"model": "ignored", "messages": []},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["model"], "Qwen/Qwen3.6-27B-FP8")
+
+    def test_proxy_rejects_invalid_json_in_x_clare2_params_header(self):
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}):
+            response = client.post(
+                "/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "X-CLARE2-Params": "{not valid json",
+                },
+                json={"model": "ignored", "messages": []},
+            )
+        self.assertEqual(response.status_code, 400)
+
+    def test_proxy_rejects_non_object_json_in_x_clare2_params_header(self):
+        app = FastAPI()
+        app.include_router(router_api)
+        client = TestClient(app)
+        with patch.dict("os.environ", {"CLARE2_PROXY_TOKEN": "secret"}):
+            response = client.post(
+                "/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "X-CLARE2-Params": json.dumps([1, 2, 3]),
+                },
+                json={"model": "ignored", "messages": []},
+            )
+        self.assertEqual(response.status_code, 400)
+
     def test_proxy_accepts_route_id_in_path(self):
         captured: dict = {}
 
