@@ -11,6 +11,7 @@ import uuid
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from PIL import Image, UnidentifiedImageError
 
 from image_ops import (
@@ -86,35 +87,64 @@ def decode_mask(value: str) -> bytes:
         raise HTTPException(400, "invalid mask base64") from error
 
 
+def _concepts_request(payload: bytes, media_type: str, *, stream: bool) -> dict:
+    return {
+        "model": VISION_MODEL,
+        "temperature": 0.1,
+        "max_tokens": 700,
+        "stream": stream,
+        "response_format": {"type": "json_object"},
+        "chat_template_kwargs": {"enable_thinking": False},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": CONCEPT_PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": (
+                                f"data:{media_type};base64,"
+                                f"{base64.b64encode(payload).decode('ascii')}"
+                            )
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def _policy_token() -> str:
+    with open(POLICY_TOKEN_FILE, encoding="utf-8") as token_file:
+        return token_file.read().strip()
+
+
+def _parse_concepts_json(content: str) -> dict:
+    parsed = json.loads(
+        content.strip().removeprefix("```json").removesuffix("```").strip()
+    )
+    caption = parsed.get("caption")
+    values = parsed.get("sam3_prompts", [])
+    if not isinstance(caption, str) or not caption.strip():
+        raise ValueError("no caption returned")
+    result = list(
+        dict.fromkeys(
+            value.strip()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+    )[:24]
+    if not result:
+        raise ValueError("no concepts returned")
+    return {"caption": caption.strip(), "concepts": result}
+
+
 async def concepts(payload: bytes, media_type: str) -> dict:
     """Return {"caption": str, "concepts": list[str]} from a single vision call."""
     try:
-        with open(POLICY_TOKEN_FILE, encoding="utf-8") as token_file:
-            token = token_file.read().strip()
-        request = {
-            "model": VISION_MODEL,
-            "temperature": 0.1,
-            "max_tokens": 700,
-            "response_format": {"type": "json_object"},
-            "chat_template_kwargs": {"enable_thinking": False},
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": CONCEPT_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": (
-                                    f"data:{media_type};base64,"
-                                    f"{base64.b64encode(payload).decode('ascii')}"
-                                )
-                            },
-                        },
-                    ],
-                }
-            ],
-        }
+        token = _policy_token()
+        request = _concepts_request(payload, media_type, stream=False)
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(
                 f"{POLICY_URL}/chat/completions",
@@ -123,23 +153,7 @@ async def concepts(payload: bytes, media_type: str) -> dict:
             )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        parsed = json.loads(
-            content.strip().removeprefix("```json").removesuffix("```").strip()
-        )
-        caption = parsed.get("caption")
-        values = parsed.get("sam3_prompts", [])
-        if not isinstance(caption, str) or not caption.strip():
-            raise ValueError("no caption returned")
-        result = list(
-            dict.fromkeys(
-                value.strip()
-                for value in values
-                if isinstance(value, str) and value.strip()
-            )
-        )[:24]
-        if not result:
-            raise ValueError("no concepts returned")
-        return {"caption": caption.strip(), "concepts": result}
+        return _parse_concepts_json(content)
     except (
         OSError,
         httpx.HTTPError,
@@ -151,6 +165,112 @@ async def concepts(payload: bytes, media_type: str) -> dict:
         raise HTTPException(
             503, f"vision concept extraction unavailable: {error}"
         ) from error
+
+
+async def _concepts_token_deltas(payload: bytes, media_type: str):
+    """Yield raw text deltas from the vision model's streamed chat completion."""
+    token = _policy_token()
+    request = _concepts_request(payload, media_type, stream=True)
+    async with httpx.AsyncClient(timeout=180) as client:
+        async with client.stream(
+            "POST",
+            f"{POLICY_URL}/chat/completions",
+            json=request,
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[len("data:"):].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(chunk)["choices"][0]["delta"].get("content")
+                except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                    continue
+                if delta:
+                    yield delta
+
+
+_CAPTION_FIELD_RE = re.compile(r'"caption"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_PROMPT_VALUE_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _extract_partial_caption(buffer: str) -> str | None:
+    """Return the caption string as soon as its closing quote has streamed in."""
+    match = _CAPTION_FIELD_RE.search(buffer)
+    if not match:
+        return None
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_new_prompts(buffer: str, seen: int) -> tuple[list[str], int]:
+    """Return sam3_prompts string values completed since the last `seen` count."""
+    prompts_start = buffer.find("sam3_prompts")
+    if prompts_start == -1:
+        return [], seen
+    array_start = buffer.find("[", prompts_start)
+    if array_start == -1:
+        return [], seen
+    values = [
+        match.group(1)
+        for match in _PROMPT_VALUE_RE.finditer(buffer, array_start + 1)
+    ]
+    new_values = values[seen:]
+    decoded = []
+    for raw in new_values:
+        try:
+            decoded.append(json.loads(f'"{raw}"'))
+        except json.JSONDecodeError:
+            decoded.append(raw)
+    return decoded, len(values)
+
+
+async def _concepts_progress_events(payload: bytes, media_type: str):
+    """Yield SSE-formatted progress events while streaming the vision call,
+    doing incremental JSON extraction so the client can show the caption and
+    each label as soon as they're parsable, well before the full response
+    (and its later SAM segmentation) completes."""
+    buffer = ""
+    caption_sent = False
+    prompts_seen = 0
+    try:
+        yield _sse_progress("status", {"message": "Generating caption..."})
+        async for delta in _concepts_token_deltas(payload, media_type):
+            buffer += delta
+            if not caption_sent:
+                caption = _extract_partial_caption(buffer)
+                if caption:
+                    caption_sent = True
+                    yield _sse_progress("caption", {"caption": caption})
+                    yield _sse_progress("status", {"message": "Generating labels..."})
+                continue
+            new_prompts, prompts_seen = _extract_new_prompts(buffer, prompts_seen)
+            for prompt_value in new_prompts:
+                yield _sse_progress(
+                    "label", {"label": prompt_value, "count": prompts_seen}
+                )
+        result = _parse_concepts_json(buffer)
+        yield _sse_progress("done", result)
+    except (
+        OSError,
+        httpx.HTTPError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
+        yield _sse_progress(
+            "error", {"message": f"vision concept extraction unavailable: {error}"}
+        )
+
+
+def _sse_progress(event_type: str, data: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 @app.get("/health/live")
@@ -226,6 +346,19 @@ async def analyze(
 async def image_concepts(file: UploadFile = File(...)):
     payload, media_type, _ = await read_image(file)
     return await concepts(payload, media_type)
+
+
+@app.post("/v1/images/concepts/stream")
+async def image_concepts_stream(file: UploadFile = File(...)):
+    """SSE variant of /v1/images/concepts: streams `status`/`caption`/`label`
+    progress events as the vision model's response arrives, then a terminal
+    `done` (with the same {"caption", "concepts"} payload as the non-streaming
+    endpoint) or `error` event."""
+    payload, media_type, _ = await read_image(file)
+    return StreamingResponse(
+        _concepts_progress_events(payload, media_type),
+        media_type="text/event-stream",
+    )
 
 
 @app.post("/v1/images/segment")
