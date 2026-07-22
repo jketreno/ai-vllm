@@ -15,8 +15,12 @@ Callers can pass vLLM's Qwen options directly:
 - `chat_template_kwargs.enable_thinking` enables or disables thinking.
 - `chat_template_kwargs.preserve_thinking` controls whether prior thinking is
   retained by the chat template.
-- `thinking_token_budget` limits reasoning tokens when supported by the deployed
-  vLLM/model combination.
+- `thinking_token_budget` limits reasoning tokens. Requires vLLM with
+  spec-decode-aware thinking-budget support (upstream vLLM PR #34668,
+  first in v0.20.2); confirmed enforced on this deployment's `26.06-py3`
+  vLLM image. On `26.04-py3` this field was silently ignored whenever MTP
+  speculative decoding was active — the model could burn its entire
+  `max_tokens` allowance on reasoning regardless of the configured budget.
 - `max_tokens` limits the complete generated output, including reasoning.
 
 The proxy preserves these values exactly. If they are omitted, vLLM and the
@@ -61,15 +65,29 @@ common example). For these, send the same fields as a JSON object in the
 body before forwarding upstream. Nested objects are folded key by key rather
 than replaced wholesale — a body `chat_template_kwargs.preserve_thinking` and
 a header `chat_template_kwargs.enable_thinking` both survive in the merged
-result, with the header winning only on keys present in both:
+result, with the header winning only on keys present in both.
 
 Header name: `X-CLARE2-Params`
 
-Header value:
+To disable thinking entirely (no reasoning phase at all — the deterministic
+option for clients that never consume `delta.reasoning`):
 
 ```json
-{"chat_template_kwargs": {"enable_thinking": false}, "thinking_token_budget": 1500}
+{"chat_template_kwargs": {"enable_thinking": false}}
 ```
+
+To keep thinking on but cap it, so a turn can never come back with an empty
+`content` purely from exhausting `max_tokens` mid-thought (requires vLLM with
+spec-decode-aware thinking-budget support; confirmed enforced on this
+deployment's `26.06-py3`, not on the prior `26.04-py3`):
+
+```json
+{"chat_template_kwargs": {"enable_thinking": true}, "thinking_token_budget": 512}
+```
+
+Don't combine `enable_thinking: false` with `thinking_token_budget` — with
+thinking disabled there is no reasoning phase for the budget to bound, so the
+field is a no-op.
 
 The header value must be valid JSON and must be an object, or the proxy
 returns `400`. Like the JSON body's `model` field, `model` cannot be set
