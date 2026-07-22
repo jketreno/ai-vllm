@@ -470,6 +470,32 @@ POST /operator/maintenance/{enter|exit}
 
 Training callbacks use a timestamped HMAC and are idempotent.
 
+## Corpus Sync
+
+Training/distillation sessions can be pulled in from other hosts running their
+own CLARE2 capture. Remote sources are declared in
+`clare2/pipeline/config/corpus_sources.yml` and managed with
+`clare2/scripts/clare2-corpus-manage.sh`:
+
+```bash
+clare2/scripts/clare2-corpus-manage.sh list
+clare2/scripts/clare2-corpus-manage.sh subscribe user@host[:port] [remote_corpus_root]
+clare2/scripts/clare2-corpus-manage.sh unsubscribe user@host[:port]
+clare2/scripts/clare2-corpus-manage.sh sync
+```
+
+`subscribe` generates a dedicated ed25519 keypair under
+`secrets/clare2_corpus_sync_key` (first use only), installs it on the remote
+host as a restricted `authorized_keys` entry (forced `rrsync -ro
+<remote_root>/sessions` command, no port/agent/X11 forwarding), pins the
+remote host key, and records the source in `corpus_sources.yml`. `sync` (run
+nightly by `corpus_sync.py`, or manually) rsyncs each subscribed host's
+`sessions/` into the local `corpus/sessions/` tree. `unsubscribe` removes an
+entry from `corpus_sources.yml`; it does not revoke the installed remote key.
+
+Environment overrides: `CLARE2_CORPUS_SOURCES_FILE`, `CLARE2_CORPUS_SYNC_KEY_FILE`,
+`CLARE2_CORPUS_ROOT`.
+
 ## Monitoring
 
 Prometheus scrapes `clare2-policy`, `vllm-engine`, and `nvidia-exporter` by
