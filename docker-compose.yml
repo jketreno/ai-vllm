@@ -175,8 +175,13 @@ services:
       - fp8
       # Favor interactive decode latency: excess requests queue instead of
       # allowing concurrent long prefills to starve token generation.
+      # KV cache pool (gpu-memory-utilization 0.45) profiles at 20.07 GiB,
+      # good for ~3.98x concurrency at the full 131072-token max-model-len,
+      # so raising this from 2 to 4 fits the existing pool at ~0 extra
+      # memory cost. Each additional full-context slot beyond ~4 costs
+      # ~5 GiB and requires raising gpu-memory-utilization.
       - --max-num-seqs
-      - "${CLARE2_MAX_NUM_SEQS:-2}"
+      - "${CLARE2_MAX_NUM_SEQS:-4}"
       - --max-num-batched-tokens
       - "${CLARE2_MAX_NUM_BATCHED_TOKENS:-8192}"
       - --reasoning-parser=qwen3
