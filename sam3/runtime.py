@@ -3,15 +3,8 @@
 from contextlib import nullcontext
 from dataclasses import dataclass
 import os
-from pathlib import Path
-import sys
 
 import torch
-
-
-_BUNDLED_SOURCE = Path(__file__).resolve().parent / "sam3"
-if (_BUNDLED_SOURCE / "sam3").is_dir():
-    sys.path.insert(0, str(_BUNDLED_SOURCE))
 
 
 @dataclass(frozen=True)
