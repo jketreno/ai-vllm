@@ -60,7 +60,14 @@ class WorkerClient:
         except httpx.HTTPError as error:
             raise HTTPException(503, f"model worker unavailable: {error}") from error
         if response.status_code == 503:
-            raise HTTPException(503, "model capability is not ready")
+            detail = "model capability is not ready"
+            try:
+                worker_detail = response.json().get("detail")
+            except (ValueError, AttributeError):
+                worker_detail = None
+            if isinstance(worker_detail, str) and worker_detail:
+                detail = worker_detail
+            raise HTTPException(503, detail)
         if response.status_code >= 400:
             raise HTTPException(
                 502, f"model worker rejected request: {response.text[:500]}"

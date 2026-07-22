@@ -378,6 +378,11 @@ def _mem_available_gib():
 def _gate_inference(operation: str, request_id: str | None, total_steps: int) -> None:
     available = _mem_available_gib()
     INFERENCE_MEMORY.labels("before", PROFILE).set(available)
+    log.info(
+        "request_id=%s operation=%s stage=gate_check mem_available_gib=%.2f "
+        "required_gib=%.1f",
+        request_id, operation, available, INFERENCE_REQUIRED_GIB,
+    )
     if request_id:
         with _invoke_progress_lock:
             cancelled = request_id in _cancelled_requests
@@ -396,6 +401,11 @@ def _gate_inference(operation: str, request_id: str | None, total_steps: int) ->
     if available < INFERENCE_REQUIRED_GIB:
         INFERENCE_REQUESTS.labels(operation, "rejected", PROFILE).inc()
         _finish_progress(request_id, "failed", "insufficient memory headroom")
+        log.warning(
+            "request_id=%s operation=%s stage=gate_rejected mem_available_gib=%.2f "
+            "required_gib=%.1f",
+            request_id, operation, available, INFERENCE_REQUIRED_GIB,
+        )
         raise HTTPException(
             503,
             f"image inference needs at least {INFERENCE_REQUIRED_GIB:.1f} GiB "
@@ -814,6 +824,10 @@ async def edit(
             except Exception as error:
                 INFERENCE_REQUESTS.labels("edit", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
+                log.exception(
+                    "request_id=%s operation=edit stage=inference_failed "
+                    "error_type=%s", request_id, type(error).__name__,
+                )
                 raise
             finally:
                 _observe_post_inference_memory()
@@ -899,6 +913,10 @@ async def inpaint(
             except Exception as error:
                 INFERENCE_REQUESTS.labels("inpaint", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
+                log.exception(
+                    "request_id=%s operation=inpaint stage=inference_failed "
+                    "error_type=%s", request_id, type(error).__name__,
+                )
                 raise
             finally:
                 _observe_post_inference_memory()
@@ -1027,6 +1045,10 @@ async def outpaint(
             except Exception as error:
                 INFERENCE_REQUESTS.labels("outpaint", "failure", PROFILE).inc()
                 _finish_progress(request_id, "failed", str(error))
+                log.exception(
+                    "request_id=%s operation=outpaint stage=inference_failed "
+                    "error_type=%s", request_id, type(error).__name__,
+                )
                 raise
             finally:
                 _observe_post_inference_memory()
