@@ -1109,6 +1109,12 @@ def capabilities():
             "num_inference_steps": 4 if PROFILE == "lightning" else 20,
             "true_cfg_scale": 1.0 if PROFILE == "lightning" else 4.0,
             "overrides_enforced": PROFILE == "lightning",
+            # Lightning pins steps/CFG server-side (_generation_settings) and ignores
+            # caller-supplied values entirely, so min==max communicates "not editable"
+            # without a separate min/max-mismatch case for callers to handle.
+            "min_steps": 4 if PROFILE == "lightning" else 1,
+            "max_steps": 4 if PROFILE == "lightning" else 100,
+            "cfg_editable": PROFILE != "lightning",
         },
         "operations": {
             "edit": {
