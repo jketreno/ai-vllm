@@ -4,15 +4,23 @@ assert what must always be true of a malformed/well-formed vision response,
 not just what the current implementation happens to return.
 """
 
+import importlib
+import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import app
-import resource_lease
+MODULE_DIR = Path(__file__).parent
+sys.path.insert(0, str(MODULE_DIR))
+spec = importlib.util.spec_from_file_location("image_api_app", MODULE_DIR / "app.py")
+app = importlib.util.module_from_spec(spec)
+sys.modules["image_api_app"] = app
+spec.loader.exec_module(app)
+resource_lease = importlib.import_module("resource_lease")
 
 
 def _chat_response(payload: dict) -> AsyncMock:
@@ -45,7 +53,7 @@ class ConceptsCaptionTests(unittest.IsolatedAsyncioTestCase):
             "caption": "A red bicycle leaning against a brick wall.",
             "sam3_prompts": ["red bicycle", "brick wall"],
         }
-        with patch("app.httpx.AsyncClient") as client_cls:
+        with patch.object(app.httpx, "AsyncClient") as client_cls:
             client_cls.return_value.__aenter__.return_value.post = AsyncMock(
                 return_value=_chat_response(payload)
             )
@@ -58,7 +66,7 @@ class ConceptsCaptionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concepts_raises_if_caption_missing_from_model_response(self):
         payload = {"sam3_prompts": ["red bicycle"]}
-        with patch("app.httpx.AsyncClient") as client_cls:
+        with patch.object(app.httpx, "AsyncClient") as client_cls:
             client_cls.return_value.__aenter__.return_value.post = AsyncMock(
                 return_value=_chat_response(payload)
             )
@@ -168,7 +176,7 @@ class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concepts_raises_if_sam3_prompts_missing_from_model_response(self):
         payload = {"caption": "A red bicycle leaning against a brick wall."}
-        with patch("app.httpx.AsyncClient") as client_cls:
+        with patch.object(app.httpx, "AsyncClient") as client_cls:
             client_cls.return_value.__aenter__.return_value.post = AsyncMock(
                 return_value=_chat_response(payload)
             )
@@ -177,7 +185,7 @@ class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concepts_raises_if_caption_is_blank(self):
         payload = {"caption": "   ", "sam3_prompts": ["red bicycle"]}
-        with patch("app.httpx.AsyncClient") as client_cls:
+        with patch.object(app.httpx, "AsyncClient") as client_cls:
             client_cls.return_value.__aenter__.return_value.post = AsyncMock(
                 return_value=_chat_response(payload)
             )

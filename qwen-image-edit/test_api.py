@@ -11,6 +11,7 @@ import io
 import sys
 import types
 import unittest
+from importlib.machinery import ModuleSpec
 from unittest import mock
 
 import numpy as np
@@ -57,6 +58,10 @@ sys.modules.setdefault("diffusers", diffusers_stub)
 
 torchao_stub = types.ModuleType("torchao")
 torchao_quantization_stub = types.ModuleType("torchao.quantization")
+torchao_stub.__spec__ = ModuleSpec("torchao", loader=None, is_package=True)
+torchao_quantization_stub.__spec__ = ModuleSpec(
+    "torchao.quantization", loader=None
+)
 torchao_quantization_stub.Float8WeightOnlyConfig = type(
     "Float8WeightOnlyConfig", (), {}
 )
@@ -368,7 +373,7 @@ class InpaintPipelineTests(unittest.TestCase):
                 " ",
                 2,
                 4.0,
-                api.torch.Generator(device="cuda").manual_seed(0),
+                _FakeGenerator(device="cuda").manual_seed(0),
                 None,
             )
 

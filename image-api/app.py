@@ -12,7 +12,7 @@ import uuid
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import start_http_server
 from PIL import Image, UnidentifiedImageError
 
@@ -28,6 +28,11 @@ from image_ops import (
 from metrics import ROUTE_LATENCY, ROUTE_REQUESTS
 from rpc import WorkerClient
 from resource_lease import image_edit_lease
+from auth import (
+    AuthenticationError,
+    validate_access_token,
+    validate_openwebui_token,
+)
 import openai_compat
 
 
@@ -46,6 +51,34 @@ editor = WorkerClient(
 @app.on_event("startup")
 def startup():
     start_http_server(METRICS_PORT)
+
+
+@app.middleware("http")
+async def require_image_bearer(request: Request, call_next):
+    native_route = request.url.path.startswith("/v1/images/")
+    openai_route = request.url.path.startswith("/openai/v1/images/")
+    if not native_route and not openai_route:
+        return await call_next(request)
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return JSONResponse(
+            {"detail": "Bearer authentication required"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        if openai_route:
+            request.state.service = validate_openwebui_token(token)
+        else:
+            request.state.username = validate_access_token(token)
+    except AuthenticationError as error:
+        return JSONResponse(
+            {"detail": str(error)},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")

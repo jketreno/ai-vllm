@@ -62,6 +62,16 @@ There is no host binding for raw vLLM.
 inpainting, outpainting, and deterministic transforms. Host clients use
 `http://127.0.0.1:8005`; containers such as Auto SAM use
 `http://image-api:8000`. Restarting it does not reload model workers.
+Native `/v1/images/*` routes require an Auto SAM user bearer token signed by
+`secrets/auto_sam_auth_token`. OpenAI-compatible `/openai/v1/images/*` routes
+instead require the dedicated Open WebUI service bearer from
+`secrets/image_api_openwebui_token`. Health and capability discovery remain
+public. `setup-clare2.sh` generates both credentials.
+
+The bundled Open WebUI uses `image-api` for its `openai` image-generation and
+image-edit engines. Its secret entrypoint loads the dedicated credential into
+`IMAGES_OPENAI_API_KEY` and `IMAGES_EDIT_OPENAI_API_KEY`; the chat-completions
+connection continues to use the separate CLARE2 proxy credential.
 
 The default stack runs a headless `sam3-worker`. Its capability RPC and metrics
 are private to Docker networks; no Streamlit UI is installed.
@@ -236,6 +246,7 @@ Submit an edit through the Image API:
 
 ```bash
 curl -s http://127.0.0.1:8005/v1/images/edit \
+  -H "Authorization: Bearer $AUTO_SAM_ACCESS_TOKEN" \
   -F file=@input.png \
   -F prompt='add a small red circle in the center' \
   | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); open("out.png","wb").write(base64.b64decode(d["image_png_base64"]))'

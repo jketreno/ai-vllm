@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
-import app.main as main
+module_path = pathlib.Path(__file__).parents[1] / "app" / "main.py"
+spec = importlib.util.spec_from_file_location("spam_classifier_main", module_path)
+main = importlib.util.module_from_spec(spec)
+sys.modules["spam_classifier_main"] = main
+spec.loader.exec_module(main)
 
 
 class SpamClassifierTests(unittest.TestCase):
@@ -57,7 +63,7 @@ class SpamClassifierTests(unittest.TestCase):
                 }
             ]
         }
-        with patch("app.main.httpx.post", return_value=upstream) as post:
+        with patch.object(main.httpx, "post", return_value=upstream) as post:
             response = self.client.post(
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
@@ -94,7 +100,7 @@ class SpamClassifierTests(unittest.TestCase):
         upstream.json.return_value = {
             "choices": [{"message": {"content": '{"spam_score": 2}'}}]
         }
-        with patch("app.main.httpx.post", return_value=upstream):
+        with patch.object(main.httpx, "post", return_value=upstream):
             response = self.client.post(
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
@@ -124,7 +130,7 @@ class SpamClassifierTests(unittest.TestCase):
                 }
             ]
         }
-        with patch("app.main.httpx.post", return_value=upstream):
+        with patch.object(main.httpx, "post", return_value=upstream):
             response = self.client.post(
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},
@@ -158,7 +164,7 @@ class SpamClassifierTests(unittest.TestCase):
                 }
             ]
         }
-        with patch("app.main.httpx.post", return_value=upstream):
+        with patch.object(main.httpx, "post", return_value=upstream):
             response = self.client.post(
                 "/v1/classify",
                 headers={"Authorization": "Bearer test-token"},

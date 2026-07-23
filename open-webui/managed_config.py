@@ -78,7 +78,9 @@ def remove_managed_openai_settings(database: Path) -> bool:
         return changed
 
 
-def _strip_comfyui_section(section, top_level_keys: tuple[str, ...]) -> bool:
+def _strip_image_provider_sections(
+    section, top_level_keys: tuple[str, ...]
+) -> bool:
     if not isinstance(section, dict):
         return False
 
@@ -87,6 +89,10 @@ def _strip_comfyui_section(section, top_level_keys: tuple[str, ...]) -> bool:
     comfyui = section.get("comfyui")
     if isinstance(comfyui, dict):
         changed = _delete_keys(comfyui, ("base_url", "workflow", "nodes")) or changed
+
+    openai = section.get("openai")
+    if isinstance(openai, dict):
+        changed = _delete_keys(openai, ("api_base_url", "api_key")) or changed
 
     return changed
 
@@ -103,6 +109,8 @@ def remove_managed_image_generation_settings(database: Path) -> bool:
                 "image_generation.model",
                 "image_generation.size",
                 "image_generation.steps",
+                "image_generation.openai.api_base_url",
+                "image_generation.openai.api_key",
                 "image_generation.comfyui.base_url",
                 "image_generation.comfyui.workflow",
                 "image_generation.comfyui.nodes",
@@ -115,7 +123,7 @@ def remove_managed_image_generation_settings(database: Path) -> bool:
         if data is None:
             return False
 
-        changed = _strip_comfyui_section(
+        changed = _strip_image_provider_sections(
             data.get("image_generation"), ("engine", "model", "size", "steps")
         )
 
@@ -135,6 +143,8 @@ def remove_managed_image_edit_settings(database: Path) -> bool:
                 "images.edit.engine",
                 "images.edit.model",
                 "images.edit.size",
+                "images.edit.openai.api_base_url",
+                "images.edit.openai.api_key",
                 "images.edit.comfyui.base_url",
                 "images.edit.comfyui.workflow",
                 "images.edit.comfyui.nodes",
@@ -149,7 +159,7 @@ def remove_managed_image_edit_settings(database: Path) -> bool:
 
         images = data.get("images")
         edit = images.get("edit") if isinstance(images, dict) else None
-        changed = _strip_comfyui_section(edit, ("engine", "model", "size"))
+        changed = _strip_image_provider_sections(edit, ("engine", "model", "size"))
 
         if changed:
             _save_config(connection, row_id, data)

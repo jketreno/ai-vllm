@@ -112,6 +112,8 @@ fi
 chmod 600 "$HF_TOKEN_FILE"
 
 secret clare2_proxy_token
+secret auto_sam_auth_token
+secret image_api_openwebui_token
 secret clare2_mcp_token
 secret clare2_operator_token
 secret clare2_callback_secret

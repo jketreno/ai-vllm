@@ -11,6 +11,8 @@ read_secret() {
 }
 
 read_secret OPENAI_API_KEY
+read_secret IMAGES_OPENAI_API_KEY
+read_secret IMAGES_EDIT_OPENAI_API_KEY
 read_secret LDAP_APP_PASSWORD
 
 python /usr/local/lib/clare-open-webui-managed-config.py

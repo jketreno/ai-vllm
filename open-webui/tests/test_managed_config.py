@@ -25,12 +25,16 @@ class ManagedConfigTests(unittest.TestCase):
             "image_generation.model",
             "image_generation.size",
             "image_generation.steps",
+            "image_generation.openai.api_base_url",
+            "image_generation.openai.api_key",
             "image_generation.comfyui.base_url",
             "image_generation.comfyui.workflow",
             "image_generation.comfyui.nodes",
             "images.edit.engine",
             "images.edit.model",
             "images.edit.size",
+            "images.edit.openai.api_base_url",
+            "images.edit.openai.api_key",
             "images.edit.comfyui.base_url",
             "images.edit.comfyui.workflow",
             "images.edit.comfyui.nodes",
@@ -124,6 +128,10 @@ class ManagedConfigTests(unittest.TestCase):
                                     "model": "model.safetensors",
                                     "size": "512x512",
                                     "steps": 50,
+                                    "openai": {
+                                        "api_base_url": "http://old/openai/v1",
+                                        "api_key": "old-image-secret",
+                                    },
                                     "comfyui": {
                                         "api_key": "",
                                         "base_url": "http://old:8188",
@@ -149,6 +157,8 @@ class ManagedConfigTests(unittest.TestCase):
             self.assertNotIn("model", image_generation)
             self.assertNotIn("size", image_generation)
             self.assertNotIn("steps", image_generation)
+            self.assertNotIn("api_base_url", image_generation["openai"])
+            self.assertNotIn("api_key", image_generation["openai"])
             self.assertNotIn("base_url", image_generation["comfyui"])
             self.assertNotIn("workflow", image_generation["comfyui"])
             self.assertNotIn("nodes", image_generation["comfyui"])
@@ -183,6 +193,10 @@ class ManagedConfigTests(unittest.TestCase):
                                         "engine": "openai",
                                         "model": "",
                                         "size": "",
+                                        "openai": {
+                                            "api_base_url": "http://old/openai/v1",
+                                            "api_key": "old-edit-secret",
+                                        },
                                         "comfyui": {
                                             "api_key": "",
                                             "base_url": "",
@@ -208,6 +222,8 @@ class ManagedConfigTests(unittest.TestCase):
             self.assertNotIn("engine", edit)
             self.assertNotIn("model", edit)
             self.assertNotIn("size", edit)
+            self.assertNotIn("api_base_url", edit["openai"])
+            self.assertNotIn("api_key", edit["openai"])
             self.assertNotIn("base_url", edit["comfyui"])
             self.assertNotIn("workflow", edit["comfyui"])
             self.assertNotIn("nodes", edit["comfyui"])

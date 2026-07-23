@@ -49,77 +49,81 @@ def _openai_response(images_b64: list[str]) -> dict:
     }
 
 
+@router.post("/images/generations")
+async def generations(
+    request: Request,
+    prompt: str = Body(..., embed=True),
+    n: int = Body(1, embed=True),
+    size: str | None = Body(None, embed=True),
+    response_format: str | None = Body(None, embed=True),
+    negative_prompt: str = Body("", embed=True),
+    _authorization: str | None = Header(None, alias="Authorization"),
+):
+    _require_b64_json(response_format)
+    if n != 1:
+        raise HTTPException(400, "only n=1 is supported by this backend")
+    width, height = _parse_size(size, request.app.state.image_max_canvas_dimension)
+    canvas = noise_canvas(width, height)
+    params = request.app.state.image_edit_params(
+        prompt, negative_prompt, 20, 4.0, 0
+    )
+    result = await request.app.state.image_editor_invoke_edit(
+        "edit", canvas, "image/png", params, request_id=str(uuid.uuid4())
+    )
+    return _openai_response([result["image_png_base64"]])
+
+
+@router.post("/images/edits")
+async def edits(
+    request: Request,
+    _authorization: str | None = Header(None, alias="Authorization"),
+):
+    form = await request.form()
+    images = [
+        value
+        for key in ("image[]", "image")
+        for value in form.getlist(key)
+        if isinstance(value, UploadFile)
+    ]
+    if not images:
+        raise HTTPException(422, "image is required")
+    prompt = form.get("prompt")
+    if not isinstance(prompt, str) or not prompt:
+        raise HTTPException(422, "prompt is required")
+    n = int(form.get("n", 1))
+    response_format = form.get("response_format") or None
+
+    _require_b64_json(response_format)
+    if n != 1:
+        raise HTTPException(400, "only n=1 is supported by this backend")
+
+    loaded = []
+    for upload in images:
+        media_type = upload.content_type or ""
+        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise HTTPException(415, "upload a JPEG, PNG, or WebP image")
+        payload = await upload.read()
+        try:
+            source_image = Image.open(io.BytesIO(payload)).convert("RGB")
+        except (UnidentifiedImageError, OSError) as error:
+            raise HTTPException(400, "invalid image") from error
+        loaded.append((source_image, media_type, payload))
+
+    source, media_type, _ = loaded[0]
+    extras = [
+        (f"reference:{index}", payload, ref_media_type)
+        for index, (_, ref_media_type, payload) in enumerate(loaded[1:])
+    ]
+    params = request.app.state.image_edit_params(prompt, "", 20, 4.0, 0)
+    result = await request.app.state.image_editor_invoke_edit(
+        "edit", source, media_type, params, extras, request_id=str(uuid.uuid4())
+    )
+    return _openai_response([result["image_png_base64"]])
+
+
 def register(app, editor_invoke_edit, edit_params, max_canvas_dimension: int):
-    """Mount the OpenAI-compatible router. Takes the host app's invoke_edit
-    coroutine and edit_params builder so this module shares the same
-    worker-invocation path (leasing, logging, response shaping) as the native
-    /v1/images/* routes rather than re-implementing it."""
-
-    @router.post("/images/generations")
-    async def generations(
-        prompt: str = Body(..., embed=True),
-        n: int = Body(1, embed=True),
-        size: str | None = Body(None, embed=True),
-        response_format: str | None = Body(None, embed=True),
-        negative_prompt: str = Body("", embed=True),
-        _authorization: str | None = Header(None, alias="Authorization"),
-    ):
-        _require_b64_json(response_format)
-        if n != 1:
-            raise HTTPException(400, "only n=1 is supported by this backend")
-        width, height = _parse_size(size, max_canvas_dimension)
-        canvas = noise_canvas(width, height)
-        params = edit_params(prompt, negative_prompt, 20, 4.0, 0)
-        result = await editor_invoke_edit(
-            "edit", canvas, "image/png", params, request_id=str(uuid.uuid4())
-        )
-        return _openai_response([result["image_png_base64"]])
-
-    @router.post("/images/edits")
-    async def edits(
-        request: Request,
-        _authorization: str | None = Header(None, alias="Authorization"),
-    ):
-        form = await request.form()
-        images = [
-            value
-            for key in ("image[]", "image")
-            for value in form.getlist(key)
-            if isinstance(value, UploadFile)
-        ]
-        if not images:
-            raise HTTPException(422, "image is required")
-        prompt = form.get("prompt")
-        if not isinstance(prompt, str) or not prompt:
-            raise HTTPException(422, "prompt is required")
-        n = int(form.get("n", 1))
-        response_format = form.get("response_format") or None
-
-        _require_b64_json(response_format)
-        if n != 1:
-            raise HTTPException(400, "only n=1 is supported by this backend")
-
-        loaded = []
-        for upload in images:
-            media_type = upload.content_type or ""
-            if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-                raise HTTPException(415, "upload a JPEG, PNG, or WebP image")
-            payload = await upload.read()
-            try:
-                source_image = Image.open(io.BytesIO(payload)).convert("RGB")
-            except (UnidentifiedImageError, OSError) as error:
-                raise HTTPException(400, "invalid image") from error
-            loaded.append((source_image, media_type, payload))
-
-        source, media_type, _ = loaded[0]
-        extras = [
-            (f"reference:{index}", payload, ref_media_type)
-            for index, (_, ref_media_type, payload) in enumerate(loaded[1:])
-        ]
-        params = edit_params(prompt, "", 20, 4.0, 0)
-        result = await editor_invoke_edit(
-            "edit", source, media_type, params, extras, request_id=str(uuid.uuid4())
-        )
-        return _openai_response([result["image_png_base64"]])
-
+    """Mount the OpenAI-compatible router using the host app's edit pipeline."""
+    app.state.image_editor_invoke_edit = editor_invoke_edit
+    app.state.image_edit_params = edit_params
+    app.state.image_max_canvas_dimension = max_canvas_dimension
     app.include_router(router)
