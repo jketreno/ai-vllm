@@ -289,20 +289,21 @@ def main() -> None:
             # produced `CUDA error: operation not permitted` (cudaErrorNotPermitted)
             # on the very first forward pass through Qwen3.5's linear-attention path,
             # matching the documented Dynamo/stream-capture interaction
-            # (https://github.com/pytorch/pytorch/issues/87794).
+            # (https://github.com/pytorch/pytorch/issues/87794). Standard PyTorch
+            # checkpointing avoids the Dynamo-traced path at some memory/speed cost.
             #
-            # Standard PyTorch reentrant checkpointing (use_gradient_checkpointing=True)
-            # avoids that crash but hits a different one: Qwen3.5's hybrid
-            # linear-attention/SSM layers (see layer_types/mamba_ssm_dtype in the base
-            # config) carry recurrent state that torch.utils.checkpoint's forward/
-            # recompute pair does not reproduce identically, tripping
-            # CheckpointError ("different number of tensors saved during forward and
-            # recomputation") on the very first backward step — reproduced with
-            # lora_dropout=0.0, ruling out dropout nondeterminism as the cause.
-            #
-            # Disabling checkpointing avoids both failure modes at the cost of higher
-            # VRAM use; re-enable only once one of the above is fixed upstream.
-            use_gradient_checkpointing=False,
+            # DO NOT set this to False: on 2026-07-23 that also hit a
+            # CheckpointError ("different number of tensors saved during forward
+            # and recomputation") on Qwen3.5's hybrid linear-attention/SSM layers
+            # — reproduced even with lora_dropout=0.0, ruling out dropout
+            # nondeterminism. Disabling checkpointing to work around it instead
+            # exhausted the GB10's unified 121GB memory pool (system RAM and GPU
+            # memory share the same pool on this hardware) mid-training and hard-
+            # locked the host, requiring a physical reboot. Checkpointing must
+            # stay enabled here regardless of which crash it produces; fix the
+            # CheckpointError itself (Unsloth/transformers version, or an
+            # upstream patch for this architecture) rather than disabling it.
+            use_gradient_checkpointing=True,
             random_state=args.seed,
         )
         dataset, skipped = load_corpus(train_file, text_tokenizer, args.max_seq_length)
@@ -322,13 +323,6 @@ def main() -> None:
             logging_steps=1,
             save_strategy="epoch",
             bf16=True,
-            # SFTConfig defaults gradient_checkpointing=True (unlike plain HF
-            # TrainingArguments), which makes SFTTrainer call the model's own
-            # gradient_checkpointing_enable() regardless of the
-            # use_gradient_checkpointing=False already passed to
-            # FastModel.get_peft_model above — silently re-enabling the vanilla
-            # reentrant checkpointing that crashes on this architecture.
-            gradient_checkpointing=False,
             max_length=args.max_seq_length,
             completion_only_loss=True,
             report_to="none",
