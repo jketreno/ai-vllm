@@ -289,9 +289,20 @@ def main() -> None:
             # produced `CUDA error: operation not permitted` (cudaErrorNotPermitted)
             # on the very first forward pass through Qwen3.5's linear-attention path,
             # matching the documented Dynamo/stream-capture interaction
-            # (https://github.com/pytorch/pytorch/issues/87794). Standard PyTorch
-            # checkpointing avoids the Dynamo-traced path at some memory/speed cost.
-            use_gradient_checkpointing=True,
+            # (https://github.com/pytorch/pytorch/issues/87794).
+            #
+            # Standard PyTorch reentrant checkpointing (use_gradient_checkpointing=True)
+            # avoids that crash but hits a different one: Qwen3.5's hybrid
+            # linear-attention/SSM layers (see layer_types/mamba_ssm_dtype in the base
+            # config) carry recurrent state that torch.utils.checkpoint's forward/
+            # recompute pair does not reproduce identically, tripping
+            # CheckpointError ("different number of tensors saved during forward and
+            # recomputation") on the very first backward step — reproduced with
+            # lora_dropout=0.0, ruling out dropout nondeterminism as the cause.
+            #
+            # Disabling checkpointing avoids both failure modes at the cost of higher
+            # VRAM use; re-enable only once one of the above is fixed upstream.
+            use_gradient_checkpointing=False,
             random_state=args.seed,
         )
         dataset, skipped = load_corpus(train_file, text_tokenizer, args.max_seq_length)

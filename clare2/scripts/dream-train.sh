@@ -224,6 +224,22 @@ fi
   exit 1
 }
 
+# CLARE2_PROJECT_MAP must be valid JSON (clare2-policy parses it at startup
+# via app/runtime.py). It should only ever come from .env, which docker
+# compose reads with its own dotenv parser. If it is already exported in
+# this shell — e.g. from a prior `set -a && source .env`, which lets bash's
+# own word-splitting strip the double quotes from the JSON — that mangled
+# value silently shadows the correct one from .env for every `docker compose`
+# call below, including the final restart of clare2-policy, which then
+# crash-loops on a JSONDecodeError with no obvious link back to this script.
+if [[ -n "${CLARE2_PROJECT_MAP:-}" ]] && ! python3 -c 'import json, os, sys; json.loads(os.environ["CLARE2_PROJECT_MAP"])' 2>/dev/null; then
+  echo "CLARE2_PROJECT_MAP is exported in this shell but is not valid JSON: ${CLARE2_PROJECT_MAP}" >&2
+  echo "This usually means .env was sourced into the shell (e.g. 'set -a && source .env')," >&2
+  echo "which strips the double quotes bash sees as unquoted braces. Unset it and let" >&2
+  echo "docker compose read .env directly instead: unset CLARE2_PROJECT_MAP" >&2
+  exit 1
+fi
+
 OPERATOR_TOKEN=$(tr -d '\r\n' < "${CLARE2_OPERATOR_TOKEN_FILE:-./secrets/clare2_operator_token}")
 RUN_ID=${CLARE2_RUN_ID:-run-$(date -u +%Y%m%dT%H%M%SZ)-dream}
 SUMMARY_PATH="${SUMMARY_DIR}/${RUN_ID}.json"
