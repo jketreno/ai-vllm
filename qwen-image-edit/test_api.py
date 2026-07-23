@@ -40,7 +40,11 @@ class _FakeInferenceMode:
 torch_stub.Generator = _FakeGenerator
 torch_stub.inference_mode = _FakeInferenceMode
 torch_stub.cuda = types.SimpleNamespace(
-    memory_allocated=lambda: 0, memory_reserved=lambda: 0
+    memory_allocated=lambda: 0,
+    memory_reserved=lambda: 0,
+    is_available=lambda: False,
+    mem_get_info=lambda: (0, 0),
+    empty_cache=lambda: None,
 )
 sys.modules.setdefault("torch", torch_stub)
 
@@ -474,6 +478,44 @@ class InvokeProgressTests(unittest.TestCase):
         api._prune_progress(now=api.PROGRESS_RETENTION_SECONDS + 2)
 
         self.assertNotIn("expired", api._invoke_progress)
+
+
+class DebugMemoryTests(unittest.TestCase):
+    def test_snapshot_reports_allocated_reserved_and_system_available(self):
+        with (
+            mock.patch.object(api.torch.cuda, "memory_allocated", return_value=1 << 30),
+            mock.patch.object(api.torch.cuda, "memory_reserved", return_value=2 << 30),
+            mock.patch.object(api, "_mem_available_gib", return_value=12.5),
+            mock.patch.object(api.torch.cuda, "is_available", return_value=False),
+        ):
+            snapshot = api._debug_memory_snapshot()
+
+        self.assertEqual(snapshot["allocated_gib"], 1.0)
+        self.assertEqual(snapshot["reserved_gib"], 2.0)
+        self.assertEqual(snapshot["system_available_gib"], 12.5)
+        self.assertNotIn("cuda_free_gib", snapshot)
+
+    def test_snapshot_includes_cuda_free_when_cuda_available(self):
+        with (
+            mock.patch.object(api.torch.cuda, "is_available", return_value=True),
+            mock.patch.object(
+                api.torch.cuda, "mem_get_info", return_value=(3 << 30, 8 << 30)
+            ),
+            mock.patch.object(api, "_mem_available_gib", return_value=12.5),
+        ):
+            snapshot = api._debug_memory_snapshot()
+
+        self.assertEqual(snapshot["cuda_free_gib"], 3.0)
+
+    def test_empty_cache_calls_torch_and_returns_fresh_snapshot(self):
+        with (
+            mock.patch.object(api.torch.cuda, "empty_cache") as empty_cache,
+            mock.patch.object(api, "_mem_available_gib", return_value=20.0),
+        ):
+            snapshot = api.debug_empty_cache()
+
+        empty_cache.assert_called_once()
+        self.assertEqual(snapshot["system_available_gib"], 20.0)
 
 
 if __name__ == "__main__":

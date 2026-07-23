@@ -779,6 +779,27 @@ def load_status():
         raise HTTPException(404, "No load status recorded yet")
 
 
+def _debug_memory_snapshot() -> dict:
+    snapshot = _cuda_mem_gib()
+    snapshot["system_available_gib"] = _mem_available_gib()
+    if torch.cuda.is_available():
+        free, _total = torch.cuda.mem_get_info()
+        snapshot["cuda_free_gib"] = free / (1024**3)
+    return snapshot
+
+
+@app.get("/debug/memory")
+def debug_memory():
+    return _debug_memory_snapshot()
+
+
+@app.post("/debug/empty-cache")
+def debug_empty_cache():
+    with _pipeline_lock:
+        torch.cuda.empty_cache()
+    return _debug_memory_snapshot()
+
+
 async def edit(
     file: UploadFile = File(...),
     prompt: str = Form(...),

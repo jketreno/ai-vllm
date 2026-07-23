@@ -42,6 +42,9 @@ IMAGE_LEASE_MIN_AVAILABLE_GIB = float(
 IMAGE_LEASE_MEMORY_TIMEOUT = float(
     os.environ.get("CLARE2_IMAGE_LEASE_MEMORY_TIMEOUT", "120")
 )
+IMAGE_EDIT_WORKER_URL = os.environ.get(
+    "CLARE2_IMAGE_EDIT_WORKER_URL", "http://qwen-image-edit-worker:8006"
+)
 
 PHASES = {
     "idle",
@@ -77,12 +80,32 @@ def _mem_available_gib() -> float:
     raise RuntimeError("MemAvailable not found")
 
 
+def _release_image_worker_cache() -> None:
+    """Ask qwen-image-edit-worker to release its idle reserved CUDA cache.
+
+    Best-effort: PyTorch's caching allocator grows to meet peak demand and
+    does not return idle memory to the driver on its own, which can leave
+    the worker holding several GiB it no longer needs. A failed request here
+    should not block the lease wait — the caller falls back to the plain
+    polling loop either way.
+    """
+    try:
+        httpx.post(f"{IMAGE_EDIT_WORKER_URL}/debug/empty-cache", timeout=10)
+    except httpx.HTTPError:
+        log.warning("failed to request qwen-image-edit-worker cache release")
+
+
 def _wait_for_image_memory() -> float:
     deadline = time.monotonic() + IMAGE_LEASE_MEMORY_TIMEOUT
+    asked_worker_to_release = False
     while time.monotonic() < deadline:
         available = _mem_available_gib()
         if available >= IMAGE_LEASE_MIN_AVAILABLE_GIB:
             return available
+        if not asked_worker_to_release:
+            asked_worker_to_release = True
+            _release_image_worker_cache()
+            continue
         time.sleep(2)
     raise TimeoutError(
         f"image inference needs {IMAGE_LEASE_MIN_AVAILABLE_GIB:.1f} GiB MemAvailable"

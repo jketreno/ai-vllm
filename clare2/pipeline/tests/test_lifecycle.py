@@ -69,6 +69,44 @@ class ImageEditLeaseTests(unittest.TestCase):
         lifecycle.maintenance.exit.assert_not_called()
 
 
+class WaitForImageMemoryTests(unittest.TestCase):
+    def setUp(self):
+        patch.object(lifecycle, "_release_image_worker_cache").start()
+
+    def tearDown(self):
+        patch.stopall()
+
+    def test_returns_immediately_when_memory_already_sufficient(self):
+        patch.object(lifecycle, "_mem_available_gib", return_value=20.0).start()
+        patch.object(lifecycle, "IMAGE_LEASE_MIN_AVAILABLE_GIB", 16.0).start()
+
+        available = lifecycle._wait_for_image_memory()
+
+        self.assertEqual(available, 20.0)
+        lifecycle._release_image_worker_cache.assert_not_called()
+
+    def test_requests_cache_release_once_when_short_then_succeeds(self):
+        patch.object(
+            lifecycle, "_mem_available_gib", side_effect=[10.0, 20.0]
+        ).start()
+        patch.object(lifecycle, "IMAGE_LEASE_MIN_AVAILABLE_GIB", 16.0).start()
+
+        available = lifecycle._wait_for_image_memory()
+
+        self.assertEqual(available, 20.0)
+        lifecycle._release_image_worker_cache.assert_called_once()
+
+    def test_still_times_out_if_release_does_not_help(self):
+        patch.object(lifecycle, "_mem_available_gib", return_value=10.0).start()
+        patch.object(lifecycle, "IMAGE_LEASE_MIN_AVAILABLE_GIB", 16.0).start()
+        patch.object(lifecycle, "IMAGE_LEASE_MEMORY_TIMEOUT", 5.0).start()
+
+        with self.assertRaises(TimeoutError):
+            lifecycle._wait_for_image_memory()
+
+        lifecycle._release_image_worker_cache.assert_called_once()
+
+
 class CompleteTrainingSkippedTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
