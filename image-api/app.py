@@ -25,6 +25,7 @@ from image_ops import (
 )
 from rpc import WorkerClient
 from resource_lease import image_edit_lease
+import openai_compat
 
 
 app = FastAPI(title="ai-vllm Image API", version="1.0.0")
@@ -469,6 +470,9 @@ def edit_params(prompt, negative_prompt, steps, scale, seed, **extra):
         "seed": seed,
         **extra,
     }
+
+
+openai_compat.register(app, invoke_edit, edit_params, MAX_CANVAS_DIMENSION)
 
 
 @app.post("/v1/images/edit")

@@ -126,6 +126,15 @@ def outpaint_canvas(image: Image.Image, width: int, height: int, anchor: str):
     return canvas, mask
 
 
+def noise_canvas(width: int, height: int) -> Image.Image:
+    """Random-noise RGB canvas used as an img2img seed for OpenAI-compatible
+    text-to-image requests, which arrive with no source image."""
+    pixels = np.random.default_rng().integers(
+        0, 256, size=(height, width, 3), dtype=np.uint8
+    )
+    return Image.fromarray(pixels, mode="RGB")
+
+
 def transform_image(
     image: Image.Image, crop, rotate_degrees: float, expand_canvas: bool
 ):
