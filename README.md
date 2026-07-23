@@ -105,10 +105,10 @@ SAM3_BIND_ADDRESS=0.0.0.0 \
 ```
 
 Restrict port 8004 to the GB10 host with the host firewall or a private overlay
-network. On the GB10 deployment, set
-`SAM3_WORKER_URL=http://battle-linux.ketrenos.com:8004`; `image-api` then uses
-the remote worker without changing its public interface. Do not start the
-local `sam3-worker` in that topology. `start.sh` enforces this selection: a
+network. On the GB10 deployment, set `SAM3_WORKER_URL` in `.env` to the remote
+worker's private URL; `image-api` then uses the remote worker without changing
+its public interface. Do not start the local `sam3-worker` in that topology.
+`start.sh` enforces this selection: a
 non-empty `SAM3_WORKER_URL` stops any existing local SAM3 container and starts
 the main stack without the `sam3` profile. When the URL is empty, it enables
 the local profile and selects Intel Arc when an Intel platform is configured
@@ -527,11 +527,11 @@ shared with the SAM3 and Qwen-Image-Edit workers. Lower it further if a new GPU
 workload does not fit; raise it only when one of those core workers is explicitly
 disabled.
 
-The `comfyui_flux_arc` job scrapes the FLUX ComfyUI metrics sidecar on
-`battle-linux.ketrenos.com:9190`. Grafana provisions the `ComfyUI FLUX Arc`
-dashboard with service health, queue depth, prompt duration, retained-history
-outcomes, host memory, and Intel XPU memory. The sidecar reads ComfyUI's
-read-only status APIs and does not proxy generation requests.
+The `comfyui_flux_arc` job scrapes the FLUX ComfyUI metrics sidecar configured
+by `COMFYUI_METRICS_TARGET` in `.env`. Grafana provisions the `ComfyUI FLUX
+Arc` dashboard with service health, queue depth, prompt duration,
+retained-history outcomes, host memory, and Intel XPU memory. The sidecar reads
+ComfyUI's read-only status APIs and does not proxy generation requests.
 
 ## MLflow Tracking
 

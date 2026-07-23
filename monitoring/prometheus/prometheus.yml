@@ -43,4 +43,4 @@ scrape_configs:
   - job_name: comfyui_flux_arc
     metrics_path: /metrics
     static_configs:
-      - targets: ['battle-linux.ketrenos.com:9190']
+      - targets: ['__COMFYUI_METRICS_TARGET__']

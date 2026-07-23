@@ -28,7 +28,7 @@ class SendRunNotificationTests(unittest.TestCase):
         self.corpus_patch = patch.object(corpus, "CORPUS_ROOT", self.corpus_root)
         self.corpus_patch.start()
 
-        self.to_patch = patch.object(notify, "NOTIFY_TO", "james_clare2@ketrenos.com")
+        self.to_patch = patch.object(notify, "NOTIFY_TO", "operator@example.com")
         self.to_patch.start()
 
         self.smtp_instance = MagicMock()
@@ -81,7 +81,7 @@ class SendRunNotificationTests(unittest.TestCase):
         self.smtp_instance.send_message.assert_called_once()
         sent_msg = self.smtp_instance.send_message.call_args[0][0]
         self.assertIn("REJECTED", sent_msg["Subject"])
-        self.assertEqual(sent_msg["To"], "james_clare2@ketrenos.com")
+        self.assertEqual(sent_msg["To"], "operator@example.com")
 
     def test_no_op_when_notify_to_empty(self):
         with patch.object(notify, "NOTIFY_TO", ""):
@@ -206,7 +206,7 @@ class SendBatchRunNotificationTests(unittest.TestCase):
         self.corpus_patch = patch.object(corpus, "CORPUS_ROOT", self.corpus_root)
         self.corpus_patch.start()
 
-        self.to_patch = patch.object(notify, "NOTIFY_TO", "james_clare2@ketrenos.com")
+        self.to_patch = patch.object(notify, "NOTIFY_TO", "operator@example.com")
         self.to_patch.start()
 
         self.smtp_instance = MagicMock()

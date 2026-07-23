@@ -16,11 +16,11 @@ from . import corpus, metrics
 
 log = logging.getLogger(__name__)
 
-SMTP_HOST = os.environ.get("CLARE2_SMTP_HOST", "192.168.1.78")
+SMTP_HOST = os.environ.get("CLARE2_SMTP_HOST", "localhost")
 SMTP_PORT = int(os.environ.get("CLARE2_SMTP_PORT", "25"))
 SMTP_TIMEOUT = float(os.environ.get("CLARE2_SMTP_TIMEOUT", "15"))
-NOTIFY_FROM = os.environ.get("CLARE2_NOTIFY_FROM", "james_claude@ketrenos.com")
-NOTIFY_TO = os.environ.get("CLARE2_NOTIFY_TO", "james_clare2@ketrenos.com")
+NOTIFY_FROM = os.environ.get("CLARE2_NOTIFY_FROM", "")
+NOTIFY_TO = os.environ.get("CLARE2_NOTIFY_TO", "")
 
 OUTCOME_LABELS = {
     "promoted": "PROMOTED",

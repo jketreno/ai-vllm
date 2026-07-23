@@ -17,10 +17,10 @@ x-clare2-env: &clare2-env
   CLARE2_TOKENIZER_HASH: ${CLARE2_TOKENIZER_HASH:?set the tokenizer SHA256}
   CLARE2_PROJECT_MAP: ${CLARE2_PROJECT_MAP:-'{"clare":"github:jketreno/clare","ai-vllm":"ai-vllm"}'}
   CLARE2_MAX_CPU_LORAS: "8"
-  CLARE2_SMTP_HOST: ${CLARE2_SMTP_HOST:-192.168.1.78}
+  CLARE2_SMTP_HOST: ${CLARE2_SMTP_HOST:?set CLARE2_SMTP_HOST in .env}
   CLARE2_SMTP_PORT: ${CLARE2_SMTP_PORT:-25}
-  CLARE2_NOTIFY_FROM: ${CLARE2_NOTIFY_FROM:-james_claude@ketrenos.com}
-  CLARE2_NOTIFY_TO: ${CLARE2_NOTIFY_TO:-james_clare2@ketrenos.com}
+  CLARE2_NOTIFY_FROM: ${CLARE2_NOTIFY_FROM:-}
+  CLARE2_NOTIFY_TO: ${CLARE2_NOTIFY_TO:-}
   CLARE2_PROXY_TOKEN_FILE: /run/secrets/clare2_proxy_token
   CLARE2_MCP_TOKEN_FILE: /run/secrets/clare2_mcp_token
   CLARE2_OPERATOR_TOKEN_FILE: /run/secrets/clare2_operator_token
@@ -50,9 +50,9 @@ services:
       - /mlflow/artifacts
       - --serve-artifacts
       - --allowed-hosts
-      - "mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*,ai.ketrenos.com,ai.ketrenos.com:*"
+      - ${CLARE2_MLFLOW_ALLOWED_HOSTS:?set CLARE2_MLFLOW_ALLOWED_HOSTS in .env}
       - --cors-allowed-origins
-      - "http://ai.ketrenos.com"
+      - ${CLARE2_MLFLOW_CORS_ALLOWED_ORIGINS:?set CLARE2_MLFLOW_CORS_ALLOWED_ORIGINS in .env}
     ports:
       - "127.0.0.1:${CLARE2_MLFLOW_PORT:-5000}:5000"
     volumes:
@@ -455,6 +455,10 @@ services:
   nginx:
     build: nginx
     restart: unless-stopped
+    environment:
+      AUTO_SAM_UPSTREAM_HOST: ${AUTO_SAM_UPSTREAM_HOST:?set AUTO_SAM_UPSTREAM_HOST in .env}
+      OPEN_WEBUI_UPSTREAM_HOST: ${OPEN_WEBUI_UPSTREAM_HOST:?set OPEN_WEBUI_UPSTREAM_HOST in .env}
+      NGINX_ENVSUBST_FILTER: ^(AUTO_SAM_UPSTREAM_HOST|OPEN_WEBUI_UPSTREAM_HOST)$
     ports: ["80:80"]
     volumes:
       - ./logs:/var/log/nginx
@@ -463,18 +467,22 @@ services:
   prometheus:
     image: prom/prometheus:v3.4.1
     restart: unless-stopped
+    environment:
+      COMFYUI_METRICS_TARGET: ${COMFYUI_METRICS_TARGET:?set COMFYUI_METRICS_TARGET in .env}
+    entrypoint: ["/bin/sh", "/etc/prometheus/render-config.sh"]
     depends_on:
       model-memory-exporter:
         condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
+      - --config.file=/tmp/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=30d
       - --web.route-prefix=/
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml.template:ro
+      - ./monitoring/prometheus/render-config.sh:/etc/prometheus/render-config.sh:ro
       - prometheus_data:/prometheus
     expose:
       - "9090"
@@ -484,7 +492,7 @@ services:
     image: grafana/grafana:12.0.2
     restart: unless-stopped
     environment:
-      GF_SERVER_ROOT_URL: https://ai.ketrenos.com/grafana
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?set GRAFANA_ROOT_URL in .env}
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_AUTH_ANONYMOUS_ENABLED: "false"

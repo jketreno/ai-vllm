@@ -1,4 +1,4 @@
-# Use Docker's internal DNS resolver so that hostnames like ai.ketrenos.com can be resolved
+# Use Docker's internal DNS resolver for runtime-configured upstream hosts.
 resolver 127.0.0.11 valid=30s;
 resolver_timeout 5s;
 
@@ -17,7 +17,7 @@ server {
 
     location /auto/ {
         client_max_body_size 1g;
-        set $auto_backend "ai.ketrenos.com";
+        set $auto_backend "${AUTO_SAM_UPSTREAM_HOST}";
         rewrite ^/auto/(.*)$ /$1 break;
         proxy_pass http://$auto_backend:8090;
         proxy_set_header Host $http_host;
@@ -87,7 +87,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        set $backend "ai.ketrenos.com";
+        set $backend "${OPEN_WEBUI_UPSTREAM_HOST}";
         proxy_pass http://$backend:8080;
     }
 }

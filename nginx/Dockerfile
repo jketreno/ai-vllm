@@ -1,7 +1,7 @@
 FROM nginx:alpine
 
-# Copy custom nginx configuration
-COPY default.conf /etc/nginx/conf.d/default.conf
+# The base image renders environment variables from this template at startup.
+COPY default.conf.template /etc/nginx/templates/default.conf.template
 
 # Expose port 80
 EXPOSE 80
