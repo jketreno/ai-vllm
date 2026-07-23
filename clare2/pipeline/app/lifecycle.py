@@ -564,6 +564,27 @@ def _complete_one_candidate(run_id: str, adapter: dict[str, Any]) -> dict[str, A
     return {"adapter_id": adapter_id, "mlflow_run_id": mlflow_run_id, **result}
 
 
+def report_training_failure(run_id: str, error: str) -> dict[str, Any]:
+    """Handle a clare2-train container crash reported by dream-train.sh.
+
+    Unlike complete_training/complete_training_batch, this fires when the
+    trainer produced no candidate at all (e.g. it crashed before writing
+    training_meta.json), so there is no adapter_id to register — only the
+    run_id the caller was told to use and the error text it captured.
+    """
+    with single_run():
+        state = status()
+        if state.get("run_id") == run_id and state.get("phase") == "failed":
+            return state
+        if state.get("run_id") != run_id or state.get("phase") not in {
+            "training",
+            "idle",
+        }:
+            raise RuntimeError("callback does not match the active training run")
+        _recover(run_id, RuntimeError(error))
+        return status()
+
+
 def _evaluate_and_apply(
     run_id: str,
     adapter_id: str,

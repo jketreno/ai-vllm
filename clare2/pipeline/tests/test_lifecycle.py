@@ -521,6 +521,90 @@ class CompleteTrainingBatchTests(unittest.TestCase):
             lifecycle.complete_training_batch("run-2", [])
 
 
+class ReportTrainingFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.state_root = pathlib.Path(self.temp.name) / "state"
+        self.state_patch = patch.object(lifecycle, "STATE_ROOT", self.state_root)
+        self.state_path_patch = patch.object(
+            lifecycle, "STATE_PATH", self.state_root / "lifecycle.json"
+        )
+        self.lock_path_patch = patch.object(
+            lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock"
+        )
+        self.state_patch.start()
+        self.state_path_patch.start()
+        self.lock_path_patch.start()
+
+        self.registry_patch = patch.object(lifecycle, "registry")
+        self.registry = self.registry_patch.start()
+        self.registry.read.return_value = {"adapters": {}, "aliases": {"current": None}}
+
+        self.controller_patch = patch.object(lifecycle, "controller")
+        self.controller_patch.start()
+        self.maintenance_patch = patch.object(lifecycle, "maintenance")
+        self.maintenance_patch.start()
+        self.notify_patch = patch.object(lifecycle, "notify")
+        self.notify_patch.start()
+        self.container_patch = patch.object(lifecycle, "_container")
+        self.container_patch.start()
+        self.wait_patch = patch.object(lifecycle, "_wait_for_vllm")
+        self.wait_patch.start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def _set_training_state(self, run_id: str) -> None:
+        lifecycle._set_state("training", run_id=run_id)
+
+    def test_marks_lifecycle_failed_with_no_candidate_adapter(self):
+        self._set_training_state("run-1")
+
+        result = lifecycle.report_training_failure(
+            "run-1", "crashed during backward pass"
+        )
+
+        self.assertEqual(result["phase"], "failed")
+        self.assertIsNone(result["candidate_id"])
+        self.assertEqual(result["error"], "crashed during backward pass")
+
+    def test_sends_failure_notification(self):
+        self._set_training_state("run-1")
+
+        lifecycle.report_training_failure("run-1", "crashed during backward pass")
+
+        lifecycle.notify.send_run_notification.assert_called_once_with(
+            "failed",
+            run_id="run-1",
+            adapter_id=None,
+            error="crashed during backward pass",
+        )
+
+    def test_recovers_vllm_to_prior_approved_adapter(self):
+        self._set_training_state("run-1")
+
+        lifecycle.report_training_failure("run-1", "crashed during backward pass")
+
+        lifecycle._container.assert_called_once_with("start", lifecycle.VLLM_CONTAINER)
+        lifecycle._wait_for_vllm.assert_called_once()
+
+    def test_idempotent_on_repeated_callback(self):
+        self._set_training_state("run-1")
+        lifecycle.report_training_failure("run-1", "first error")
+        lifecycle.notify.send_run_notification.reset_mock()
+
+        result = lifecycle.report_training_failure("run-1", "second error")
+
+        self.assertEqual(result["error"], "first error")
+        lifecycle.notify.send_run_notification.assert_not_called()
+
+    def test_rejects_mismatched_run_id(self):
+        self._set_training_state("run-1")
+        with self.assertRaises(RuntimeError):
+            lifecycle.report_training_failure("run-2", "boom")
+
+
 class RecordTrainingMetricsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

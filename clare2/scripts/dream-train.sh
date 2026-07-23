@@ -149,6 +149,23 @@ sign_and_post_callback() {
     "${POLICY_URL}/training/done" >/dev/null
 }
 
+sign_and_post_failure() {
+  local run_id="$1" error="$2"
+  local token_file="${CLARE2_CALLBACK_SECRET_FILE:-./secrets/clare2_callback_secret}"
+  local payload timestamp signature
+  payload=$(python3 -c 'import json, sys; print(json.dumps({"run_id": sys.argv[1], "error": sys.argv[2]}, separators=(",", ":")))' "$run_id" "$error")
+  timestamp=$(date +%s)
+  signature=$(printf '%s.%s' "$timestamp" "$payload" |
+    openssl dgst -sha256 -hmac "$(tr -d '\r\n' < "$token_file")" -hex |
+    awk '{print $2}')
+  curl --fail --silent --show-error \
+    -H "Content-Type: application/json" \
+    -H "X-CLARE-Timestamp: ${timestamp}" \
+    -H "X-CLARE-Signature: ${signature}" \
+    --data "$payload" \
+    "${POLICY_URL}/training/failed" >/dev/null
+}
+
 wait_for_policy() {
   local deadline=$((SECONDS + WAKE_TIMEOUT_SECONDS))
   until curl -fsS "${POLICY_URL}/health" >/dev/null 2>&1; do
@@ -230,17 +247,46 @@ docker compose up -d "${KEEP_SERVICES[@]}"
 docker compose stop "${STOP_SERVICES[@]}"
 SNAPSHOTS+=("$(memory_snapshot before_training)")
 
+TRAIN_EXIT=0
 docker compose run --no-deps --rm \
   -e CLARE2_TRAIN_AUTHORIZED=1 \
   -e CLARE2_TRAIN_SKIP_CALLBACK=1 \
   -e CLARE2_TRAIN_MLFLOW_DISABLED=1 \
-  clare2-train
+  clare2-train || TRAIN_EXIT=$?
 
 SNAPSHOTS+=("$(memory_snapshot after_training)")
 
+# Always bring services back up, even on a training crash — otherwise a
+# clare2-train failure leaves the whole stack (vLLM, open-webui, ...) down
+# until someone notices and intervenes manually.
 docker compose up -d "${WAKE_SERVICES[@]}"
 wait_for_policy
 SNAPSHOTS+=("$(memory_snapshot after_wake)")
+
+if [[ "$TRAIN_EXIT" -ne 0 ]]; then
+  echo "clare2-train exited with status ${TRAIN_EXIT}; reporting failure for run ${RUN_ID}" >&2
+  TRAIN_ERROR="clare2-train exited with status ${TRAIN_EXIT}"
+  sign_and_post_failure "$RUN_ID" "$TRAIN_ERROR" || echo "Failed to post training failure callback" >&2
+  python3 - "$SUMMARY_PATH" "$RUN_ID" "$(json_array "${STOP_SERVICES[@]}")" \
+    "$(json_array "${KEEP_SERVICES[@]}")" "$(json_array "${WAKE_SERVICES[@]}")" \
+    "$TRAIN_ERROR" "${SNAPSHOTS[@]}" <<'PY'
+import json, pathlib, sys, time
+path = pathlib.Path(sys.argv[1])
+snapshots = [json.loads(item) for item in sys.argv[7:]]
+summary = {
+    "run_id": sys.argv[2],
+    "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "stopped_services": json.loads(sys.argv[3]),
+    "kept_services": json.loads(sys.argv[4]),
+    "started_services": json.loads(sys.argv[5]),
+    "error": sys.argv[6],
+    "memory_snapshots": snapshots,
+}
+path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(path)
+PY
+  exit 1
+fi
 
 mapfile -t META_PATHS < <(adapter_meta_paths "$RUN_ID")
 if [[ ${#META_PATHS[@]} -eq 0 ]]; then

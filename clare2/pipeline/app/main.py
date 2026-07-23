@@ -55,6 +55,11 @@ class TrainingSkippedPayload(BaseModel):
     run_id: str
 
 
+class TrainingFailedPayload(BaseModel):
+    run_id: str
+    error: str
+
+
 class SummarizePayload(BaseModel):
     reference_at: datetime | None = None
 
@@ -204,6 +209,30 @@ async def training_skipped(
     if state.get("completed_adapter_id") == f"skipped:{payload.run_id}":
         return {"status": "already_completed"}
     background_tasks.add_task(lifecycle.complete_training_skipped, payload.run_id)
+    return {"status": "accepted"}
+
+
+@app.post("/training/failed")
+async def training_failed(
+    payload: TrainingFailedPayload,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_clare_timestamp: str | None = Header(default=None),
+    x_clare_signature: str | None = Header(default=None),
+) -> dict:
+    body = await request.body()
+    verify_callback(
+        secret_value("CLARE2_CALLBACK_SECRET"),
+        body,
+        x_clare_timestamp,
+        x_clare_signature,
+    )
+    state = lifecycle.status()
+    if state.get("run_id") == payload.run_id and state.get("phase") == "failed":
+        return {"status": "already_completed"}
+    background_tasks.add_task(
+        lifecycle.report_training_failure, payload.run_id, payload.error
+    )
     return {"status": "accepted"}
 
 

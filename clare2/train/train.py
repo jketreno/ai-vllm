@@ -38,7 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project_id", default="global")
     parser.add_argument("--lora_r", type=int, default=32)
     parser.add_argument("--lora_alpha", type=int, default=64)
-    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    # Must stay 0: any dropout inside the checkpointed region draws a different
+    # mask on recompute, which trips torch.utils.checkpoint's tensor-count
+    # mismatch check (CheckpointError) during backward. See
+    # use_gradient_checkpointing below for why reentrant checkpointing (which
+    # is what breaks) can't be avoided here.
+    parser.add_argument("--lora_dropout", type=float, default=0.0)
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument("--num_train_epochs", type=int, default=3)
     parser.add_argument("--per_device_train_batch_size", type=int, default=4)

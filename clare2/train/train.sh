@@ -137,7 +137,7 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
     --project_id "$project" \
     --lora_r 32 \
     --lora_alpha 64 \
-    --lora_dropout 0.05 \
+    --lora_dropout 0.0 \
     --max_seq_length 2048
 
   TRAINED_ANY=1
