@@ -17,6 +17,8 @@ from unsloth import FastModel
 from datasets import Dataset
 from peft import PeftConfig
 import torch
+import torch.utils.checkpoint as torch_checkpoint
+import transformers.modeling_utils as hf_modeling_utils
 from transformers import TrainerCallback
 from trl import SFTConfig, SFTTrainer
 
@@ -38,11 +40,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project_id", default="global")
     parser.add_argument("--lora_r", type=int, default=32)
     parser.add_argument("--lora_alpha", type=int, default=64)
-    # Must stay 0: any dropout inside the checkpointed region draws a different
-    # mask on recompute, which trips torch.utils.checkpoint's tensor-count
-    # mismatch check (CheckpointError) during backward. See
-    # use_gradient_checkpointing below for why reentrant checkpointing (which
-    # is what breaks) can't be avoided here.
+    # 0.0 was tried as a fix for a CheckpointError during backward (forward
+    # and recompute saved a different tensor count); it did not help — the
+    # crash reproduced identically. Root cause and actual fix are in
+    # force_nonreentrant_checkpointing() below. Left at 0.0 since it's a
+    # reasonable default for this corpus size, not because it's load-bearing.
     parser.add_argument("--lora_dropout", type=float, default=0.0)
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument("--num_train_epochs", type=int, default=3)
@@ -185,6 +187,33 @@ def load_corpus(
     return Dataset.from_list(records), skipped
 
 
+def force_nonreentrant_checkpointing() -> None:
+    """Force torch.utils.checkpoint to use_reentrant=False process-wide.
+
+    Unsloth's FastModel already ships this exact monkeypatch (see
+    unsloth/models/vision.py, `_nonre_checkpoint`) but only installs it when
+    `is_distributed()` is True (world_size > 1) — added there to avoid a DDP
+    "marked ready twice" error. On this single-GPU box is_distributed() is
+    always False, so Unsloth leaves reentrant checkpointing in place, which is
+    what produces CheckpointError ("different number of tensors saved during
+    forward and recomputation") on Qwen3.5's hybrid linear-attention/SSM
+    layers — the forward/recompute pair isn't reproduced identically under
+    reentrant autograd for these layers specifically. Non-reentrant
+    checkpointing tolerates that divergence by design, since it does not rely
+    on the recomputed graph matching the original tensor-for-tensor.
+    Replicated here rather than calling Unsloth's own patch because it is
+    gated behind that distributed check and not reachable otherwise.
+    """
+    original_checkpoint = torch_checkpoint.checkpoint
+
+    def _nonreentrant_checkpoint(function, *args, **kwargs):
+        kwargs["use_reentrant"] = False
+        return original_checkpoint(function, *args, **kwargs)
+
+    torch_checkpoint.checkpoint = _nonreentrant_checkpoint
+    hf_modeling_utils.checkpoint = _nonreentrant_checkpoint
+
+
 class FiniteLossCallback(TrainerCallback):
     def __init__(self, tracker: TrainingTracker | None = None) -> None:
         self.loss_history: list[dict[str, float]] = []
@@ -300,12 +329,12 @@ def main() -> None:
             # exhausted the GB10's unified 121GB memory pool (system RAM and GPU
             # memory share the same pool on this hardware) mid-training and hard-
             # locked the host, requiring a physical reboot. Checkpointing must
-            # stay enabled here regardless of which crash it produces; fix the
-            # CheckpointError itself (Unsloth/transformers version, or an
-            # upstream patch for this architecture) rather than disabling it.
+            # stay enabled here regardless of which crash it produces — see
+            # force_nonreentrant_checkpointing() below for the actual fix.
             use_gradient_checkpointing=True,
             random_state=args.seed,
         )
+        force_nonreentrant_checkpointing()
         dataset, skipped = load_corpus(train_file, text_tokenizer, args.max_seq_length)
         tracker.log_metric("corpus.training_records", float(len(dataset)))
         for reason, count in skipped.items():
