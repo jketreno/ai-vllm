@@ -1,0 +1,119 @@
+{
+  "title": "Image Pipeline",
+  "uid": "image-pipeline",
+  "tags": ["image-api", "qwen-image-edit", "sam3", "gpu"],
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "image-api Up", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "up{job=\"image_api\"}", "legendFormat": "image-api"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "id": 2, "title": "qwen-image-edit Up", "type": "stat", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "up{job=\"qwen_image_edit\"}", "legendFormat": "qwen-image-edit"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "id": 3, "title": "qwen-image-edit Model Loaded", "type": "stat", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "qwen_image_edit_model_loaded", "legendFormat": "loaded"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "NO", "color": "yellow"}, "1": {"text": "YES", "color": "green"}}}]}}
+    },
+    {
+      "id": 4, "title": "SAM3 Model Loaded", "type": "stat", "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sam3_model_loaded", "legendFormat": "loaded"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "NO", "color": "yellow"}, "1": {"text": "YES", "color": "green"}}}]}}
+    },
+    {
+      "id": 5, "title": "Edit Lease Active", "type": "stat", "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "image_api_lease_active", "legendFormat": "active"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "FREE", "color": "green"}, "1": {"text": "HELD", "color": "yellow"}}}]}}
+    },
+    {
+      "id": 6, "title": "Requests (1h)", "type": "stat", "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum(increase(image_api_requests_total{outcome=\"success\"}[1h]))", "legendFormat": "successful"}]
+    },
+    {
+      "id": 7, "title": "image-api Requests by Route", "type": "timeseries", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (route, outcome) (rate(image_api_requests_total[5m])) * 60", "legendFormat": "{{route}} / {{outcome}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqpm"}}
+    },
+    {
+      "id": 8, "title": "image-api Request Latency (p95 by route)", "type": "timeseries", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, route) (rate(image_api_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 9, "title": "Worker RPC Latency (p95)", "type": "timeseries", "gridPos": {"x": 0, "y": 11, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, service, operation) (rate(image_api_rpc_duration_seconds_bucket[5m])))", "legendFormat": "{{service}} / {{operation}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 10, "title": "Worker RPC Outcomes", "type": "timeseries", "gridPos": {"x": 12, "y": 11, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (service, outcome) (increase(image_api_rpc_requests_total[15m]))", "legendFormat": "{{service}} / {{outcome}}"}]
+    },
+    {
+      "id": 11, "title": "Edit Resource Lease Wait / Hold (p95)", "type": "timeseries", "gridPos": {"x": 0, "y": 18, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(image_api_lease_wait_seconds_bucket[15m]))", "legendFormat": "wait p95"},
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(image_api_lease_hold_seconds_bucket[15m]))", "legendFormat": "hold p95"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 12, "title": "Edit Resource Lease Outcomes", "type": "timeseries", "gridPos": {"x": 12, "y": 18, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (outcome) (increase(image_api_lease_outcomes_total[15m]))", "legendFormat": "{{outcome}}"}]
+    },
+    {
+      "id": 13, "title": "qwen-image-edit Inference Throughput", "type": "timeseries", "gridPos": {"x": 0, "y": 25, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (operation, outcome) (rate(qwen_image_edit_requests_total[5m])) * 60", "legendFormat": "{{operation}} / {{outcome}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqpm"}}
+    },
+    {
+      "id": 14, "title": "qwen-image-edit Inference Latency (p95)", "type": "timeseries", "gridPos": {"x": 12, "y": 25, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(qwen_image_edit_inference_seconds_bucket[15m]))", "legendFormat": "edit p95"},
+        {"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(qwen_image_edit_inpaint_inference_seconds_bucket[15m]))", "legendFormat": "inpaint/outpaint p95"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 15, "title": "qwen-image-edit Diffusion Step Duration (p95)", "type": "timeseries", "gridPos": {"x": 0, "y": 32, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, profile) (rate(qwen_image_edit_step_duration_seconds_bucket[5m])))", "legendFormat": "{{profile}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 16, "title": "qwen-image-edit Host MemAvailable (before/after)", "type": "timeseries", "gridPos": {"x": 12, "y": 32, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "qwen_image_edit_inference_mem_available_gib", "legendFormat": "{{phase}} / {{profile}}"}],
+      "fieldConfig": {"defaults": {"unit": "decgbytes"}}
+    },
+    {
+      "id": 17, "title": "qwen-image-edit CUDA Memory", "type": "timeseries", "gridPos": {"x": 0, "y": 39, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "qwen_image_edit_cuda_memory_allocated_bytes", "legendFormat": "allocated"},
+        {"datasource": {"uid": "prometheus"}, "expr": "qwen_image_edit_cuda_memory_reserved_bytes", "legendFormat": "reserved"},
+        {"datasource": {"uid": "prometheus"}, "expr": "qwen_image_edit_cuda_memory_free_bytes", "legendFormat": "device free"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 18, "title": "qwen-image-edit Model Load Duration", "type": "timeseries", "gridPos": {"x": 12, "y": 39, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, rate(qwen_image_edit_model_load_seconds_bucket[1h]))", "legendFormat": "p95"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 19, "title": "Input Image Dimensions (p95, by axis)", "type": "timeseries", "gridPos": {"x": 0, "y": 46, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, operation, axis) (rate(qwen_image_edit_dimension_pixels_bucket[15m])))", "legendFormat": "{{operation}} / {{axis}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 20, "title": "SAM3 Segment Requests", "type": "timeseries", "gridPos": {"x": 12, "y": 46, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (status) (rate(sam3_annotation_requests_total[5m])) * 60", "legendFormat": "{{status}} / min"}],
+      "fieldConfig": {"defaults": {"unit": "reqpm"}}
+    }
+  ]
+}

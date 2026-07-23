@@ -1,10 +1,13 @@
 """Authenticated client for CLARE2's GB10 image-edit resource lease."""
 
 import os
+import time
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import HTTPException
+
+from metrics import LEASE_ACTIVE, LEASE_HOLD, LEASE_OUTCOMES, LEASE_WAIT
 
 
 LEASE_URL = os.environ.get(
@@ -37,24 +40,35 @@ async def image_edit_lease(request_id: str):
     headers = {"Authorization": f"Bearer {_token()}"}
     timeout = httpx.Timeout(connect=10, read=900, write=30, pool=10)
     lease_id = None
+    wait_start = time.monotonic()
+    hold_start = None
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 LEASE_URL, headers=headers, json={"request_id": request_id}
             )
         if response.status_code == 409:
+            LEASE_OUTCOMES.labels("busy").inc()
             raise HTTPException(
                 503, "image resources are busy", headers={"Retry-After": "30"}
             )
         response.raise_for_status()
         lease_id = response.json()["lease_id"]
+        LEASE_WAIT.observe(time.monotonic() - wait_start)
+        LEASE_OUTCOMES.labels("acquired").inc()
+        LEASE_ACTIVE.set(1)
+        hold_start = time.monotonic()
         yield
     except httpx.HTTPError as error:
+        LEASE_OUTCOMES.labels("coordinator_unavailable").inc()
         raise HTTPException(
             503, f"image resource coordinator unavailable: {error}"
         ) from error
     finally:
         if lease_id:
+            LEASE_ACTIVE.set(0)
+            if hold_start is not None:
+                LEASE_HOLD.observe(time.monotonic() - hold_start)
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     await client.delete(f"{LEASE_URL}/{lease_id}", headers=headers)

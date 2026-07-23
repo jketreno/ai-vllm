@@ -131,6 +131,16 @@ INFERENCE_DIMENSION = Histogram(
     buckets=(256, 512, 768, 1024, 1280, 1600, 2048, 3072, 4096),
 )
 
+MODEL_LOADED = Gauge(
+    "qwen_image_edit_model_loaded", "Whether the qwen-image-edit pipeline is loaded"
+)
+MODEL_LOADS = Counter(
+    "qwen_image_edit_model_loads_total", "qwen-image-edit pipeline loads", ["status"]
+)
+MODEL_LOAD_SECONDS = Histogram(
+    "qwen_image_edit_model_load_seconds", "qwen-image-edit pipeline load latency"
+)
+
 CUDA_ALLOCATED = Gauge(
     "qwen_image_edit_cuda_memory_allocated_bytes",
     "CUDA memory allocated by this process",
@@ -591,13 +601,24 @@ def _load_pipeline():
 def startup():
     global _pipeline
     start_http_server(METRICS_PORT)
+    started = time.monotonic()
     try:
         _pipeline = _load_pipeline()
+        MODEL_LOADED.set(1)
+        MODEL_LOADS.labels("success").inc()
         update_cuda_metrics()
     except LoadAborted as error:
         # Leave _pipeline as None; /health reports not-ready and inference endpoints
         # return 503. The process stays up so status and logs remain inspectable.
+        MODEL_LOADED.set(0)
+        MODEL_LOADS.labels("aborted").inc()
         print(f"qwen-image-edit: {error}", flush=True)
+    except Exception:
+        MODEL_LOADED.set(0)
+        MODEL_LOADS.labels("error").inc()
+        raise
+    finally:
+        MODEL_LOAD_SECONDS.observe(time.monotonic() - started)
 
 
 _DATA_URI_RE = re.compile(

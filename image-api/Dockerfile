@@ -8,6 +8,7 @@ RUN python -m pip install --no-cache-dir \
     numpy==2.2.6 \
     opencv-python-headless==4.13.0.92 \
     pillow==11.3.0 \
+    prometheus-client==0.23.1 \
     python-multipart==0.0.20 \
     uvicorn==0.35.0
 

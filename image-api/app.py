@@ -7,11 +7,13 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from prometheus_client import start_http_server
 from PIL import Image, UnidentifiedImageError
 
 from image_ops import (
@@ -23,6 +25,7 @@ from image_ops import (
     segment_response,
     transform_image,
 )
+from metrics import ROUTE_LATENCY, ROUTE_REQUESTS
 from rpc import WorkerClient
 from resource_lease import image_edit_lease
 import openai_compat
@@ -30,10 +33,37 @@ import openai_compat
 
 app = FastAPI(title="ai-vllm Image API", version="1.0.0")
 log = logging.getLogger("image_api")
-sam = WorkerClient(os.environ.get("SAM3_WORKER_URL", "http://sam3-worker:8004"))
-editor = WorkerClient(
-    os.environ.get("QWEN_IMAGE_EDIT_WORKER_URL", "http://qwen-image-edit-worker:8006")
+METRICS_PORT = int(os.environ.get("IMAGE_API_METRICS_PORT", "9094"))
+sam = WorkerClient(
+    os.environ.get("SAM3_WORKER_URL", "http://sam3-worker:8004"), service="sam3"
 )
+editor = WorkerClient(
+    os.environ.get("QWEN_IMAGE_EDIT_WORKER_URL", "http://qwen-image-edit-worker:8006"),
+    service="qwen_image_edit",
+)
+
+
+@app.on_event("startup")
+def startup():
+    start_http_server(METRICS_PORT)
+
+
+@app.middleware("http")
+async def track_route_metrics(request: Request, call_next):
+    route = request.url.path
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        ROUTE_REQUESTS.labels(route, "error").inc()
+        raise
+    finally:
+        ROUTE_LATENCY.labels(route).observe(time.monotonic() - started)
+    outcome = "success" if response.status_code < 400 else "error"
+    ROUTE_REQUESTS.labels(route, outcome).inc()
+    return response
+
+
 MAX_UPLOAD_BYTES = int(
     os.environ.get("IMAGE_API_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))
 )

@@ -1,19 +1,25 @@
 """Client for the private model capability RPC."""
 
 import json
+import time
 import uuid
 
 import httpx
 from fastapi import HTTPException
+
+from metrics import RPC_LATENCY, RPC_REQUESTS
 
 
 PROTOCOL_VERSION = "1"
 
 
 class WorkerClient:
-    def __init__(self, base_url: str, timeout: float = 1800):
+    def __init__(
+        self, base_url: str, timeout: float = 1800, service: str | None = None
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.service = service or self.base_url
 
     async def capabilities(self) -> dict:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -50,35 +56,50 @@ class WorkerClient:
             ("attachments", (name, payload, media_type))
             for name, payload, media_type in attachments
         ]
+        started = time.monotonic()
+        outcome = "error"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/v1/invoke",
-                    data={"manifest": json.dumps(manifest)},
-                    files=files,
-                )
-        except httpx.HTTPError as error:
-            raise HTTPException(503, f"model worker unavailable: {error}") from error
-        if response.status_code == 503:
-            detail = "model capability is not ready"
             try:
-                worker_detail = response.json().get("detail")
-            except (ValueError, AttributeError):
-                worker_detail = None
-            if isinstance(worker_detail, str) and worker_detail:
-                detail = worker_detail
-            raise HTTPException(503, detail)
-        if response.status_code >= 400:
-            raise HTTPException(
-                502, f"model worker rejected request: {response.text[:500]}"
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        f"{self.base_url}/v1/invoke",
+                        data={"manifest": json.dumps(manifest)},
+                        files=files,
+                    )
+            except httpx.HTTPError as error:
+                outcome = "unavailable"
+                raise HTTPException(
+                    503, f"model worker unavailable: {error}"
+                ) from error
+            if response.status_code == 503:
+                outcome = "not_ready"
+                detail = "model capability is not ready"
+                try:
+                    worker_detail = response.json().get("detail")
+                except (ValueError, AttributeError):
+                    worker_detail = None
+                if isinstance(worker_detail, str) and worker_detail:
+                    detail = worker_detail
+                raise HTTPException(503, detail)
+            if response.status_code >= 400:
+                outcome = "rejected"
+                raise HTTPException(
+                    502, f"model worker rejected request: {response.text[:500]}"
+                )
+            result = response.json()
+            if (
+                result.get("protocol_version") != PROTOCOL_VERSION
+                or result.get("status") != "ok"
+            ):
+                outcome = "invalid_response"
+                raise HTTPException(502, "invalid model worker response")
+            outcome = "success"
+            return result
+        finally:
+            RPC_LATENCY.labels(self.service, operation).observe(
+                time.monotonic() - started
             )
-        result = response.json()
-        if (
-            result.get("protocol_version") != PROTOCOL_VERSION
-            or result.get("status") != "ok"
-        ):
-            raise HTTPException(502, "invalid model worker response")
-        return result
+            RPC_REQUESTS.labels(self.service, operation, outcome).inc()
 
     async def invoke_progress(self, request_id: str) -> dict:
         """Poll step progress for an in-flight /v1/invoke call. Raises

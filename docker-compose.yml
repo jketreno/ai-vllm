@@ -315,11 +315,14 @@ services:
       IMAGE_API_EXCLUSIVE_VLLM: ${IMAGE_API_EXCLUSIVE_VLLM:-false}
       IMAGE_API_VISION_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
       IMAGE_API_MAX_UPLOAD_BYTES: ${IMAGE_API_MAX_UPLOAD_BYTES:-52428800}
+      IMAGE_API_METRICS_PORT: ${IMAGE_API_METRICS_PORT:-9094}
     secrets:
       - clare2_proxy_token
       - clare2_operator_token
     ports:
       - "${IMAGE_API_BIND_ADDRESS:-127.0.0.1}:${IMAGE_API_PORT:-8005}:8000"
+    expose:
+      - "9094"
     depends_on:
       clare2-policy:
         condition: service_healthy
