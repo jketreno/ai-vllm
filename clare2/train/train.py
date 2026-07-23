@@ -322,6 +322,13 @@ def main() -> None:
             logging_steps=1,
             save_strategy="epoch",
             bf16=True,
+            # SFTConfig defaults gradient_checkpointing=True (unlike plain HF
+            # TrainingArguments), which makes SFTTrainer call the model's own
+            # gradient_checkpointing_enable() regardless of the
+            # use_gradient_checkpointing=False already passed to
+            # FastModel.get_peft_model above — silently re-enabling the vanilla
+            # reentrant checkpointing that crashes on this architecture.
+            gradient_checkpointing=False,
             max_length=args.max_seq_length,
             completion_only_loss=True,
             report_to="none",
