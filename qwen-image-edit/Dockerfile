@@ -9,6 +9,7 @@ RUN python -m pip install --no-cache-dir \
     "diffusers @ git+https://github.com/huggingface/diffusers@f6a3517673e32b4134cd4eb62bd13a20934385eb" \
     accelerate==1.13.0 \
     fastapi==0.116.1 \
+    peft==0.18.0 \
     "prometheus-client==0.23.1" \
     "python-multipart==0.0.20" \
     "transformers>=5.0" \
