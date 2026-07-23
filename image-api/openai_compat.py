@@ -10,7 +10,8 @@ import re
 import time
 import uuid
 
-from fastapi import APIRouter, Body, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Header, HTTPException, Request
+from starlette.datastructures import UploadFile
 from PIL import Image, UnidentifiedImageError
 
 from image_ops import noise_canvas
@@ -76,27 +77,48 @@ def register(app, editor_invoke_edit, edit_params, max_canvas_dimension: int):
 
     @router.post("/images/edits")
     async def edits(
-        image: UploadFile = File(...),
-        prompt: str = Form(...),
-        n: int = Form(1),
-        size: str | None = Form(None),
-        response_format: str | None = Form(None),
+        request: Request,
         _authorization: str | None = Header(None, alias="Authorization"),
     ):
+        form = await request.form()
+        images = [
+            value
+            for key in ("image[]", "image")
+            for value in form.getlist(key)
+            if isinstance(value, UploadFile)
+        ]
+        if not images:
+            raise HTTPException(422, "image is required")
+        prompt = form.get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            raise HTTPException(422, "prompt is required")
+        n = int(form.get("n", 1))
+        response_format = form.get("response_format") or None
+
         _require_b64_json(response_format)
         if n != 1:
             raise HTTPException(400, "only n=1 is supported by this backend")
-        media_type = image.content_type or ""
-        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise HTTPException(415, "upload a JPEG, PNG, or WebP image")
-        payload = await image.read()
-        try:
-            source = Image.open(io.BytesIO(payload)).convert("RGB")
-        except (UnidentifiedImageError, OSError) as error:
-            raise HTTPException(400, "invalid image") from error
+
+        loaded = []
+        for upload in images:
+            media_type = upload.content_type or ""
+            if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+                raise HTTPException(415, "upload a JPEG, PNG, or WebP image")
+            payload = await upload.read()
+            try:
+                source_image = Image.open(io.BytesIO(payload)).convert("RGB")
+            except (UnidentifiedImageError, OSError) as error:
+                raise HTTPException(400, "invalid image") from error
+            loaded.append((source_image, media_type, payload))
+
+        source, media_type, _ = loaded[0]
+        extras = [
+            (f"reference:{index}", payload, ref_media_type)
+            for index, (_, ref_media_type, payload) in enumerate(loaded[1:])
+        ]
         params = edit_params(prompt, "", 20, 4.0, 0)
         result = await editor_invoke_edit(
-            "edit", source, media_type, params, request_id=str(uuid.uuid4())
+            "edit", source, media_type, params, extras, request_id=str(uuid.uuid4())
         )
         return _openai_response([result["image_png_base64"]])
 
