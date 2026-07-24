@@ -40,6 +40,14 @@ runtime = runtime_config()
 annotator = PlatformSAM3Annotator(runtime)
 inference_lock = threading.Lock()
 
+# Set by invoke() whenever a real inference call raises (as opposed to a bad
+# request, which is rejected before this point via HTTPException). Cleared on
+# the next successful inference. /health/ready surfaces this so a wedged
+# accelerator (e.g. an out-of-memory error that leaves the device unusable)
+# fails the Docker healthcheck with the actual error instead of reporting
+# healthy just because the model loaded once at startup.
+last_inference_error: dict | None = None
+
 MODEL_LOADED = Gauge("sam3_model_loaded", "Whether the SAM3 model is loaded")
 MODEL_LOADS = Counter("sam3_model_loads_total", "SAM3 model loads", ["status"])
 MODEL_LOAD_SECONDS = Histogram("sam3_model_load_seconds", "SAM3 model load latency")
@@ -94,9 +102,26 @@ def ready(response: Response):
     loaded = annotator.model is not None
     if not loaded:
         response.status_code = 503
+        return {
+            "status": "loading",
+            "model_loaded": False,
+            "platform": runtime.platform,
+            "device": runtime.device,
+            "precision": runtime.precision,
+        }
+    if last_inference_error is not None:
+        response.status_code = 503
+        return {
+            "status": "error",
+            "model_loaded": True,
+            "platform": runtime.platform,
+            "device": runtime.device,
+            "precision": runtime.precision,
+            "last_inference_error": last_inference_error,
+        }
     return {
-        "status": "ready" if loaded else "loading",
-        "model_loaded": loaded,
+        "status": "ready",
+        "model_loaded": True,
         "platform": runtime.platform,
         "device": runtime.device,
         "precision": runtime.precision,
@@ -212,6 +237,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
         for value in prompts
         if isinstance(value, str) and value.strip()
     ][:24]
+    global last_inference_error
     try:
         with inference_lock:
             reset_peak_memory_stats(runtime)
@@ -228,6 +254,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
             inference_memory = memory_snapshot(runtime)
         INFERENCE_REQUESTS.labels("success").inc()
         _update_device_metrics()
+        last_inference_error = None
         return {
             "protocol_version": PROTOCOL_VERSION,
             "request_id": request.get("request_id"),
@@ -247,6 +274,11 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
                 "accelerator_memory": inference_memory,
             },
         }
-    except Exception:
+    except Exception as error:
         INFERENCE_REQUESTS.labels("error").inc()
+        last_inference_error = {
+            "type": type(error).__name__,
+            "message": str(error)[:500],
+            "at": time.time(),
+        }
         raise
