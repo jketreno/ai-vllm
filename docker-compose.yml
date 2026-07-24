@@ -467,22 +467,18 @@ services:
   prometheus:
     image: prom/prometheus:v3.4.1
     restart: unless-stopped
-    environment:
-      COMFYUI_METRICS_TARGET: ${COMFYUI_METRICS_TARGET:?set COMFYUI_METRICS_TARGET in .env}
-    entrypoint: ["/bin/sh", "/etc/prometheus/render-config.sh"]
     depends_on:
       model-memory-exporter:
         condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
-      - --config.file=/tmp/prometheus.yml
+      - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=30d
       - --web.route-prefix=/
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml.template:ro
-      - ./monitoring/prometheus/render-config.sh:/etc/prometheus/render-config.sh:ro
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     expose:
       - "9090"

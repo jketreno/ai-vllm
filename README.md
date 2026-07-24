@@ -527,12 +527,6 @@ shared with the SAM3 and Qwen-Image-Edit workers. Lower it further if a new GPU
 workload does not fit; raise it only when one of those core workers is explicitly
 disabled.
 
-The `comfyui_flux_arc` job scrapes the FLUX ComfyUI metrics sidecar configured
-by `COMFYUI_METRICS_TARGET` in `.env`. Grafana provisions the `ComfyUI FLUX
-Arc` dashboard with service health, queue depth, prompt duration,
-retained-history outcomes, host memory, and Intel XPU memory. The sidecar reads
-ComfyUI's read-only status APIs and does not proxy generation requests.
-
 ## MLflow Tracking
 
 The private `mlflow` service stores run metadata in `mlflow/data/mlflow.db` and
