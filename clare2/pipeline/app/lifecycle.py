@@ -45,6 +45,9 @@ IMAGE_LEASE_MEMORY_TIMEOUT = float(
 IMAGE_EDIT_WORKER_URL = os.environ.get(
     "CLARE2_IMAGE_EDIT_WORKER_URL", "http://qwen-image-edit-worker:8006"
 )
+IMAGE_LEASE_EXCLUSIVE_VLLM = os.environ.get(
+    "IMAGE_API_EXCLUSIVE_VLLM", "false"
+).lower() in ("1", "true", "yes")
 
 PHASES = {
     "idle",
