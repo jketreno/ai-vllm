@@ -10,6 +10,7 @@ RUN python -m pip install --no-cache-dir \
     ftfy==6.3.1 \
     fastapi==0.116.1 \
     iopath==0.1.10 \
+    open_clip_torch==3.3.0 \
     opencv-python-headless==4.13.0.92 \
     pandas==2.3.3 \
     prometheus-client==0.23.1 \
