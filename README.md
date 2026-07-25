@@ -256,8 +256,11 @@ curl -s http://127.0.0.1:8005/v1/images/edit \
 port `9093` (job `qwen_image_edit`), following the same pattern as the SAM3
 services' `9092`.
 
-Image inference is admitted only when host `MemAvailable` is at least
-`QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB` (16 GiB by default).
+Image inference is admitted only when effective host memory headroom is at least
+`QWEN_IMAGE_EDIT_INFERENCE_REQUIRED_GIB` (16 GiB by default). Effective headroom is
+host `MemAvailable` plus the qwen-image-edit process's own reclaimable PyTorch CUDA
+allocator cache (`memory_reserved - memory_allocated`); live model allocations are
+never counted as available.
 
 By default (`IMAGE_API_EXCLUSIVE_VLLM=false`), `qwen-image-edit` and
 `vllm-engine` run concurrently — the OOM/host-lockup history above predates

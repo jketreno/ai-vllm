@@ -385,13 +385,34 @@ def _mem_available_gib():
     raise RuntimeError("MemAvailable not found in /proc/meminfo")
 
 
-def _gate_inference(operation: str, request_id: str | None, total_steps: int) -> None:
+def _inference_memory_headroom() -> tuple[float, float, float]:
+    """Return raw, worker-reclaimable, and effective host headroom in GiB.
+
+    On GB10, CUDA allocations consume the same physical memory reported by
+    /proc/meminfo. PyTorch's reserved-but-unallocated blocks therefore lower
+    MemAvailable even though this process can reuse them during inference.
+    Count only that allocator cache, never live model tensors, as headroom.
+    """
     available = _mem_available_gib()
+    reclaimable = 0.0
+    try:
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            reclaimable = max(0.0, reserved - allocated)
+    except Exception:
+        log.exception("failed to measure reclaimable CUDA allocator cache")
+    return available, reclaimable, available + reclaimable
+
+
+def _gate_inference(operation: str, request_id: str | None, total_steps: int) -> None:
+    available, reclaimable, effective = _inference_memory_headroom()
     INFERENCE_MEMORY.labels("before", PROFILE).set(available)
     log.info(
         "request_id=%s operation=%s stage=gate_check mem_available_gib=%.2f "
-        "required_gib=%.1f",
-        request_id, operation, available, INFERENCE_REQUIRED_GIB,
+        "reclaimable_cache_gib=%.2f effective_headroom_gib=%.2f required_gib=%.1f",
+        request_id, operation, available, reclaimable, effective,
+        INFERENCE_REQUIRED_GIB,
     )
     if request_id:
         with _invoke_progress_lock:
@@ -403,23 +424,29 @@ def _gate_inference(operation: str, request_id: str | None, total_steps: int) ->
                 "total": total_steps,
                 "profile": PROFILE,
                 "mem_available_gib": round(available, 2),
+                "reclaimable_cache_gib": round(reclaimable, 2),
+                "effective_headroom_gib": round(effective, 2),
                 "updated_at": time.time(),
             }
         if cancelled:
             INFERENCE_REQUESTS.labels(operation, "cancelled", PROFILE).inc()
             raise InferenceCancelled()
-    if available < INFERENCE_REQUIRED_GIB:
+    if effective < INFERENCE_REQUIRED_GIB:
         INFERENCE_REQUESTS.labels(operation, "rejected", PROFILE).inc()
         _finish_progress(request_id, "failed", "insufficient memory headroom")
         log.warning(
             "request_id=%s operation=%s stage=gate_rejected mem_available_gib=%.2f "
+            "reclaimable_cache_gib=%.2f effective_headroom_gib=%.2f "
             "required_gib=%.1f",
-            request_id, operation, available, INFERENCE_REQUIRED_GIB,
+            request_id, operation, available, reclaimable, effective,
+            INFERENCE_REQUIRED_GIB,
         )
         raise HTTPException(
             503,
             f"image inference needs at least {INFERENCE_REQUIRED_GIB:.1f} GiB "
-            f"MemAvailable; only {available:.1f} GiB is available",
+            f"effective memory headroom; only {effective:.1f} GiB is available "
+            f"({available:.1f} GiB MemAvailable + {reclaimable:.1f} GiB "
+            "reclaimable qwen-image-edit cache)",
             headers={"Retry-After": "30"},
         )
 
@@ -782,6 +809,12 @@ def load_status():
 def _debug_memory_snapshot() -> dict:
     snapshot = _cuda_mem_gib()
     snapshot["system_available_gib"] = _mem_available_gib()
+    snapshot["reclaimable_cache_gib"] = max(
+        0.0, snapshot["reserved_gib"] - snapshot["allocated_gib"]
+    )
+    snapshot["effective_headroom_gib"] = (
+        snapshot["system_available_gib"] + snapshot["reclaimable_cache_gib"]
+    )
     if torch.cuda.is_available():
         free, _total = torch.cuda.mem_get_info()
         snapshot["cuda_free_gib"] = free / (1024**3)

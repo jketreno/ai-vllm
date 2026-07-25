@@ -122,9 +122,10 @@ except ImportError:
     fastapi_stub = types.ModuleType("fastapi")
 
     class _FakeHTTPException(Exception):
-        def __init__(self, status_code, detail=None):
+        def __init__(self, status_code, detail=None, headers=None):
             self.status_code = status_code
             self.detail = detail
+            self.headers = headers
             super().__init__(detail)
 
     class _FakeFastAPI:
@@ -493,6 +494,8 @@ class DebugMemoryTests(unittest.TestCase):
         self.assertEqual(snapshot["allocated_gib"], 1.0)
         self.assertEqual(snapshot["reserved_gib"], 2.0)
         self.assertEqual(snapshot["system_available_gib"], 12.5)
+        self.assertEqual(snapshot["reclaimable_cache_gib"], 1.0)
+        self.assertEqual(snapshot["effective_headroom_gib"], 13.5)
         self.assertNotIn("cuda_free_gib", snapshot)
 
     def test_snapshot_includes_cuda_free_when_cuda_available(self):
@@ -516,6 +519,39 @@ class DebugMemoryTests(unittest.TestCase):
 
         empty_cache.assert_called_once()
         self.assertEqual(snapshot["system_available_gib"], 20.0)
+
+
+class InferenceMemoryGateTests(unittest.TestCase):
+    def test_worker_allocator_cache_counts_as_effective_headroom(self):
+        with (
+            mock.patch.object(api, "_mem_available_gib", return_value=13.4),
+            mock.patch.object(api.torch.cuda, "is_available", return_value=True),
+            mock.patch.object(
+                api.torch.cuda, "memory_allocated", return_value=35.6 * (1024**3)
+            ),
+            mock.patch.object(
+                api.torch.cuda, "memory_reserved", return_value=40.6 * (1024**3)
+            ),
+        ):
+            api._gate_inference("edit", None, 4)
+
+    def test_rejects_when_raw_plus_reclaimable_memory_is_insufficient(self):
+        with (
+            mock.patch.object(api, "_mem_available_gib", return_value=13.4),
+            mock.patch.object(api.torch.cuda, "is_available", return_value=True),
+            mock.patch.object(
+                api.torch.cuda, "memory_allocated", return_value=35.6 * (1024**3)
+            ),
+            mock.patch.object(
+                api.torch.cuda, "memory_reserved", return_value=37.6 * (1024**3)
+            ),
+        ):
+            with self.assertRaises(api.HTTPException) as raised:
+                api._gate_inference("edit", None, 4)
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIn("15.4 GiB is available", raised.exception.detail)
+        self.assertIn("2.0 GiB reclaimable", raised.exception.detail)
 
 
 if __name__ == "__main__":
