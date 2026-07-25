@@ -643,6 +643,84 @@ class ReportTrainingFailureTests(unittest.TestCase):
             lifecycle.report_training_failure("run-2", "boom")
 
 
+class ReconcileStalledTrainingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.state_root = pathlib.Path(self.temp.name) / "state"
+        patch.object(lifecycle, "STATE_ROOT", self.state_root).start()
+        patch.object(
+            lifecycle, "STATE_PATH", self.state_root / "lifecycle.json"
+        ).start()
+        patch.object(
+            lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock"
+        ).start()
+
+        registry = patch.object(lifecycle, "registry").start()
+        registry.read.return_value = {"adapters": {}, "aliases": {"current": None}}
+        patch.object(lifecycle, "controller").start()
+        patch.object(lifecycle, "maintenance").start()
+        patch.object(lifecycle, "notify").start()
+        patch.object(lifecycle, "_container").start()
+        patch.object(lifecycle, "_wait_for_vllm").start()
+        self.container_state = patch.object(lifecycle, "_container_state").start()
+
+    def tearDown(self):
+        self.temp.cleanup()
+        patch.stopall()
+
+    def _set_training_state(self, run_id: str) -> None:
+        lifecycle._set_state("training", run_id=run_id)
+
+    def test_ignores_phases_other_than_training(self):
+        lifecycle._set_state("evaluating", run_id="run-1")
+
+        result = lifecycle.reconcile_stalled_training()
+
+        self.assertEqual(result["phase"], "evaluating")
+        self.container_state.assert_not_called()
+
+    def test_ignores_still_running_container(self):
+        self._set_training_state("run-1")
+        self.container_state.return_value = {"Running": True}
+
+        result = lifecycle.reconcile_stalled_training()
+
+        self.assertEqual(result["phase"], "training")
+
+    def test_ignores_missing_container_still_being_created(self):
+        self._set_training_state("run-1")
+        self.container_state.return_value = None
+
+        result = lifecycle.reconcile_stalled_training()
+
+        self.assertEqual(result["phase"], "training")
+
+    def test_recovers_when_container_exited_without_callback(self):
+        self._set_training_state("run-1")
+        self.container_state.return_value = {
+            "Running": False,
+            "ExitCode": 1,
+            "FinishedAt": "2026-07-24T23:00:00Z",
+        }
+
+        result = lifecycle.reconcile_stalled_training()
+
+        self.assertEqual(result["phase"], "failed")
+        self.assertIn("exited (code 1)", result["error"])
+        lifecycle.maintenance.exit.assert_called_once()
+
+    def test_idempotent_once_recovered(self):
+        self._set_training_state("run-1")
+        self.container_state.return_value = {"Running": False, "ExitCode": 1}
+        lifecycle.reconcile_stalled_training()
+        lifecycle.notify.send_run_notification.reset_mock()
+
+        result = lifecycle.reconcile_stalled_training()
+
+        self.assertEqual(result["phase"], "failed")
+        lifecycle.notify.send_run_notification.assert_not_called()
+
+
 class RecordTrainingMetricsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

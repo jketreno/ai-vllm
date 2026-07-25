@@ -113,11 +113,18 @@ def startup() -> None:
             minutes=1,
             id="image_lease_reconcile",
         )
+    scheduler.add_job(
+        lifecycle.reconcile_stalled_training,
+        "interval",
+        minutes=1,
+        id="stalled_training_reconcile",
+    )
     scheduler.start()
     try:
         lifecycle.reconcile_terminal_state()
         if lifecycle.IMAGE_LEASE_EXCLUSIVE_VLLM:
             lifecycle.reconcile_image_edit_lease()
+        lifecycle.reconcile_stalled_training()
         controller.reconcile()
     except Exception:
         log.exception("Initial vLLM reconciliation failed")

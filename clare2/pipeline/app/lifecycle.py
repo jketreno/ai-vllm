@@ -235,6 +235,42 @@ def reconcile_image_edit_lease() -> dict[str, Any]:
     return state
 
 
+def _container_state(name: str) -> dict[str, Any] | None:
+    response = httpx.get(f"{DOCKER_PROXY_URL}/containers/{name}/json", timeout=30)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json().get("State", {})
+
+
+def reconcile_stalled_training() -> dict[str, Any]:
+    """Detect a training container that exited without ever calling back.
+
+    run_nightly_training starts the trainer and returns; the only way phase
+    ever leaves "training" again is a /training/* callback from inside the
+    container. If that container crashed before it could call back (e.g. an
+    uncaught exception, OOM-kill, host restart), phase is stuck on
+    "training" — and maintenance mode with it — forever. Treat an exited
+    container found in that phase the same as an explicit failure report.
+    """
+    state = status()
+    if state.get("phase") != "training":
+        return state
+    run_id = state.get("run_id")
+    if not run_id:
+        return state
+    container_state = _container_state(TRAIN_CONTAINER)
+    if container_state is None or container_state.get("Running"):
+        return state
+    exit_code = container_state.get("ExitCode", "unknown")
+    finished_at = container_state.get("FinishedAt", "unknown")
+    return report_training_failure(
+        run_id,
+        f"{TRAIN_CONTAINER} exited (code {exit_code}) at {finished_at} without "
+        "posting a training callback",
+    )
+
+
 def reconcile_terminal_state() -> dict[str, Any]:
     """Recover persisted lifecycle records that reached an outcome but not idle."""
     state = status()

@@ -95,6 +95,22 @@ _send_skipped_callback() {
     "${CLARE2_PIPELINE_URL:-http://clare2-policy:8000}/training/skipped"
 }
 
+_send_failure_callback() {
+  local error="$1"
+  local payload timestamp signature
+  payload=$(python3 -c 'import json, sys; print(json.dumps({"run_id": sys.argv[1], "error": sys.argv[2]}, separators=(",", ":")))' "$RUN_ID" "$error")
+  timestamp=$(date +%s)
+  signature=$(printf '%s.%s' "$timestamp" "$payload" |
+    openssl dgst -sha256 -hmac "$(cat /run/secrets/clare2_callback_secret)" -hex |
+    awk '{print $2}')
+  curl --fail --silent --show-error \
+    -H "Content-Type: application/json" \
+    -H "X-CLARE-Timestamp: ${timestamp}" \
+    -H "X-CLARE-Signature: ${signature}" \
+    --data "$payload" \
+    "${CLARE2_PIPELINE_URL:-http://clare2-policy:8000}/training/failed"
+}
+
 TRAINED_ANY=0
 TRAINED_META_PATHS=()
 
@@ -126,6 +142,7 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
 
   echo "Training adapter for project: $project (corpus: $corpus_file, model: $model_path)" >&2
 
+  TRAIN_EXIT=0
   python /app/train.py \
     --model_name "$model_path" \
     --base_model_id "$MODEL" \
@@ -138,7 +155,18 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
     --lora_r 32 \
     --lora_alpha 64 \
     --lora_dropout 0.0 \
-    --max_seq_length 2048
+    --max_seq_length 2048 || TRAIN_EXIT=$?
+
+  if [[ "$TRAIN_EXIT" -ne 0 ]]; then
+    echo "train.py exited with status ${TRAIN_EXIT} for project ${project}; reporting failure for run ${RUN_ID}" >&2
+    if [[ "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" == "1" ]]; then
+      echo "Skipping training-failed callback for dream-mode run: $RUN_ID" >&2
+    else
+      _send_failure_callback "train.py exited with status ${TRAIN_EXIT} for project ${project}" ||
+        echo "Failed to post training failure callback" >&2
+    fi
+    exit "$TRAIN_EXIT"
+  fi
 
   TRAINED_ANY=1
   TRAINED_META_PATHS+=("$adapter_out/training_meta.json")
