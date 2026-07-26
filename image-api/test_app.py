@@ -6,6 +6,8 @@ not just what the current implementation happens to return.
 
 import importlib
 import importlib.util
+import base64
+import io
 import json
 import sys
 import tempfile
@@ -14,6 +16,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from PIL import Image
+
 MODULE_DIR = Path(__file__).parent
 sys.path.insert(0, str(MODULE_DIR))
 spec = importlib.util.spec_from_file_location("image_api_app", MODULE_DIR / "app.py")
@@ -21,6 +25,13 @@ app = importlib.util.module_from_spec(spec)
 sys.modules["image_api_app"] = app
 spec.loader.exec_module(app)
 resource_lease = importlib.import_module("resource_lease")
+
+
+def _mask_data_uri(size=(4, 4), fill=255):
+    buffer = io.BytesIO()
+    Image.new("L", size, fill).save(buffer, format="PNG")
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
 
 
 def _chat_response(payload: dict) -> AsyncMock:
@@ -111,6 +122,20 @@ class CapabilityReadinessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "degraded")
         self.assertEqual(result["services"]["sam3-worker"]["status"], "unavailable")
+
+
+class MaskValidationTests(unittest.TestCase):
+    def test_mask_dimensions_must_match_source(self):
+        with self.assertRaisesRegex(app.HTTPException, "dimensions"):
+            app.decode_mask(_mask_data_uri((3, 4)), expected_size=(4, 4))
+
+    def test_mask_must_contain_an_editable_pixel(self):
+        with self.assertRaisesRegex(app.HTTPException, "editable pixel"):
+            app.decode_mask(_mask_data_uri(fill=0), expected_size=(4, 4))
+
+    def test_valid_mask_is_normalized_to_png(self):
+        decoded = app.decode_mask(_mask_data_uri(), expected_size=(4, 4))
+        self.assertEqual(Image.open(io.BytesIO(decoded)).mode, "L")
 
 
 class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):

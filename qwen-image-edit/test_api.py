@@ -198,6 +198,12 @@ class MaskDecodingTests(unittest.TestCase):
         with self.assertRaises(api.HTTPException):
             api._decode_mask("data:image/png;base64,not-valid-base64!!!")
 
+    def test_capabilities_report_latent_mask_conditioning(self):
+        self.assertEqual(
+            api.capabilities()["operations"]["inpaint"]["mask_conditioning"],
+            "latent",
+        )
+
 
 class OutpaintCanvasTests(unittest.TestCase):
     def test_center_anchor_preserves_original_pixels_untouched_by_mask(self):
@@ -294,23 +300,6 @@ class InpaintCompositionTests(unittest.TestCase):
 
         self.assertEqual(result.getpixel((0, 0)), (100, 50, 25))
 
-    def test_visual_marker_surrounds_mask_without_changing_selected_pixels(self):
-        source = _make_image(100, 100, color=(10, 20, 30))
-        mask = Image.new("L", source.size, 0)
-        mask.paste(255, (30, 30, 70, 70))
-
-        annotated = api._annotate_inpaint_region(source, mask)
-
-        self.assertEqual(annotated.getpixel((50, 50)), source.getpixel((50, 50)))
-        self.assertEqual(annotated.getpixel((28, 50)), api.MARKER_COLOR)
-        self.assertEqual(annotated.getpixel((20, 50)), api.MARKER_HALO_COLOR)
-        self.assertEqual(annotated.getpixel((0, 0)), source.getpixel((0, 0)))
-
-    def test_marker_width_scales_and_is_bounded(self):
-        self.assertEqual(api._visual_marker_width(_make_image(100, 100)), 6)
-        self.assertEqual(api._visual_marker_width(_make_image(1000, 800)), 6)
-        self.assertEqual(api._visual_marker_width(_make_image(4000, 4000)), 16)
-
     def test_full_mask_and_multi_object_mask_preserve_source_dimensions(self):
         source = _make_image(320, 180, color=(1, 2, 3))
         generated = _make_image(512, 512, color=(9, 8, 7))
@@ -324,42 +313,21 @@ class InpaintCompositionTests(unittest.TestCase):
             self.assertEqual(result.size, source.size)
 
 
-class FadePreviewTests(unittest.TestCase):
-    def test_early_step_stays_close_to_the_original(self):
-        original = _make_image(4, 4, color=(0, 0, 0))
-        generated = _make_image(4, 4, color=(200, 100, 50))
-
-        result = api._fade_preview(original, generated, step=1, total_steps=20)
-
-        self.assertEqual(result.getpixel((0, 0)), (10, 5, 2))
-
-    def test_final_step_equals_the_generated_frame(self):
-        original = _make_image(4, 4, color=(0, 0, 0))
-        generated = _make_image(4, 4, color=(200, 100, 50))
-
-        result = api._fade_preview(original, generated, step=20, total_steps=20)
-
-        self.assertEqual(result.getpixel((0, 0)), (200, 100, 50))
-
-    def test_missing_total_steps_returns_the_generated_frame(self):
-        original = _make_image(4, 4, color=(0, 0, 0))
-        generated = _make_image(4, 4, color=(200, 100, 50))
-
-        result = api._fade_preview(original, generated, step=None, total_steps=None)
-
-        self.assertEqual(result.getpixel((0, 0)), (200, 100, 50))
-
-    def test_resizes_generated_frame_to_match_original(self):
-        original = _make_image(8, 8, color=(0, 0, 0))
-        generated = _make_image(4, 4, color=(200, 100, 50))
-
-        result = api._fade_preview(original, generated, step=20, total_steps=20)
-
-        self.assertEqual(result.size, original.size)
-
-
 class InpaintPipelineTests(unittest.TestCase):
-    def test_uses_edit_plus_pipeline_without_legacy_mask_arguments(self):
+    def test_shared_inpaint_pipeline_reuses_loaded_components(self):
+        components = {"transformer": object(), "vae": object()}
+        edit_pipeline = types.SimpleNamespace(components=components)
+        constructed = object()
+
+        with mock.patch.object(
+            api, "QwenImageEditInpaintPipeline", return_value=constructed
+        ) as pipeline_class:
+            result = api._make_inpaint_pipeline(edit_pipeline)
+
+        self.assertIs(result, constructed)
+        pipeline_class.assert_called_once_with(**components)
+
+    def test_inpaint_pipeline_receives_latent_mask_arguments(self):
         class RecordingPipeline:
             def __init__(self):
                 self.kwargs = None
@@ -371,11 +339,15 @@ class InpaintPipelineTests(unittest.TestCase):
                 )
 
         pipeline = RecordingPipeline()
-        with mock.patch.object(api, "_pipeline", pipeline):
-            api._edit_plus_image(
+        mask = Image.new("L", (8, 8), 255)
+        with mock.patch.object(api, "_inpaint_pipeline", pipeline):
+            api._inpaint_image(
                 _make_image(8, 8),
+                mask,
                 "replace with fireworks",
                 " ",
+                0.75,
+                32,
                 2,
                 4.0,
                 _FakeGenerator(device="cuda").manual_seed(0),
@@ -387,8 +359,9 @@ class InpaintPipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.kwargs["guidance_scale"], 1.0)
         self.assertEqual(pipeline.kwargs["prompt"], "replace with fireworks")
         self.assertEqual(pipeline.kwargs["negative_prompt"], " ")
-        self.assertNotIn("mask_image", pipeline.kwargs)
-        self.assertNotIn("strength", pipeline.kwargs)
+        self.assertIs(pipeline.kwargs["mask_image"], mask)
+        self.assertEqual(pipeline.kwargs["strength"], 0.75)
+        self.assertEqual(pipeline.kwargs["padding_mask_crop"], 32)
 
 
 class InvokeProgressTests(unittest.TestCase):

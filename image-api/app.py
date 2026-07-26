@@ -164,14 +164,23 @@ async def read_image(file: UploadFile) -> tuple[bytes, str, Image.Image]:
     return payload, media_type, image
 
 
-def decode_mask(value: str) -> bytes:
+def decode_mask(value: str, expected_size: tuple[int, int] | None = None) -> bytes:
     match = re.match(r"^data:image/[^;]+;base64,(.+)$", value, re.DOTALL)
     if not match:
         raise HTTPException(400, "mask must be an image data URI")
     try:
-        return base64.b64decode(match.group(1), validate=True)
+        payload = base64.b64decode(match.group(1), validate=True)
     except ValueError as error:
         raise HTTPException(400, "invalid mask base64") from error
+    try:
+        mask_image = Image.open(io.BytesIO(payload)).convert("L")
+    except (UnidentifiedImageError, OSError) as error:
+        raise HTTPException(400, "invalid mask image") from error
+    if expected_size is not None and mask_image.size != expected_size:
+        raise HTTPException(400, "mask dimensions must match the image")
+    if mask_image.getbbox() is None:
+        raise HTTPException(400, "mask must contain at least one editable pixel")
+    return png_bytes(mask_image)
 
 
 def _concepts_request(payload: bytes, media_type: str, *, stream: bool) -> dict:
@@ -576,6 +585,11 @@ async def inpaint(
     request_id: str | None = Form(None),
 ):
     _, media_type, image = await read_image(file)
+    if not 0.0 <= strength <= 1.0:
+        raise HTTPException(400, "strength must be between 0.0 and 1.0")
+    if padding_mask_crop is not None and padding_mask_crop < 0:
+        raise HTTPException(400, "padding_mask_crop must be non-negative")
+    mask_payload = decode_mask(mask, image.size)
     params = edit_params(
         prompt,
         negative_prompt,
@@ -590,7 +604,7 @@ async def inpaint(
         image,
         media_type,
         params,
-        [("mask", decode_mask(mask), "image/png")],
+        [("mask", mask_payload, "image/png")],
         request_id=request_id,
     )
 
