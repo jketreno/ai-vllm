@@ -53,7 +53,6 @@ for name in (
     "AutoModel",
     "DiffusionPipeline",
     "FlowMatchEulerDiscreteScheduler",
-    "QwenImageEditInpaintPipeline",
     "QwenImageEditPlusPipeline",
     "TorchAoConfig",
 ):
@@ -314,31 +313,7 @@ class InpaintCompositionTests(unittest.TestCase):
 
 
 class InpaintPipelineTests(unittest.TestCase):
-    def test_shared_inpaint_pipeline_reuses_loaded_components(self):
-        components = {"transformer": object(), "vae": object()}
-        edit_pipeline = types.SimpleNamespace(components=components)
-        constructed = object()
-
-        with mock.patch.object(
-            api, "QwenImageEditInpaintPipeline", return_value=constructed
-        ) as pipeline_class:
-            result = api._make_inpaint_pipeline(edit_pipeline)
-
-        self.assertIs(result, constructed)
-        pipeline_class.assert_called_once_with(**components)
-
-    def test_inpaint_pipeline_receives_latent_mask_arguments(self):
-        class RecordingEditPipeline:
-            _execution_device = "cuda"
-
-            def __init__(self):
-                self.calls = []
-
-            def encode_prompt(self, **kwargs):
-                self.calls.append(kwargs)
-                call_number = len(self.calls)
-                return f"embeds-{call_number}", f"mask-{call_number}"
-
+    def test_inpaint_uses_edit_plus_with_masked_source_and_latent_callback(self):
         class RecordingPipeline:
             def __init__(self):
                 self.kwargs = None
@@ -349,14 +324,17 @@ class InpaintPipelineTests(unittest.TestCase):
                     images=[_make_image(8, 8, color=(200, 100, 50))]
                 )
 
-        edit_pipeline = RecordingEditPipeline()
         pipeline = RecordingPipeline()
         source = _make_image(8, 8, color=(10, 20, 30))
         mask = Image.new("L", (8, 8), 0)
         mask.paste(255, (0, 0, 4, 8))
         with (
-            mock.patch.object(api, "_pipeline", edit_pipeline),
-            mock.patch.object(api, "_inpaint_pipeline", pipeline),
+            mock.patch.object(api, "_pipeline", pipeline),
+            mock.patch.object(
+                api,
+                "_prepare_latent_noise_mask",
+                return_value=("noise", "source-latents", "latent-mask"),
+            ) as prepare,
         ):
             api._inpaint_image(
                 source,
@@ -374,29 +352,33 @@ class InpaintPipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.kwargs["num_inference_steps"], 2)
         self.assertEqual(pipeline.kwargs["true_cfg_scale"], 4.0)
         self.assertEqual(pipeline.kwargs["guidance_scale"], 1.0)
-        self.assertIsNone(pipeline.kwargs["prompt"])
-        self.assertIsNone(pipeline.kwargs["negative_prompt"])
-        self.assertEqual(pipeline.kwargs["prompt_embeds"], "embeds-1")
-        self.assertEqual(pipeline.kwargs["prompt_embeds_mask"], "mask-1")
-        self.assertEqual(pipeline.kwargs["negative_prompt_embeds"], "embeds-2")
-        self.assertEqual(
-            pipeline.kwargs["negative_prompt_embeds_mask"], "mask-2"
-        )
-        self.assertIs(pipeline.kwargs["mask_image"], mask)
+        self.assertEqual(pipeline.kwargs["prompt"], "replace with fireworks")
+        self.assertEqual(pipeline.kwargs["negative_prompt"], " ")
+        self.assertEqual(pipeline.kwargs["latents"], "noise")
+        self.assertTrue(callable(pipeline.kwargs["callback_on_step_end"]))
         conditioning = pipeline.kwargs["image"]
         self.assertEqual(conditioning.getpixel((1, 1)), (127, 127, 127))
         self.assertEqual(conditioning.getpixel((6, 1)), (10, 20, 30))
-        self.assertEqual(pipeline.kwargs["strength"], 0.75)
-        self.assertEqual(pipeline.kwargs["padding_mask_crop"], 32)
-        self.assertEqual(len(edit_pipeline.calls), 2)
-        positive_call = edit_pipeline.calls[0]
-        self.assertIn(
-            "white pixels are the only area to replace", positive_call["prompt"]
+        prepare.assert_called_once()
+        self.assertIs(prepare.call_args.args[0], pipeline)
+        self.assertIs(prepare.call_args.args[1], source)
+        self.assertIs(prepare.call_args.args[2], mask)
+        self.assertEqual(prepare.call_args.args[3], 0.75)
+
+    def test_latent_mask_callback_restores_protected_final_latents(self):
+        source = np.array([[10.0, 20.0]])
+        latent_mask = np.array([[0.0, 1.0]])
+        generated = np.array([[90.0, 80.0]])
+        pipe = types.SimpleNamespace(
+            scheduler=types.SimpleNamespace(timesteps=[object()])
         )
-        self.assertIn("replace with fireworks", positive_call["prompt"])
-        self.assertIs(positive_call["image"][0], source)
-        self.assertEqual(positive_call["image"][1].mode, "RGB")
-        self.assertEqual(edit_pipeline.calls[1]["prompt"], " ")
+
+        callback = api._latent_mask_callback(
+            source, np.zeros_like(source), latent_mask, None
+        )
+        result = callback(pipe, 0, object(), {"latents": generated})
+
+        np.testing.assert_array_equal(result["latents"], [[10.0, 80.0]])
 
     def test_empty_negative_prompt_only_enables_cfg_when_requested(self):
         self.assertEqual(api._cfg_negative_prompt("", 4.0), " ")

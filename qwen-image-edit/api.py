@@ -26,11 +26,11 @@ import threading
 import time
 import uuid
 
+import numpy as np
 import torch
 from diffusers import (
     AutoModel,
     FlowMatchEulerDiscreteScheduler,
-    QwenImageEditInpaintPipeline,
     QwenImageEditPlusPipeline,
     TorchAoConfig,
 )
@@ -173,7 +173,6 @@ MAX_ATTACHMENT_BYTES = int(
 
 app = FastAPI(title="ai-vllm Qwen-Image-Edit API", version="1.0.0")
 _pipeline = None
-_inpaint_pipeline = None
 _pipeline_lock = threading.Lock()
 
 # Per-request diffusion-step progress, keyed by the RPC manifest's request_id (see
@@ -623,25 +622,13 @@ def _load_pipeline():
     return pipeline
 
 
-def _make_inpaint_pipeline(edit_pipeline):
-    """Create an inpaint view over the already-loaded model components.
-
-    QwenImageEditInpaintPipeline performs the latent equivalent of ComfyUI's
-    Set Latent Noise Mask: after every scheduler step it restores the noised
-    source latents outside the mask. Passing shared components avoids loading a
-    second transformer, text encoder, or VAE.
-    """
-    return QwenImageEditInpaintPipeline(**edit_pipeline.components)
-
-
 @app.on_event("startup")
 def startup():
-    global _inpaint_pipeline, _pipeline
+    global _pipeline
     start_http_server(METRICS_PORT)
     started = time.monotonic()
     try:
         _pipeline = _load_pipeline()
-        _inpaint_pipeline = _make_inpaint_pipeline(_pipeline)
         MODEL_LOADED.set(1)
         MODEL_LOADS.labels("success").inc()
         update_cuda_metrics()
@@ -739,54 +726,82 @@ def _masked_conditioning_image(
 ) -> Image.Image:
     """Hide editable pixels from Qwen while retaining original scene context.
 
-    The upstream edit-inpaint pipeline uses ``image`` both as Qwen's visual
-    conditioning input and as the source latents restored outside the mask.
-    Feeding the complete original lets the edit model redraw masked-out
+    Feeding the complete original to Edit-Plus lets it redraw masked-out
     subjects or backgrounds, which produces duplicates after exact compositing.
-    A neutral hole prevents that leakage; protected pixels remain identical to
-    the source and are still restored by the pipeline's latent mask.
+    A neutral hole prevents that leakage. The untouched source is encoded
+    separately and used only by the per-step latent noise mask.
     """
     source = source.convert("RGB")
     neutral = Image.new("RGB", source.size, (127, 127, 127))
     return Image.composite(neutral, source, mask_image.convert("L"))
 
 
-def _inpaint_prompt_embeddings(
-    source: Image.Image,
-    mask_image: Image.Image,
-    prompt: str,
-    negative_prompt: str,
-    true_cfg_scale: float,
-) -> dict:
-    """Encode the original and mask together so Qwen understands mask semantics."""
-    semantic_prompt = (
-        "Picture 1 is the original image. Picture 2 is its inpainting mask: "
-        "white pixels are the only area to replace, and black pixels are "
-        "protected content that must not be redrawn, duplicated, moved, or "
-        f"resized. Apply this instruction inside the white area: {prompt}"
+def _prepare_latent_noise_mask(
+    pipe, source: Image.Image, mask_image: Image.Image, strength: float, generator
+):
+    """Encode the source and mask in Edit-Plus's output-latent layout."""
+    width, height = _pipeline_dimensions(source)
+    scale = pipe.vae_scale_factor
+    latent_height = 2 * (height // (scale * 2))
+    latent_width = 2 * (width // (scale * 2))
+    channels = pipe.transformer.config.in_channels // 4
+    device = pipe._execution_device
+    dtype = pipe.transformer.dtype
+
+    source_tensor = pipe.image_processor.preprocess(source, height, width)
+    source_tensor = source_tensor.unsqueeze(2).to(device=device, dtype=dtype)
+    source_latents = pipe._encode_vae_image(source_tensor, generator)
+    source_latents = source_latents.transpose(1, 2)
+    source_latents = pipe._pack_latents(
+        source_latents, 1, channels, latent_height, latent_width
     )
-    prompt_images = [source, mask_image.convert("RGB")]
-    prompt_embeds, prompt_embeds_mask = _pipeline.encode_prompt(
-        prompt=semantic_prompt,
-        image=prompt_images,
-        device=_pipeline._execution_device,
+
+    noise = torch.randn(
+        (1, 1, channels, latent_height, latent_width),
+        generator=generator,
+        device=device,
+        dtype=dtype,
     )
-    cfg_negative_prompt = _cfg_negative_prompt(negative_prompt, true_cfg_scale)
-    if cfg_negative_prompt is None:
-        negative_prompt_embeds = None
-        negative_prompt_embeds_mask = None
-    else:
-        negative_prompt_embeds, negative_prompt_embeds_mask = _pipeline.encode_prompt(
-            prompt=cfg_negative_prompt,
-            image=prompt_images,
-            device=_pipeline._execution_device,
+    noise = pipe._pack_latents(noise, 1, channels, latent_height, latent_width)
+
+    latent_mask = mask_image.resize(
+        (latent_width, latent_height), Image.Resampling.BILINEAR
+    )
+    latent_mask = torch.from_numpy(
+        np.asarray(latent_mask, dtype=np.float32) / 255.0
+    )
+    latent_mask = latent_mask.unsqueeze(0).unsqueeze(0)
+    latent_mask = latent_mask.to(device=device, dtype=dtype) * strength
+    latent_mask = pipe._pack_latents(
+        latent_mask.repeat(1, channels, 1, 1),
+        1,
+        channels,
+        latent_height,
+        latent_width,
+    )
+    return noise, source_latents, latent_mask
+
+
+def _latent_mask_callback(source_latents, noise, latent_mask, progress_callback):
+    """Restore protected source latents after every Edit-Plus scheduler step."""
+
+    def apply_mask(pipe, step, timestep, callback_kwargs):
+        latents = callback_kwargs["latents"]
+        if step < len(pipe.scheduler.timesteps) - 1:
+            next_timestep = pipe.scheduler.timesteps[step + 1]
+            protected = pipe.scheduler.scale_noise(
+                source_latents, next_timestep.expand(1), noise
+            )
+        else:
+            protected = source_latents
+        callback_kwargs["latents"] = (
+            (1 - latent_mask) * protected + latent_mask * latents
         )
-    return {
-        "prompt_embeds": prompt_embeds,
-        "prompt_embeds_mask": prompt_embeds_mask,
-        "negative_prompt_embeds": negative_prompt_embeds,
-        "negative_prompt_embeds_mask": negative_prompt_embeds_mask,
-    }
+        if progress_callback is not None:
+            return progress_callback(pipe, step, timestep, callback_kwargs)
+        return callback_kwargs
+
+    return apply_mask
 
 
 def _edit_plus_image(
@@ -822,23 +837,24 @@ def _inpaint_image(
     generator,
     callback,
 ):
+    del padding_mask_crop  # Edit-Plus has no crop-mask input.
     conditioning_image = _masked_conditioning_image(image, mask_image)
-    embedding_args = _inpaint_prompt_embeddings(
-        image, mask_image, prompt, negative_prompt, true_cfg_scale
+    noise, source_latents, latent_mask = _prepare_latent_noise_mask(
+        _pipeline, image, mask_image, strength, generator
     )
-    return _inpaint_pipeline(
+    masked_callback = _latent_mask_callback(
+        source_latents, noise, latent_mask, callback
+    )
+    return _pipeline(
         image=conditioning_image,
-        mask_image=mask_image,
-        prompt=None,
-        negative_prompt=None,
-        strength=strength,
-        padding_mask_crop=padding_mask_crop,
+        prompt=prompt,
+        negative_prompt=_cfg_negative_prompt(negative_prompt, true_cfg_scale),
         num_inference_steps=num_inference_steps,
         true_cfg_scale=true_cfg_scale,
         guidance_scale=1.0,
         generator=generator,
-        **embedding_args,
-        **({"callback_on_step_end": callback} if callback else {}),
+        latents=noise,
+        callback_on_step_end=masked_callback,
     ).images[0]
 
 
@@ -849,12 +865,12 @@ def live():
 
 @app.get("/health/ready")
 def ready():
-    if _pipeline is None or _inpaint_pipeline is None:
+    if _pipeline is None:
         raise HTTPException(503, "model is still loading")
     return {
         "status": "ready",
         "model_loaded": _pipeline is not None,
-        "inpaint_model_loaded": _inpaint_pipeline is not None,
+        "inpaint_model_loaded": _pipeline is not None,
     }
 
 
@@ -987,7 +1003,7 @@ async def inpaint(
     request_id: str | None = None,
 ):
     """Repaint white mask pixels while preserving black pixels in latent space."""
-    if _inpaint_pipeline is None:
+    if _pipeline is None:
         raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
     mask_image = _decode_mask(mask)
@@ -1128,7 +1144,7 @@ async def outpaint(
     `prompt` should describe the extended scene (e.g. "extend the beach and sky").
     `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
     correlation key for GET /v1/invoke/{request_id}/progress step polling."""
-    if _inpaint_pipeline is None:
+    if _pipeline is None:
         raise HTTPException(503, "model is not loaded")
     if target_width > MAX_CANVAS_DIMENSION or target_height > MAX_CANVAS_DIMENSION:
         raise HTTPException(

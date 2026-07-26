@@ -289,13 +289,13 @@ official Qwen checkpoint and is deliberately not enabled by default.
 Alibaba's hosted Qwen-Image-Edit API (see
 [the Model Studio docs](https://www.alibabacloud.com/help/en/model-studio/qwen-image-edit-api))
 is purely prompt-driven — it has no mask, inpaint, outpaint, crop, or rotate
-parameter. This service creates a shared-weight `QwenImageEditInpaintPipeline`
-view over the loaded 2511 Edit Plus components. During every denoising step the
-worker restores the noised source latents outside the supplied mask, then applies
-a final pixel-space composite as an exact-preservation backstop. The edit and
-inpaint pipeline objects share the transformer, text encoder, VAE, processor,
-tokenizer, and scheduler; enabling latent-mask inpainting does not load a second
-copy of the model.
+parameter. This service keeps inference on the model's supported
+`QwenImageEditPlusPipeline`: it supplies a neutral-filled editable region as the
+visual reference and applies a Set Latent Noise Mask equivalent through the
+pipeline's step callback. During every denoising step the worker restores the
+noised original latents outside the supplied mask, then applies a final
+pixel-space composite as an exact-preservation backstop. No second model or
+incompatible inpaint pipeline is loaded.
 
 - `POST /v1/images/edit` — whole-image, prompt-driven edit (text editing, object
   add/remove/move, pose changes, style transfer, detail enhancement). Accepts
@@ -306,9 +306,9 @@ copy of the model.
   black pixels are preserved — exactly the format returned by
   `/v1/images/segment`, so a SAM mask can be forwarded unmodified. `strength`
   (0.0-1.0, default 1.0) controls how strongly the masked region is
-  regenerated. When `padding_mask_crop` is set, Diffusers crops the image and
-  mask together for better resolution on small selections. Output dimensions
-  always match the input and unmasked pixels are preserved.
+  regenerated. `padding_mask_crop` remains accepted for client compatibility,
+  but the Edit-Plus latent-mask path currently operates on the full frame.
+  Output dimensions always match the input and unmasked pixels are preserved.
 - `POST /v1/images/outpaint` — canvas expansion ("expand image"). Give a
   `target_width`/`target_height` and an `anchor`
   (`center`/`top`/`bottom`/`left`/`right`/`top-left`/`top-right`/`bottom-left`/`bottom-right`);
