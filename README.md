@@ -289,13 +289,15 @@ official Qwen checkpoint and is deliberately not enabled by default.
 Alibaba's hosted Qwen-Image-Edit API (see
 [the Model Studio docs](https://www.alibabacloud.com/help/en/model-studio/qwen-image-edit-api))
 is purely prompt-driven — it has no mask, inpaint, outpaint, crop, or rotate
-parameter. This service keeps inference on the model's supported
-`QwenImageEditPlusPipeline`: it supplies a neutral-filled editable region as the
-visual reference and applies a Set Latent Noise Mask equivalent through the
-pipeline's step callback. During every denoising step the worker restores the
+parameter. This service keeps whole-image edits on
+`QwenImageEditPlusPipeline`, but creates a shared-weight `QwenImagePipeline`
+sampling view for masked operations. The inpaint prompt is text-only: the
+original never enters Qwen's visual prompt encoder. Instead, it enters only as
+the sampler's source latent, with a Set Latent Noise Mask equivalent applied
+through the step callback. During every denoising step the worker restores the
 noised original latents outside the supplied mask, then applies a final
-pixel-space composite as an exact-preservation backstop. No second model or
-incompatible inpaint pipeline is loaded.
+pixel-space composite as an exact-preservation backstop. Both pipeline views
+share the transformer, text encoder, VAE, tokenizer, and scheduler.
 
 - `POST /v1/images/edit` — whole-image, prompt-driven edit (text editing, object
   add/remove/move, pose changes, style transfer, detail enhancement). Accepts
@@ -306,9 +308,10 @@ incompatible inpaint pipeline is loaded.
   black pixels are preserved — exactly the format returned by
   `/v1/images/segment`, so a SAM mask can be forwarded unmodified. `strength`
   (0.0-1.0, default 1.0) controls how strongly the masked region is
-  regenerated. `padding_mask_crop` remains accepted for client compatibility,
-  but the Edit-Plus latent-mask path currently operates on the full frame.
-  Output dimensions always match the input and unmasked pixels are preserved.
+  regenerated. When `padding_mask_crop` is set, the worker crops around the
+  editable region before sampling, then stitches and composites the generated
+  crop back into the original frame. Output dimensions always match the input
+  and unmasked pixels are preserved.
 - `POST /v1/images/outpaint` — canvas expansion ("expand image"). Give a
   `target_width`/`target_height` and an `anchor`
   (`center`/`top`/`bottom`/`left`/`right`/`top-left`/`top-right`/`bottom-left`/`bottom-right`);

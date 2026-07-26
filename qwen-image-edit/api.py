@@ -31,6 +31,7 @@ import torch
 from diffusers import (
     AutoModel,
     FlowMatchEulerDiscreteScheduler,
+    QwenImagePipeline,
     QwenImageEditPlusPipeline,
     TorchAoConfig,
 )
@@ -173,6 +174,7 @@ MAX_ATTACHMENT_BYTES = int(
 
 app = FastAPI(title="ai-vllm Qwen-Image-Edit API", version="1.0.0")
 _pipeline = None
+_generate_pipeline = None
 _pipeline_lock = threading.Lock()
 
 # Per-request diffusion-step progress, keyed by the RPC manifest's request_id (see
@@ -622,13 +624,25 @@ def _load_pipeline():
     return pipeline
 
 
+def _make_generate_pipeline(edit_pipeline):
+    """Create a text-only sampling view without duplicating model weights."""
+    return QwenImagePipeline(
+        scheduler=edit_pipeline.scheduler,
+        vae=edit_pipeline.vae,
+        text_encoder=edit_pipeline.text_encoder,
+        tokenizer=edit_pipeline.tokenizer,
+        transformer=edit_pipeline.transformer,
+    )
+
+
 @app.on_event("startup")
 def startup():
-    global _pipeline
+    global _generate_pipeline, _pipeline
     start_http_server(METRICS_PORT)
     started = time.monotonic()
     try:
         _pipeline = _load_pipeline()
+        _generate_pipeline = _make_generate_pipeline(_pipeline)
         MODEL_LOADED.set(1)
         MODEL_LOADS.labels("success").inc()
         update_cuda_metrics()
@@ -721,25 +735,10 @@ def _cfg_negative_prompt(negative_prompt: str, true_cfg_scale: float):
     return " " if true_cfg_scale > 1.0 else None
 
 
-def _masked_conditioning_image(
-    source: Image.Image, mask_image: Image.Image
-) -> Image.Image:
-    """Hide editable pixels from Qwen while retaining original scene context.
-
-    Feeding the complete original to Edit-Plus lets it redraw masked-out
-    subjects or backgrounds, which produces duplicates after exact compositing.
-    A neutral hole prevents that leakage. The untouched source is encoded
-    separately and used only by the per-step latent noise mask.
-    """
-    source = source.convert("RGB")
-    neutral = Image.new("RGB", source.size, (127, 127, 127))
-    return Image.composite(neutral, source, mask_image.convert("L"))
-
-
 def _prepare_latent_noise_mask(
     pipe, source: Image.Image, mask_image: Image.Image, strength: float, generator
 ):
-    """Encode the source and mask in Edit-Plus's output-latent layout."""
+    """Encode the source and mask in the generator's output-latent layout."""
     width, height = _pipeline_dimensions(source)
     scale = pipe.vae_scale_factor
     latent_height = 2 * (height // (scale * 2))
@@ -783,7 +782,7 @@ def _prepare_latent_noise_mask(
 
 
 def _latent_mask_callback(source_latents, noise, latent_mask, progress_callback):
-    """Restore protected source latents after every Edit-Plus scheduler step."""
+    """Restore protected source latents after every generator scheduler step."""
 
     def apply_mask(pipe, step, timestep, callback_kwargs):
         latents = callback_kwargs["latents"]
@@ -802,6 +801,52 @@ def _latent_mask_callback(source_latents, noise, latent_mask, progress_callback)
         return callback_kwargs
 
     return apply_mask
+
+
+def _mask_crop_box(
+    mask_image: Image.Image, padding: int | None
+) -> tuple[int, int, int, int]:
+    """Return a padded in-frame crop around the editable mask."""
+    full_frame = (0, 0, mask_image.width, mask_image.height)
+    if padding is None:
+        return full_frame
+    bounds = mask_image.getbbox()
+    if bounds is None:
+        return full_frame
+    left, top, right, bottom = bounds
+    return (
+        max(0, left - padding),
+        max(0, top - padding),
+        min(mask_image.width, right + padding),
+        min(mask_image.height, bottom + padding),
+    )
+
+
+def _text_only_edit_embeddings(
+    prompt: str, negative_prompt: str, true_cfg_scale: float
+) -> dict:
+    """Use Edit-Plus text conditioning without any visual-reference images."""
+    prompt_embeds, prompt_embeds_mask = _pipeline.encode_prompt(
+        prompt=prompt,
+        image=None,
+        device=_pipeline._execution_device,
+    )
+    cfg_negative_prompt = _cfg_negative_prompt(negative_prompt, true_cfg_scale)
+    if cfg_negative_prompt is None:
+        negative_prompt_embeds = None
+        negative_prompt_embeds_mask = None
+    else:
+        negative_prompt_embeds, negative_prompt_embeds_mask = _pipeline.encode_prompt(
+            prompt=cfg_negative_prompt,
+            image=None,
+            device=_pipeline._execution_device,
+        )
+    return {
+        "prompt_embeds": prompt_embeds,
+        "prompt_embeds_mask": prompt_embeds_mask,
+        "negative_prompt_embeds": negative_prompt_embeds,
+        "negative_prompt_embeds_mask": negative_prompt_embeds_mask,
+    }
 
 
 def _edit_plus_image(
@@ -831,30 +876,32 @@ def _inpaint_image(
     prompt,
     negative_prompt,
     strength,
-    padding_mask_crop,
     num_inference_steps,
     true_cfg_scale,
     generator,
     callback,
 ):
-    del padding_mask_crop  # Edit-Plus has no crop-mask input.
-    conditioning_image = _masked_conditioning_image(image, mask_image)
     noise, source_latents, latent_mask = _prepare_latent_noise_mask(
-        _pipeline, image, mask_image, strength, generator
+        _generate_pipeline, image, mask_image, strength, generator
     )
     masked_callback = _latent_mask_callback(
         source_latents, noise, latent_mask, callback
     )
-    return _pipeline(
-        image=conditioning_image,
-        prompt=prompt,
-        negative_prompt=_cfg_negative_prompt(negative_prompt, true_cfg_scale),
+    embedding_args = _text_only_edit_embeddings(
+        prompt, negative_prompt, true_cfg_scale
+    )
+    return _generate_pipeline(
+        height=_pipeline_dimensions(image)[1],
+        width=_pipeline_dimensions(image)[0],
+        prompt=None,
+        negative_prompt=None,
         num_inference_steps=num_inference_steps,
         true_cfg_scale=true_cfg_scale,
         guidance_scale=1.0,
         generator=generator,
         latents=noise,
         callback_on_step_end=masked_callback,
+        **embedding_args,
     ).images[0]
 
 
@@ -865,12 +912,12 @@ def live():
 
 @app.get("/health/ready")
 def ready():
-    if _pipeline is None:
+    if _pipeline is None or _generate_pipeline is None:
         raise HTTPException(503, "model is still loading")
     return {
         "status": "ready",
         "model_loaded": _pipeline is not None,
-        "inpaint_model_loaded": _pipeline is not None,
+        "inpaint_model_loaded": _generate_pipeline is not None,
     }
 
 
@@ -1003,7 +1050,7 @@ async def inpaint(
     request_id: str | None = None,
 ):
     """Repaint white mask pixels while preserving black pixels in latent space."""
-    if _pipeline is None:
+    if _generate_pipeline is None:
         raise HTTPException(503, "model is not loaded")
     image = await _read_upload_image(file)
     mask_image = _decode_mask(mask)
@@ -1027,18 +1074,21 @@ async def inpaint(
     _gate_inference("inpaint", request_id, num_inference_steps)
     _observe_dimensions("inpaint", image)
 
+    region_box = _mask_crop_box(mask_image, padding_mask_crop)
+    inference_image = image.crop(region_box)
+    inference_mask = mask_image.crop(region_box)
     generator = torch.Generator(device="cuda").manual_seed(seed)
     callback = (
         _make_step_callback(
             request_id,
             max(1, int(num_inference_steps * strength)),
             _preview_renderer(
-                image,
+                inference_image,
                 lambda generated: _composite_generated_region(
                     image,
                     mask_image,
                     generated,
-                    (0, 0, image.width, image.height),
+                    region_box,
                 ),
             ),
         )
@@ -1050,12 +1100,11 @@ async def inpaint(
         with _pipeline_lock, torch.inference_mode(), INPAINT_LATENCY.time():
             try:
                 generated = _inpaint_image(
-                    image,
-                    mask_image,
+                    inference_image,
+                    inference_mask,
                     prompt.strip(),
                     negative_prompt,
                     strength,
-                    padding_mask_crop,
                     num_inference_steps,
                     true_cfg_scale,
                     generator,
@@ -1066,7 +1115,7 @@ async def inpaint(
                     image,
                     mask_image,
                     generated,
-                    (0, 0, image.width, image.height),
+                    region_box,
                 )
                 update_cuda_metrics()
                 INFERENCE_REQUESTS.labels("inpaint", "success", PROFILE).inc()
@@ -1144,7 +1193,7 @@ async def outpaint(
     `prompt` should describe the extended scene (e.g. "extend the beach and sky").
     `request_id` (if given) is the /v1/invoke manifest's request_id, used as the
     correlation key for GET /v1/invoke/{request_id}/progress step polling."""
-    if _pipeline is None:
+    if _generate_pipeline is None:
         raise HTTPException(503, "model is not loaded")
     if target_width > MAX_CANVAS_DIMENSION or target_height > MAX_CANVAS_DIMENSION:
         raise HTTPException(
@@ -1189,7 +1238,6 @@ async def outpaint(
                     prompt,
                     negative_prompt,
                     1.0,
-                    None,
                     num_inference_steps,
                     true_cfg_scale,
                     generator,
@@ -1295,6 +1343,7 @@ def capabilities():
             "inpaint": {
                 "inputs": ["image", "mask"],
                 "mask_conditioning": "latent",
+                "prompt_conditioning": "text-only",
                 "parameters": [
                     "prompt",
                     "negative_prompt",
