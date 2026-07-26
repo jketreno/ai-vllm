@@ -751,6 +751,44 @@ def _masked_conditioning_image(
     return Image.composite(neutral, source, mask_image.convert("L"))
 
 
+def _inpaint_prompt_embeddings(
+    source: Image.Image,
+    mask_image: Image.Image,
+    prompt: str,
+    negative_prompt: str,
+    true_cfg_scale: float,
+) -> dict:
+    """Encode the original and mask together so Qwen understands mask semantics."""
+    semantic_prompt = (
+        "Picture 1 is the original image. Picture 2 is its inpainting mask: "
+        "white pixels are the only area to replace, and black pixels are "
+        "protected content that must not be redrawn, duplicated, moved, or "
+        f"resized. Apply this instruction inside the white area: {prompt}"
+    )
+    prompt_images = [source, mask_image.convert("RGB")]
+    prompt_embeds, prompt_embeds_mask = _pipeline.encode_prompt(
+        prompt=semantic_prompt,
+        image=prompt_images,
+        device=_pipeline._execution_device,
+    )
+    cfg_negative_prompt = _cfg_negative_prompt(negative_prompt, true_cfg_scale)
+    if cfg_negative_prompt is None:
+        negative_prompt_embeds = None
+        negative_prompt_embeds_mask = None
+    else:
+        negative_prompt_embeds, negative_prompt_embeds_mask = _pipeline.encode_prompt(
+            prompt=cfg_negative_prompt,
+            image=prompt_images,
+            device=_pipeline._execution_device,
+        )
+    return {
+        "prompt_embeds": prompt_embeds,
+        "prompt_embeds_mask": prompt_embeds_mask,
+        "negative_prompt_embeds": negative_prompt_embeds,
+        "negative_prompt_embeds_mask": negative_prompt_embeds_mask,
+    }
+
+
 def _edit_plus_image(
     image,
     prompt,
@@ -785,17 +823,21 @@ def _inpaint_image(
     callback,
 ):
     conditioning_image = _masked_conditioning_image(image, mask_image)
+    embedding_args = _inpaint_prompt_embeddings(
+        image, mask_image, prompt, negative_prompt, true_cfg_scale
+    )
     return _inpaint_pipeline(
         image=conditioning_image,
         mask_image=mask_image,
-        prompt=prompt,
-        negative_prompt=_cfg_negative_prompt(negative_prompt, true_cfg_scale),
+        prompt=None,
+        negative_prompt=None,
         strength=strength,
         padding_mask_crop=padding_mask_crop,
         num_inference_steps=num_inference_steps,
         true_cfg_scale=true_cfg_scale,
         guidance_scale=1.0,
         generator=generator,
+        **embedding_args,
         **({"callback_on_step_end": callback} if callback else {}),
     ).images[0]
 
