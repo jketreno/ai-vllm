@@ -29,6 +29,35 @@ class _FakeGenerator:
         return self
 
 
+class _FakeVaeTensor:
+    """Minimal tensor stand-in supporting only what _encode_vae_image needs
+    (.view/.to as no-ops, elementwise arithmetic delegated to numpy), since the
+    real torch module isn't installed in this test environment."""
+
+    def __init__(self, array):
+        self.array = np.asarray(array, dtype=np.float64)
+        self.device = "cuda"
+        self.dtype = "bf16"
+
+    def view(self, *shape):
+        return self
+
+    def to(self, device, dtype):
+        return self
+
+    def __sub__(self, other):
+        return _FakeVaeTensor(self.array - other.array)
+
+    def __mul__(self, other):
+        other_array = other.array if isinstance(other, _FakeVaeTensor) else other
+        return _FakeVaeTensor(self.array * other_array)
+
+    __rmul__ = __mul__
+
+    def __rtruediv__(self, other):
+        return _FakeVaeTensor(other / self.array)
+
+
 class _FakeInferenceMode:
     def __enter__(self):
         return self
@@ -427,6 +456,35 @@ class InpaintPipelineTests(unittest.TestCase):
         result = callback(pipe, 0, object(), {"latents": generated})
 
         np.testing.assert_array_equal(result["latents"], [[10.0, 80.0]])
+
+    def test_encode_vae_image_works_when_pipe_lacks_the_diffusers_method(self):
+        """Regression test: _generate_pipeline is a bare QwenImagePipeline (see
+        _make_generate_pipeline), which -- unlike diffusers' img2img/inpaint pipeline
+        subclasses -- never defines _encode_vae_image. Calling pipe._encode_vae_image()
+        directly (the prior implementation) raised AttributeError in production for
+        every inpaint request; _encode_vae_image must not depend on the pipe having it.
+        """
+        encoded = types.SimpleNamespace(latents=_FakeVaeTensor([10.0]))
+        vae = types.SimpleNamespace(
+            encode=lambda image: encoded,
+            config=types.SimpleNamespace(
+                latents_mean=[2.0], latents_std=[4.0], z_dim=1
+            ),
+        )
+        pipe = types.SimpleNamespace(vae=vae)
+        self.assertFalse(hasattr(pipe, "_encode_vae_image"))
+
+        with mock.patch.object(
+            api.torch,
+            "tensor",
+            create=True,
+            side_effect=lambda x: _FakeVaeTensor(x),
+        ):
+            result = api._encode_vae_image(
+                pipe, image="unused", generator=object()
+            )
+
+        np.testing.assert_allclose(result.array, [2.0])
 
     def test_mask_crop_box_adds_padding_without_leaving_frame(self):
         mask = Image.new("L", (100, 80), 0)

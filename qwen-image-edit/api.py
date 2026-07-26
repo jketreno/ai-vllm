@@ -735,6 +735,48 @@ def _cfg_negative_prompt(negative_prompt: str, true_cfg_scale: float):
     return " " if true_cfg_scale > 1.0 else None
 
 
+def _retrieve_latents(encoder_output, generator=None, sample_mode: str = "sample"):
+    """Port of diffusers' retrieve_latents helper -- pulled in alongside
+    _encode_vae_image below since it isn't exported for reuse outside the
+    pipeline classes that define it."""
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    if hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    raise AttributeError("Could not access latents of provided encoder_output")
+
+
+def _encode_vae_image(pipe, image, generator):
+    """Port of QwenImageImg2ImgPipeline._encode_vae_image. `pipe` here is the bare
+    QwenImagePipeline built by _make_generate_pipeline for text-only sampling, which
+    doesn't inherit this method -- only the img2img/inpaint pipeline subclasses do."""
+    if isinstance(generator, list):
+        image_latents = torch.cat(
+            [
+                _retrieve_latents(
+                    pipe.vae.encode(image[i : i + 1]), generator=generator[i]
+                )
+                for i in range(image.shape[0])
+            ],
+            dim=0,
+        )
+    else:
+        image_latents = _retrieve_latents(pipe.vae.encode(image), generator=generator)
+
+    latents_mean = (
+        torch.tensor(pipe.vae.config.latents_mean)
+        .view(1, pipe.vae.config.z_dim, 1, 1, 1)
+        .to(image_latents.device, image_latents.dtype)
+    )
+    latents_std = 1.0 / torch.tensor(pipe.vae.config.latents_std).view(
+        1, pipe.vae.config.z_dim, 1, 1, 1
+    ).to(image_latents.device, image_latents.dtype)
+
+    return (image_latents - latents_mean) * latents_std
+
+
 def _prepare_latent_noise_mask(
     pipe, source: Image.Image, mask_image: Image.Image, strength: float, generator
 ):
@@ -749,7 +791,7 @@ def _prepare_latent_noise_mask(
 
     source_tensor = pipe.image_processor.preprocess(source, height, width)
     source_tensor = source_tensor.unsqueeze(2).to(device=device, dtype=dtype)
-    source_latents = pipe._encode_vae_image(source_tensor, generator)
+    source_latents = _encode_vae_image(pipe, source_tensor, generator)
     source_latents = source_latents.transpose(1, 2)
     source_latents = pipe._pack_latents(
         source_latents, 1, channels, latent_height, latent_width
