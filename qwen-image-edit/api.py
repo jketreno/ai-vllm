@@ -727,6 +727,30 @@ def _clamp_steps(num_inference_steps: int) -> int:
     return max(1, min(num_inference_steps, 100))
 
 
+def _cfg_negative_prompt(negative_prompt: str, true_cfg_scale: float):
+    """Keep true CFG enabled when the caller has no negative constraints."""
+    if negative_prompt:
+        return negative_prompt
+    return " " if true_cfg_scale > 1.0 else None
+
+
+def _masked_conditioning_image(
+    source: Image.Image, mask_image: Image.Image
+) -> Image.Image:
+    """Hide editable pixels from Qwen while retaining original scene context.
+
+    The upstream edit-inpaint pipeline uses ``image`` both as Qwen's visual
+    conditioning input and as the source latents restored outside the mask.
+    Feeding the complete original lets the edit model redraw masked-out
+    subjects or backgrounds, which produces duplicates after exact compositing.
+    A neutral hole prevents that leakage; protected pixels remain identical to
+    the source and are still restored by the pipeline's latent mask.
+    """
+    source = source.convert("RGB")
+    neutral = Image.new("RGB", source.size, (127, 127, 127))
+    return Image.composite(neutral, source, mask_image.convert("L"))
+
+
 def _edit_plus_image(
     image,
     prompt,
@@ -739,7 +763,7 @@ def _edit_plus_image(
     return _pipeline(
         image=image,
         prompt=prompt,
-        negative_prompt=negative_prompt or None,
+        negative_prompt=_cfg_negative_prompt(negative_prompt, true_cfg_scale),
         num_inference_steps=num_inference_steps,
         true_cfg_scale=true_cfg_scale,
         guidance_scale=1.0,
@@ -760,11 +784,12 @@ def _inpaint_image(
     generator,
     callback,
 ):
+    conditioning_image = _masked_conditioning_image(image, mask_image)
     return _inpaint_pipeline(
-        image=image,
+        image=conditioning_image,
         mask_image=mask_image,
         prompt=prompt,
-        negative_prompt=negative_prompt or None,
+        negative_prompt=_cfg_negative_prompt(negative_prompt, true_cfg_scale),
         strength=strength,
         padding_mask_crop=padding_mask_crop,
         num_inference_steps=num_inference_steps,
@@ -877,7 +902,9 @@ async def edit(
                 out = _pipeline(
                     image=images if len(images) > 1 else images[0],
                     prompt=prompt,
-                    negative_prompt=negative_prompt or None,
+                    negative_prompt=_cfg_negative_prompt(
+                        negative_prompt, true_cfg_scale
+                    ),
                     num_inference_steps=num_inference_steps,
                     true_cfg_scale=true_cfg_scale,
                     generator=generator,

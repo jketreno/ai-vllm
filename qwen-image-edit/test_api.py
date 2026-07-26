@@ -339,13 +339,15 @@ class InpaintPipelineTests(unittest.TestCase):
                 )
 
         pipeline = RecordingPipeline()
-        mask = Image.new("L", (8, 8), 255)
+        source = _make_image(8, 8, color=(10, 20, 30))
+        mask = Image.new("L", (8, 8), 0)
+        mask.paste(255, (0, 0, 4, 8))
         with mock.patch.object(api, "_inpaint_pipeline", pipeline):
             api._inpaint_image(
-                _make_image(8, 8),
+                source,
                 mask,
                 "replace with fireworks",
-                " ",
+                "",
                 0.75,
                 32,
                 2,
@@ -360,8 +362,16 @@ class InpaintPipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.kwargs["prompt"], "replace with fireworks")
         self.assertEqual(pipeline.kwargs["negative_prompt"], " ")
         self.assertIs(pipeline.kwargs["mask_image"], mask)
+        conditioning = pipeline.kwargs["image"]
+        self.assertEqual(conditioning.getpixel((1, 1)), (127, 127, 127))
+        self.assertEqual(conditioning.getpixel((6, 1)), (10, 20, 30))
         self.assertEqual(pipeline.kwargs["strength"], 0.75)
         self.assertEqual(pipeline.kwargs["padding_mask_crop"], 32)
+
+    def test_empty_negative_prompt_only_enables_cfg_when_requested(self):
+        self.assertEqual(api._cfg_negative_prompt("", 4.0), " ")
+        self.assertIsNone(api._cfg_negative_prompt("", 1.0))
+        self.assertEqual(api._cfg_negative_prompt("artifacts", 4.0), "artifacts")
 
 
 class InvokeProgressTests(unittest.TestCase):
