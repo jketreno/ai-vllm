@@ -199,6 +199,78 @@ class ResourceLeaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [("acquire", "request-1"), ("release", "request-1")])
         self.assertEqual(invoke.call_args.kwargs["request_id"], "request-1")
 
+    async def test_invoke_edit_surfaces_effective_generation_params_when_overridden(
+        self,
+    ):
+        """The worker silently overrides steps/CFG under its lightning profile
+        (see qwen-image-edit/api.py _generation_settings) and reports what it
+        actually used in metadata.effective_*. Callers need that surfaced here --
+        otherwise a caller who requested true_cfg_scale=6.5 has no way to learn
+        the worker actually ran with 1.0, and ends up recording a value that was
+        never applied."""
+
+        @asynccontextmanager
+        async def lease(request_id):
+            yield
+
+        rpc_result = {
+            "protocol_version": "1", "status": "ok",
+            "data": {"width": 1, "height": 1},
+            "attachments": [{
+                "name": "image", "media_type": "image/png",
+                "data_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE"
+                    "QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+            }],
+            "metadata": {
+                "duration_seconds": 0.1,
+                "effective_num_inference_steps": 4,
+                "effective_true_cfg_scale": 1.0,
+            },
+        }
+        image = app.Image.new("RGB", (1, 1))
+        with patch.object(app, "image_edit_lease", lease), patch.object(
+            app.editor, "invoke", new_callable=AsyncMock, return_value=rpc_result
+        ):
+            response = await app.invoke_edit(
+                "inpaint", image, "image/png", {"true_cfg_scale": 6.5}
+            )
+
+        self.assertEqual(response["effective_num_inference_steps"], 4)
+        self.assertEqual(response["effective_true_cfg_scale"], 1.0)
+
+    async def test_invoke_edit_omits_effective_params_when_worker_doesnt_report_them(
+        self,
+    ):
+        """Older/other workers may not send metadata.effective_* at all -- must not
+        KeyError, and must not fabricate values the worker never reported."""
+
+        @asynccontextmanager
+        async def lease(request_id):
+            yield
+
+        rpc_result = {
+            "protocol_version": "1", "status": "ok",
+            "data": {"width": 1, "height": 1},
+            "attachments": [{
+                "name": "image", "media_type": "image/png",
+                "data_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE"
+                    "QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+            }],
+            "metadata": {"duration_seconds": 0.1},
+        }
+        image = app.Image.new("RGB", (1, 1))
+        with patch.object(app, "image_edit_lease", lease), patch.object(
+            app.editor, "invoke", new_callable=AsyncMock, return_value=rpc_result
+        ):
+            response = await app.invoke_edit("edit", image, "image/png", {})
+
+        self.assertNotIn("effective_num_inference_steps", response)
+        self.assertNotIn("effective_true_cfg_scale", response)
+
     async def test_concepts_raises_if_sam3_prompts_missing_from_model_response(self):
         payload = {"caption": "A red bicycle leaning against a brick wall."}
         with patch.object(app.httpx, "AsyncClient") as client_cls:

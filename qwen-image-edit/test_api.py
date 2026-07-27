@@ -299,6 +299,36 @@ class RpcResultTests(unittest.TestCase):
             attachments["conditioning_image"]["data_base64"], conditioning
         )
 
+    def test_forwards_effective_generation_params_when_present(self):
+        final = base64.b64encode(b"final").decode("ascii")
+
+        response = api._rpc_result(
+            {"request_id": "request-id"},
+            {
+                "width": 4,
+                "height": 4,
+                "image_png_base64": final,
+                "effective_num_inference_steps": 4,
+                "effective_true_cfg_scale": 1.0,
+            },
+            api.time.monotonic(),
+        )
+
+        self.assertEqual(response["metadata"]["effective_num_inference_steps"], 4)
+        self.assertEqual(response["metadata"]["effective_true_cfg_scale"], 1.0)
+
+    def test_omits_effective_generation_params_when_absent(self):
+        final = base64.b64encode(b"final").decode("ascii")
+
+        response = api._rpc_result(
+            {"request_id": "request-id"},
+            {"width": 4, "height": 4, "image_png_base64": final},
+            api.time.monotonic(),
+        )
+
+        self.assertNotIn("effective_num_inference_steps", response["metadata"])
+        self.assertNotIn("effective_true_cfg_scale", response["metadata"])
+
 
 class InpaintCompositionTests(unittest.TestCase):
     def test_composite_preserves_every_unmasked_source_pixel(self):
