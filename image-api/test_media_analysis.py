@@ -44,6 +44,8 @@ async def test_semantic_image_adds_model_and_schema_provenance():
     with patch.object(media, "_completion", new=AsyncMock(return_value=result)):
         response = await media.semantic_image(image_upload())
     assert response["schema_version"] == "1"
+    assert response["contract_version"] == "0.1.0"
+    assert len(response["schema_fingerprint"]) == 64
     assert response["prompt_version"] == "phai-media-v1"
     assert response["caption"] == "A blue square."
 

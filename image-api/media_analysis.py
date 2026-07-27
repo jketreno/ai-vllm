@@ -26,6 +26,10 @@ MAX_UPLOAD_BYTES = int(
 )
 MAX_WINDOW_FRAMES = 12
 PROMPT_VERSION = "phai-media-v1"
+CONTRACT_VERSION = "0.1.0"
+SCHEMA_FINGERPRINT = (
+    "375289189b519a6590658764228b45bf7ecdb4002a7ac4f03cd008843ae51c69"
+)
 
 
 class EvidenceRequest(BaseModel):
@@ -222,6 +226,8 @@ async def _completion(
 def _with_provenance(result: dict) -> dict:
     return {
         **result,
+        "contract_version": CONTRACT_VERSION,
+        "schema_fingerprint": SCHEMA_FINGERPRINT,
         "schema_version": "1",
         "model": VISION_MODEL,
         "model_revision": MODEL_REVISION,
@@ -236,6 +242,8 @@ async def capabilities():
 
 def capability_document(ready: bool) -> dict:
     return {
+        "contract_version": CONTRACT_VERSION,
+        "schema_fingerprint": SCHEMA_FINGERPRINT,
         "schema_version": "1",
         "model": VISION_MODEL,
         "model_revision": MODEL_REVISION,
