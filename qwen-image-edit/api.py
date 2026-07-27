@@ -691,14 +691,27 @@ def _decode_mask(mask_data_uri: str) -> Image.Image:
     return _decode_image_bytes(payload, mode="L")
 
 
-def _encode_image_response(result: Image.Image) -> dict:
+def _encode_image_response(
+    result: Image.Image,
+    num_inference_steps: int | None = None,
+    true_cfg_scale: float | None = None,
+) -> dict:
+    """`num_inference_steps`/`true_cfg_scale`, when given, are the values actually
+    used for generation -- e.g. after the lightning profile's server-side override
+    (_generation_settings) -- so callers can tell what ran instead of assuming their
+    request was honored verbatim."""
     buffer = io.BytesIO()
     result.save(buffer, format="PNG")
-    return {
+    response = {
         "width": result.width,
         "height": result.height,
         "image_png_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
     }
+    if num_inference_steps is not None:
+        response["effective_num_inference_steps"] = num_inference_steps
+    if true_cfg_scale is not None:
+        response["effective_true_cfg_scale"] = true_cfg_scale
+    return response
 
 
 def _composite_generated_region(
@@ -777,6 +790,24 @@ def _encode_vae_image(pipe, image, generator):
     return (image_latents - latents_mean) * latents_std
 
 
+def _binarize_mask(mask_image: Image.Image, threshold: int = 128) -> Image.Image:
+    """Sharpen a possibly-feathered mask to hard 0/255 edges.
+
+    Callers feather mask edges (soft gradient) so the final pixel-space composite
+    in _composite_generated_region can blend smoothly against the true original
+    pixels. _latent_mask_callback re-applies its mask every denoising step, though,
+    so feeding it that same fractional gradient means the feather band gets
+    re-blended dozens of times over the course of generation, each time pulling
+    those latents back toward a re-noised copy of the source -- the model never
+    fully commits to new content there, which showed up as the original
+    background bleeding through inside the mask. Binarizing keeps the per-step
+    decision crisp (protect exactly / regenerate freely) and leaves all spatial
+    softening to the one-shot pixel-space composite, which blends real pixels
+    from both sides instead of intermediate latent noise.
+    """
+    return mask_image.point(lambda pixel: 255 if pixel >= threshold else 0)
+
+
 def _prepare_latent_noise_mask(
     pipe, source: Image.Image, mask_image: Image.Image, strength: float, generator
 ):
@@ -805,8 +836,8 @@ def _prepare_latent_noise_mask(
     )
     noise = pipe._pack_latents(noise, 1, channels, latent_height, latent_width)
 
-    latent_mask = mask_image.resize(
-        (latent_width, latent_height), Image.Resampling.BILINEAR
+    latent_mask = _binarize_mask(mask_image).resize(
+        (latent_width, latent_height), Image.Resampling.NEAREST
     )
     latent_mask = torch.from_numpy(
         np.asarray(latent_mask, dtype=np.float32) / 255.0
@@ -1076,7 +1107,7 @@ async def edit(
                 _observe_post_inference_memory()
 
     result = await asyncio.to_thread(_run)
-    return _encode_image_response(result)
+    return _encode_image_response(result, num_inference_steps, true_cfg_scale)
 
 
 async def inpaint(
@@ -1178,7 +1209,7 @@ async def inpaint(
                 _observe_post_inference_memory()
 
     result = await asyncio.to_thread(_run)
-    return _encode_image_response(result)
+    return _encode_image_response(result, num_inference_steps, true_cfg_scale)
 
 
 def _outpaint_canvas(
@@ -1308,7 +1339,7 @@ async def outpaint(
                 _observe_post_inference_memory()
 
     result = await asyncio.to_thread(_run)
-    return _encode_image_response(result)
+    return _encode_image_response(result, num_inference_steps, true_cfg_scale)
 
 
 async def transform(
@@ -1456,13 +1487,20 @@ def _rpc_result(request, result, started):
                 "data_base64": conditioning,
             }
         )
+    metadata = {"duration_seconds": round(time.monotonic() - started, 4)}
+    if "effective_num_inference_steps" in result:
+        metadata["effective_num_inference_steps"] = result[
+            "effective_num_inference_steps"
+        ]
+    if "effective_true_cfg_scale" in result:
+        metadata["effective_true_cfg_scale"] = result["effective_true_cfg_scale"]
     return {
         "protocol_version": PROTOCOL_VERSION,
         "request_id": request.get("request_id", str(uuid.uuid4())),
         "status": "ok",
         "data": {"width": result["width"], "height": result["height"]},
         "attachments": attachments,
-        "metadata": {"duration_seconds": round(time.monotonic() - started, 4)},
+        "metadata": metadata,
     }
 
 

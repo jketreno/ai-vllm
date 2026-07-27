@@ -442,6 +442,23 @@ class InpaintPipelineTests(unittest.TestCase):
         self.assertEqual(encoder.calls[1]["prompt"], " ")
         self.assertIsNone(encoder.calls[1]["image"])
 
+    def test_binarize_mask_never_leaves_a_fractional_feather_band(self):
+        gradient = Image.new("L", (256, 1))
+        gradient.putdata(list(range(256)))
+
+        binarized = api._binarize_mask(gradient)
+
+        values = set(binarized.getdata())
+        self.assertEqual(values, {0, 255})
+
+    def test_binarize_mask_threshold_is_inclusive_at_the_boundary(self):
+        mask = Image.new("L", (3, 1))
+        mask.putdata([127, 128, 200])
+
+        binarized = api._binarize_mask(mask)
+
+        self.assertEqual(list(binarized.getdata()), [0, 255, 255])
+
     def test_latent_mask_callback_restores_protected_final_latents(self):
         source = np.array([[10.0, 20.0]])
         latent_mask = np.array([[0.0, 1.0]])
