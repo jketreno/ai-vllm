@@ -32,11 +32,14 @@ from auth import (
     AuthenticationError,
     validate_access_token,
     validate_openwebui_token,
+    validate_phai_token,
 )
 import openai_compat
+import media_analysis
 
 
 app = FastAPI(title="ai-vllm Image API", version="1.0.0")
+app.include_router(media_analysis.router)
 log = logging.getLogger("image_api")
 METRICS_PORT = int(os.environ.get("IMAGE_API_METRICS_PORT", "9094"))
 sam = WorkerClient(
@@ -57,7 +60,8 @@ def startup():
 async def require_image_bearer(request: Request, call_next):
     native_route = request.url.path.startswith("/v1/images/")
     openai_route = request.url.path.startswith("/openai/v1/images/")
-    if not native_route and not openai_route:
+    media_route = request.url.path.startswith("/v1/media/")
+    if not native_route and not openai_route and not media_route:
         return await call_next(request)
     authorization = request.headers.get("Authorization", "")
     scheme, _, token = authorization.partition(" ")
@@ -68,7 +72,9 @@ async def require_image_bearer(request: Request, call_next):
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        if openai_route:
+        if media_route:
+            request.state.service = validate_phai_token(token)
+        elif openai_route:
             request.state.service = validate_openwebui_token(token)
         else:
             request.state.username = validate_access_token(token)
@@ -422,6 +428,7 @@ async def capabilities():
         },
         "services": service_statuses(sam_ready, edit_ready, vision_ready),
         "image_edit": edit_profile,
+        "media_intelligence": media_analysis.capability_document(vision_ready),
     }
 
 
@@ -528,6 +535,10 @@ async def invoke_edit(
         response["conditioning_image_png_base64"] = image_response(conditioning)[
             "image_png_base64"
         ]
+    worker_metadata = result.get("metadata", {})
+    for key in ("effective_num_inference_steps", "effective_true_cfg_scale"):
+        if key in worker_metadata:
+            response[key] = worker_metadata[key]
     return response
 
 

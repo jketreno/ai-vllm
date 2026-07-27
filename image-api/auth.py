@@ -31,6 +31,12 @@ _OPENWEBUI_SECRET_FILE = Path(
         "/run/secrets/image_api_openwebui_token",
     )
 )
+_PHAI_SECRET_FILE = Path(
+    os.environ.get(
+        "IMAGE_API_PHAI_TOKEN_FILE",
+        "/run/secrets/phai_service_token",
+    )
+)
 
 
 def _b64url_decode(value: str) -> bytes:
@@ -61,11 +67,28 @@ def _openwebui_secret() -> bytes:
     return value
 
 
+def _phai_secret() -> bytes:
+    try:
+        value = _PHAI_SECRET_FILE.read_bytes().strip()
+    except OSError:
+        value = os.environ.get("IMAGE_API_PHAI_TOKEN", "").encode()
+    if len(value) < 32:
+        raise AuthenticationError("ketr.phai service token is not configured")
+    return value
+
+
 def validate_openwebui_token(token: str) -> str:
     """Validate the dedicated service credential for OpenAI-compatible routes."""
     if not hmac.compare_digest(token.encode(), _openwebui_secret()):
         raise AuthenticationError("invalid Open WebUI service token")
     return "open-webui"
+
+
+def validate_phai_token(token: str) -> str:
+    """Validate the dedicated ketr.phai service credential."""
+    if not hmac.compare_digest(token.encode(), _phai_secret()):
+        raise AuthenticationError("invalid ketr.phai service token")
+    return "ketr.phai"
 
 
 def validate_access_token(token: str) -> str:

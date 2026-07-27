@@ -32,6 +32,23 @@ x-clare2-env: &clare2-env
   IMAGE_API_EXCLUSIVE_VLLM: ${IMAGE_API_EXCLUSIVE_VLLM:-false}
 
 services:
+  sam3-video-worker:
+    profiles: [sam-video]
+    build:
+      context: .
+      dockerfile: sam3-video/Dockerfile
+    restart: unless-stopped
+    environment:
+      SAM3_VIDEO_TOKEN_FILE: /run/secrets/phai_service_token
+      SAM3_VIDEO_BACKEND: ${SAM3_VIDEO_BACKEND:-box-keyframe-fallback}
+      SAM3_VIDEO_MODEL_REVISION: ${SAM3_VIDEO_MODEL_REVISION:-not-loaded}
+    secrets: [phai_service_token]
+    volumes:
+      - sam3_video_sessions:/data/sessions
+    ports:
+      - "${SAM3_VIDEO_BIND_ADDRESS:-127.0.0.1}:${SAM3_VIDEO_PORT:-8007}:8007"
+    networks: [inference]
+
   mlflow:
     build:
       context: clare2/mlflow
@@ -321,11 +338,13 @@ services:
       IMAGE_API_AUTH_AUDIENCE: ${AUTO_SAM_AUTH_AUDIENCE:-image-api}
       IMAGE_API_AUTH_TOKEN_SECRET_FILE: /run/secrets/auto_sam_auth_token
       IMAGE_API_OPENWEBUI_TOKEN_FILE: /run/secrets/image_api_openwebui_token
+      IMAGE_API_PHAI_TOKEN_FILE: /run/secrets/phai_service_token
     secrets:
       - clare2_proxy_token
       - clare2_operator_token
       - auto_sam_auth_token
       - image_api_openwebui_token
+      - phai_service_token
     ports:
       - "${IMAGE_API_BIND_ADDRESS:-127.0.0.1}:${IMAGE_API_PORT:-8005}:8000"
     expose:
@@ -568,6 +587,7 @@ networks:
   monitoring: {}
 
 volumes:
+  sam3_video_sessions:
   ollama_data: {}
   qdrant_storage: {}
   prometheus_data: {}
@@ -597,3 +617,5 @@ secrets:
     file: ${AUTO_SAM_AUTH_TOKEN_SECRET_FILE:-./secrets/auto_sam_auth_token}
   image_api_openwebui_token:
     file: ${IMAGE_API_OPENWEBUI_TOKEN_SECRET_FILE:-./secrets/image_api_openwebui_token}
+  phai_service_token:
+    file: ${PHAI_SERVICE_TOKEN_FILE:-../ketr.phai/secrets/phai_service_token}

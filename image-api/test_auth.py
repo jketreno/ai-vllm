@@ -29,6 +29,7 @@ else:
 
 SECRET = b"a-test-secret-that-is-at-least-thirty-two-bytes"
 SERVICE_SECRET = "open-webui-test-token-that-is-long-enough"
+PHAI_SECRET = "ketr-phai-service-token-that-is-long-enough"
 
 
 def _encode(value: dict) -> str:
@@ -83,10 +84,16 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
             "auth._openwebui_secret",
             return_value=SERVICE_SECRET.encode(),
         )
+        self.phai_secret = patch(
+            "auth._phai_secret",
+            return_value=PHAI_SECRET.encode(),
+        )
         self.secret.start()
         self.service_secret.start()
+        self.phai_secret.start()
 
     def tearDown(self):
+        self.phai_secret.stop()
         self.service_secret.stop()
         self.secret.stop()
 
@@ -134,6 +141,18 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
             self._next,
         )
         self.assertEqual(response.status_code, 401)
+
+    async def test_media_routes_accept_only_the_phai_service_token(self):
+        request = _request("/v1/media/semantic-image", PHAI_SECRET)
+        response = await app.require_image_bearer(request, self._next)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(request.state.service, "ketr.phai")
+
+        browser_response = await app.require_image_bearer(
+            _request("/v1/media/semantic-image", _token()),
+            self._next,
+        )
+        self.assertEqual(browser_response.status_code, 401)
 
     async def test_expired_token_is_rejected(self):
         response = await app.require_image_bearer(
