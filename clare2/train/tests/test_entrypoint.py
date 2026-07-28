@@ -12,7 +12,13 @@ ENTRYPOINT = pathlib.Path(__file__).parents[1] / "entrypoint.sh"
 
 
 class TrainingEntrypointTests(unittest.TestCase):
-    def _run(self, state: dict | None = None, *, override: bool = False) -> bool:
+    def _run(
+        self,
+        state: dict | None = None,
+        *,
+        override: bool = False,
+        enabled: str = "true",
+    ) -> bool:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             state_path = root / "lifecycle.json"
@@ -23,6 +29,7 @@ class TrainingEntrypointTests(unittest.TestCase):
                 **os.environ,
                 "CLARE2_LIFECYCLE_STATE_PATH": str(state_path),
                 "CLARE2_TRAIN_AUTHORIZED": "1" if override else "0",
+                "CLARE2_TRAINING_ENABLED": enabled,
             }
             subprocess.run(
                 ["/bin/bash", ENTRYPOINT, "/usr/bin/touch", marker_path],
@@ -49,6 +56,26 @@ class TrainingEntrypointTests(unittest.TestCase):
 
     def test_explicit_dream_training_override_runs_training_command(self):
         self.assertTrue(self._run({"phase": "training"}, override=True))
+
+    def test_disabled_admission_blocks_authorized_training(self):
+        self.assertFalse(
+            self._run(
+                {"phase": "starting_training", "trainer_start_requested": True},
+                enabled="false",
+            )
+        )
+
+    def test_disabled_admission_blocks_dream_override(self):
+        self.assertFalse(
+            self._run({"phase": "training"}, override=True, enabled="false")
+        )
+
+    def test_invalid_admission_value_fails_closed(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self._run(
+                {"phase": "starting_training", "trainer_start_requested": True},
+                enabled="TRUE",
+            )
 
 
 if __name__ == "__main__":

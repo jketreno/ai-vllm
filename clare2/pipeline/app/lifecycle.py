@@ -49,6 +49,22 @@ IMAGE_LEASE_EXCLUSIVE_VLLM = os.environ.get(
     "IMAGE_API_EXCLUSIVE_VLLM", "false"
 ).lower() in ("1", "true", "yes")
 
+
+def _strict_boolean_setting(
+    name: str, default: str = "false"
+) -> tuple[bool, str | None]:
+    raw_value = os.environ.get(name, default).strip()
+    if raw_value == "true":
+        return True, None
+    if raw_value == "false":
+        return False, None
+    return False, f"{name} must be exactly 'true' or 'false'"
+
+
+TRAINING_ENABLED, TRAINING_CONFIGURATION_ERROR = _strict_boolean_setting(
+    "CLARE2_TRAINING_ENABLED"
+)
+
 PHASES = {
     "idle",
     "postponed",
@@ -66,7 +82,14 @@ PHASES = {
     "image_edit",
 }
 
-TERMINAL_OUTCOMES = {"promoted", "rejected", "skipped_no_new_content", "batch_complete"}
+TERMINAL_OUTCOMES = {
+    "promoted",
+    "rejected",
+    "skipped_no_new_content",
+    "skipped_no_eligible_corpus",
+    "disabled_by_operator",
+    "batch_complete",
+}
 
 
 def status() -> dict[str, Any]:
@@ -368,6 +391,25 @@ def _wait_for_inference_idle(run_id: str, postponement_notified: bool) -> bool:
 def run_nightly_training() -> None:
     """Wait for inference to become idle, refresh SFT data, then train."""
     with single_run():
+        if not TRAINING_ENABLED:
+            run_id = _new_run_id()
+            _set_state(
+                "idle",
+                reset=True,
+                run_id=run_id,
+                outcome="disabled_by_operator",
+                training_enabled=False,
+                configuration_error=TRAINING_CONFIGURATION_ERROR,
+            )
+            metrics.training_admission_outcomes.labels(
+                outcome="disabled_by_operator"
+            ).inc()
+            notify.send_run_notification(
+                "disabled_by_operator",
+                run_id=run_id,
+                configuration_error=TRAINING_CONFIGURATION_ERROR,
+            )
+            return
         state = reconcile_terminal_state()
         if state.get("phase") not in {"postponed", "idle", "failed"}:
             raise RuntimeError(
@@ -420,6 +462,7 @@ def run_nightly_training() -> None:
 
 def start_training() -> None:
     with single_run():
+        _require_training_enabled()
         state = reconcile_terminal_state()
         run_id = state.get("run_id") or _new_run_id()
         if state.get("phase") not in {"training", "idle"}:
@@ -433,6 +476,7 @@ def start_training() -> None:
 
 def start_dream_training(run_id: str) -> dict[str, Any]:
     with single_run():
+        _require_training_enabled()
         state = status()
         if state.get("phase") not in {"idle", "failed"}:
             raise RuntimeError(f"cannot start dream training from {state.get('phase')}")
@@ -626,7 +670,17 @@ def _complete_one_candidate(run_id: str, adapter: dict[str, Any]) -> dict[str, A
     return {"adapter_id": adapter_id, "mlflow_run_id": mlflow_run_id, **result}
 
 
-def report_training_failure(run_id: str, error: str) -> dict[str, Any]:
+def report_training_failure(
+    run_id: str,
+    error: str,
+    *,
+    project: str | None = None,
+    adapter_id: str | None = None,
+    mlflow_run_id: str | None = None,
+    error_type: str | None = None,
+    traceback_sha256: str | None = None,
+    traceback_artifact: str | None = None,
+) -> dict[str, Any]:
     """Handle a clare2-train container crash reported by dream-train.sh.
 
     Unlike complete_training/complete_training_batch, this fires when the
@@ -643,7 +697,16 @@ def report_training_failure(run_id: str, error: str) -> dict[str, Any]:
             "idle",
         }:
             raise RuntimeError("callback does not match the active training run")
-        _recover(run_id, RuntimeError(error))
+        _recover(
+            run_id,
+            RuntimeError(error),
+            adapter_id=adapter_id,
+            project=project,
+            mlflow_run_id=mlflow_run_id,
+            error_type=error_type,
+            traceback_sha256=traceback_sha256,
+            traceback_artifact=traceback_artifact,
+        )
         return status()
 
 
@@ -696,15 +759,16 @@ def complete_training_skipped(run_id: str) -> dict[str, Any]:
             _container("start", VLLM_CONTAINER)
             _wait_for_vllm()
             controller.reconcile()
-            metrics.lifecycle_outcomes.labels(outcome="skipped_no_new_content").inc()
+            outcome = "skipped_no_eligible_corpus"
+            metrics.lifecycle_outcomes.labels(outcome=outcome).inc()
             maintenance.exit()
             _set_state(
                 "idle",
                 run_id=run_id,
                 completed_adapter_id=f"skipped:{run_id}",
-                outcome="skipped_no_new_content",
+                outcome=outcome,
             )
-            notify.send_run_notification("skipped_no_new_content", run_id=run_id)
+            notify.send_run_notification(outcome, run_id=run_id)
             return status()
         except Exception as exc:
             _recover(run_id, exc)
@@ -744,14 +808,32 @@ def rollback() -> dict[str, Any]:
             maintenance.exit()
 
 
-def _recover(run_id: str, error: Exception, adapter_id: str | None = None) -> None:
+def _recover(
+    run_id: str,
+    error: Exception,
+    adapter_id: str | None = None,
+    *,
+    project: str | None = None,
+    mlflow_run_id: str | None = None,
+    error_type: str | None = None,
+    traceback_sha256: str | None = None,
+    traceback_artifact: str | None = None,
+) -> None:
     log.exception("Lifecycle failure; recovering prior approved adapter")
+    failure = {
+        "candidate_id": adapter_id,
+        "project": project,
+        "mlflow_run_id": mlflow_run_id,
+        "error": str(error),
+        "error_type": error_type or type(error).__name__,
+        "traceback_sha256": traceback_sha256,
+        "traceback_artifact": traceback_artifact,
+    }
     _set_state(
         "recovering",
         run_id=run_id,
-        candidate_id=adapter_id,
-        error=str(error),
         trainer_start_requested=False,
+        **failure,
     )
     try:
         if adapter_id and adapter_id in registry.read()["adapters"]:
@@ -765,10 +847,20 @@ def _recover(run_id: str, error: Exception, adapter_id: str | None = None) -> No
         metrics.lifecycle_outcomes.labels(outcome="recovered").inc()
     finally:
         maintenance.exit()
-        _set_state("failed", run_id=run_id, candidate_id=adapter_id, error=str(error))
+        _set_state("failed", run_id=run_id, outcome="failed", **failure)
         notify.send_run_notification(
-            "failed", run_id=run_id, adapter_id=adapter_id, error=str(error)
+            "failed",
+            run_id=run_id,
+            adapter_id=adapter_id,
+            **{key: value for key, value in failure.items() if key != "candidate_id"},
         )
+
+
+def _require_training_enabled() -> None:
+    if TRAINING_CONFIGURATION_ERROR:
+        raise RuntimeError(TRAINING_CONFIGURATION_ERROR)
+    if not TRAINING_ENABLED:
+        raise RuntimeError("CLARE2 training is disabled by operator")
 
 
 def _invoke_probe(model: str, probe: dict[str, Any]) -> str:

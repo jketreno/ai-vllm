@@ -22,6 +22,7 @@ import transformers.modeling_utils as hf_modeling_utils
 from transformers import TrainerCallback
 from trl import SFTConfig, SFTTrainer
 
+from failure_reporting import write_failure_artifact
 from mlflow_tracking import TrainingTracker
 
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
@@ -233,45 +234,46 @@ def main() -> None:
     args = parse_args()
     random.seed(args.seed)
     output_dir = pathlib.Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=False)
     train_file = pathlib.Path(args.train_file)
     started = time.monotonic()
-    memory_snapshots = [memory_snapshot("before_model_load")]
+    memory_snapshots: list[dict[str, Any]] = []
     tracker = TrainingTracker(
         lifecycle_run_id=args.run_id,
         adapter_id=args.adapter_id,
         project_id=args.project_id,
     )
-    corpus_hash = file_hash(train_file)
-    lock_path = pathlib.Path(args.dependency_lock)
-    mlflow_run_id = tracker.start(
-        {
-            "base_model": args.model_name,
-            "base_model_id": args.base_model_id,
-            "base_revision": args.revision,
-            "corpus_hash": corpus_hash,
-            "dependency_lock_hash": file_hash(lock_path),
-            "seed": args.seed,
-            "lora_rank": args.lora_r,
-            "lora_alpha": args.lora_alpha,
-            "lora_dropout": args.lora_dropout,
-            "target_modules": TARGET_MODULES,
-            "max_seq_length": args.max_seq_length,
-            "epochs": args.num_train_epochs,
-            "batch_size": args.per_device_train_batch_size,
-            "gradient_accumulation_steps": args.gradient_accumulation_steps,
-            "learning_rate": args.learning_rate,
-            "bf16": True,
-            "requested_load_in_4bit": REQUESTED_LOAD_IN_4BIT,
-        },
-        {
-            "clare2.stage": "training",
-            "clare2.framework": "unsloth",
-            "clare2.quantization.requested": "qlora-4bit",
-        },
-    )
-
+    mlflow_run_id = None
     try:
+        output_dir.mkdir(parents=True, exist_ok=False)
+        memory_snapshots.append(memory_snapshot("before_model_load"))
+        corpus_hash = file_hash(train_file)
+        lock_path = pathlib.Path(args.dependency_lock)
+        mlflow_run_id = tracker.start(
+            {
+                "base_model": args.model_name,
+                "base_model_id": args.base_model_id,
+                "base_revision": args.revision,
+                "corpus_hash": corpus_hash,
+                "dependency_lock_hash": file_hash(lock_path),
+                "seed": args.seed,
+                "lora_rank": args.lora_r,
+                "lora_alpha": args.lora_alpha,
+                "lora_dropout": args.lora_dropout,
+                "target_modules": TARGET_MODULES,
+                "max_seq_length": args.max_seq_length,
+                "epochs": args.num_train_epochs,
+                "batch_size": args.per_device_train_batch_size,
+                "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                "learning_rate": args.learning_rate,
+                "bf16": True,
+                "requested_load_in_4bit": REQUESTED_LOAD_IN_4BIT,
+            },
+            {
+                "clare2.stage": "training",
+                "clare2.framework": "unsloth",
+                "clare2.quantization.requested": "qlora-4bit",
+            },
+        )
         model, tokenizer = FastModel.from_pretrained(
             model_name=args.model_name,
             revision=args.revision,
@@ -437,8 +439,22 @@ def main() -> None:
         tracker.log_dict(metadata, "training/training_meta.json")
         tracker.log_adapter_artifacts(output_dir)
         tracker.finish()
-    except Exception:
-        tracker.finish("FAILED")
+    except Exception as error:
+        try:
+            failure = write_failure_artifact(
+                output_dir,
+                project=args.project_id,
+                adapter_id=args.adapter_id,
+                mlflow_run_id=mlflow_run_id,
+                error=error,
+            )
+            tracker.log_dict(failure, "training/failure.json")
+        except Exception:
+            pass
+        try:
+            tracker.finish("FAILED")
+        except Exception:
+            pass
         raise
 
 

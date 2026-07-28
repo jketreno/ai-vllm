@@ -1,6 +1,6 @@
 # Phase 00 — Containment and Reproducible Baseline
 
-Status: proposed  
+Status: implemented in source; production validation pending
 Depends on: none  
 Produces: safe training admission control, immutable audit baseline, and
 pre-change production evidence
@@ -98,4 +98,3 @@ of rollback; base inference remains the safe operating state.
 - Changing corpus meaning.
 - Migrating existing records.
 - Promoting any adapter.
-

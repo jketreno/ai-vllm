@@ -86,9 +86,7 @@ class WaitForImageMemoryTests(unittest.TestCase):
         lifecycle._release_image_worker_cache.assert_not_called()
 
     def test_requests_cache_release_once_when_short_then_succeeds(self):
-        patch.object(
-            lifecycle, "_mem_available_gib", side_effect=[10.0, 20.0]
-        ).start()
+        patch.object(lifecycle, "_mem_available_gib", side_effect=[10.0, 20.0]).start()
         patch.object(lifecycle, "IMAGE_LEASE_MIN_AVAILABLE_GIB", 16.0).start()
 
         available = lifecycle._wait_for_image_memory()
@@ -144,7 +142,7 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         self._set_training_state("run-1")
         result = lifecycle.complete_training_skipped("run-1")
         self.assertEqual(result["phase"], "idle")
-        self.assertEqual(result["outcome"], "skipped_no_new_content")
+        self.assertEqual(result["outcome"], "skipped_no_eligible_corpus")
         self.assertEqual(result["completed_adapter_id"], "skipped:run-1")
         self.assertFalse(result["trainer_start_requested"])
 
@@ -152,7 +150,7 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         self._set_training_state("run-1")
         lifecycle.complete_training_skipped("run-1")
         lifecycle.notify.send_run_notification.assert_called_once_with(
-            "skipped_no_new_content", run_id="run-1"
+            "skipped_no_eligible_corpus", run_id="run-1"
         )
 
     def test_restarts_vllm_and_reconciles(self):
@@ -193,7 +191,15 @@ class CompleteTrainingSkippedTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             lifecycle.complete_training_skipped("run-1")
         lifecycle.notify.send_run_notification.assert_called_once_with(
-            "failed", run_id="run-1", adapter_id=None, error="boom"
+            "failed",
+            run_id="run-1",
+            adapter_id=None,
+            error="boom",
+            project=None,
+            mlflow_run_id=None,
+            error_type="RuntimeError",
+            traceback_sha256=None,
+            traceback_artifact=None,
         )
 
     def test_reconciles_terminal_outcome_with_stale_phase(self):
@@ -228,6 +234,8 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
         ).start()
         patch.object(lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock").start()
         patch.object(lifecycle, "TRAINING_RETRY_INTERVAL", 0).start()
+        patch.object(lifecycle, "TRAINING_ENABLED", True).start()
+        patch.object(lifecycle, "TRAINING_CONFIGURATION_ERROR", None).start()
         patch.object(lifecycle, "maintenance").start()
         patch.object(lifecycle, "notify").start()
         patch.object(lifecycle, "corpus").start()
@@ -241,6 +249,38 @@ class NightlyTrainingAdmissionTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
         patch.stopall()
+
+    def test_disabled_admission_does_not_touch_inference_or_corpus(self):
+        lifecycle.TRAINING_ENABLED = False
+
+        lifecycle.run_nightly_training()
+
+        state = lifecycle.status()
+        self.assertEqual(state["phase"], "idle")
+        self.assertEqual(state["outcome"], "disabled_by_operator")
+        lifecycle.corpus.assemble.assert_not_called()
+        lifecycle._container.assert_not_called()
+        lifecycle.maintenance.enter.assert_not_called()
+        lifecycle.notify.send_run_notification.assert_called_once_with(
+            "disabled_by_operator",
+            run_id=state["run_id"],
+            configuration_error=None,
+        )
+
+    def test_invalid_admission_value_fails_closed_with_context(self):
+        lifecycle.TRAINING_ENABLED = False
+        lifecycle.TRAINING_CONFIGURATION_ERROR = (
+            "CLARE2_TRAINING_ENABLED must be exactly 'true' or 'false'"
+        )
+
+        lifecycle.run_nightly_training()
+
+        state = lifecycle.status()
+        self.assertEqual(state["outcome"], "disabled_by_operator")
+        self.assertEqual(
+            state["configuration_error"],
+            lifecycle.TRAINING_CONFIGURATION_ERROR,
+        )
 
     def test_postpones_once_then_refreshes_corpus_and_trains(self):
         lifecycle._set_state(
@@ -604,6 +644,7 @@ class ReportTrainingFailureTests(unittest.TestCase):
         )
 
         self.assertEqual(result["phase"], "failed")
+        self.assertEqual(result["outcome"], "failed")
         self.assertIsNone(result["candidate_id"])
         self.assertEqual(result["error"], "crashed during backward pass")
 
@@ -617,7 +658,32 @@ class ReportTrainingFailureTests(unittest.TestCase):
             run_id="run-1",
             adapter_id=None,
             error="crashed during backward pass",
+            project=None,
+            mlflow_run_id=None,
+            error_type="RuntimeError",
+            traceback_sha256=None,
+            traceback_artifact=None,
         )
+
+    def test_persists_structured_failure_context(self):
+        self._set_training_state("run-1")
+
+        result = lifecycle.report_training_failure(
+            "run-1",
+            "CUDA out of memory",
+            project="Zoo-Code",
+            adapter_id="clare-zoo-code-run-1",
+            mlflow_run_id="mlflow-1",
+            error_type="OutOfMemoryError",
+            traceback_sha256="a" * 64,
+            traceback_artifact="/models/adapters/example/failure.json",
+        )
+
+        self.assertEqual(result["project"], "Zoo-Code")
+        self.assertEqual(result["candidate_id"], "clare-zoo-code-run-1")
+        self.assertEqual(result["mlflow_run_id"], "mlflow-1")
+        self.assertEqual(result["error_type"], "OutOfMemoryError")
+        self.assertEqual(result["traceback_sha256"], "a" * 64)
 
     def test_recovers_vllm_to_prior_approved_adapter(self):
         self._set_training_state("run-1")
@@ -651,9 +717,7 @@ class ReconcileStalledTrainingTests(unittest.TestCase):
         patch.object(
             lifecycle, "STATE_PATH", self.state_root / "lifecycle.json"
         ).start()
-        patch.object(
-            lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock"
-        ).start()
+        patch.object(lifecycle, "LOCK_PATH", self.state_root / "lifecycle.lock").start()
 
         registry = patch.object(lifecycle, "registry").start()
         registry.read.return_value = {"adapters": {}, "aliases": {"current": None}}

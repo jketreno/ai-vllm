@@ -140,6 +140,15 @@ maintenance_duration = Histogram(
 lifecycle_outcomes = Counter(
     "clare2_lifecycle_outcomes_total", "Lifecycle outcomes", ["outcome"]
 )
+training_admission_enabled = Gauge(
+    "clare2_training_admission_enabled",
+    "Whether CLARE2 training admission is enabled by valid configuration",
+)
+training_admission_outcomes = Counter(
+    "clare2_training_admission_outcomes_total",
+    "Training admission decisions",
+    ["outcome"],
+)
 image_lease_active = Gauge(
     "clare2_image_edit_lease_active", "Whether an image-edit resource lease is active"
 )

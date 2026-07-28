@@ -9,6 +9,12 @@ x-clare2-env: &clare2-env
   CLARE2_INFERENCE_MODEL: ${CLARE2_INFERENCE_MODEL:-Qwen/Qwen3.6-27B-FP8}
   CLARE2_DISTILL_MODEL: ${CLARE2_DISTILL_MODEL:-Qwen/Qwen3.6-27B-FP8}
   CLARE2_TRAIN_MODEL: ${CLARE2_TRAIN_MODEL:-Qwen/Qwen3.6-27B-FP8}
+  CLARE2_TRAINING_ENABLED: ${CLARE2_TRAINING_ENABLED:-false}
+  CLARE2_REQUESTED_TRAINING_MODE: ${CLARE2_REQUESTED_TRAINING_MODE:-qlora-4bit}
+  CLARE2_BUILD_REVISION: ${CLARE2_BUILD_REVISION:-unknown}
+  CLARE2_TRAIN_DEPENDENCY_LOCK: /audit/training-requirements.lock
+  CLARE2_MLFLOW_URL: http://mlflow:5000
+  MLFLOW_EXPERIMENT_NAME: ${CLARE2_MLFLOW_EXPERIMENT:-clare2-qlora}
   CLARE2_MIN_TRAIN_RECORDS: ${CLARE2_MIN_TRAIN_RECORDS:-8}
   CLARE2_INFERENCE_REVISION: ${CLARE2_INFERENCE_REVISION:?pin the FP8 Hugging Face revision}
   CLARE2_TRAIN_REVISION: ${CLARE2_TRAIN_REVISION:?pin the training Hugging Face revision}
@@ -122,6 +128,7 @@ services:
       - ./models:/models
       - ./logs/clare2:/logs
       - ./clare2/pipeline/config/corpus_sources.yml:/app/config/corpus_sources.yml:ro
+      - ./clare2/train/requirements.lock:/audit/training-requirements.lock:ro
     depends_on:
       redis:
         condition: service_healthy

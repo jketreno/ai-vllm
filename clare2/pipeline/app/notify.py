@@ -26,6 +26,8 @@ OUTCOME_LABELS = {
     "promoted": "PROMOTED",
     "rejected": "REJECTED",
     "skipped_no_new_content": "SKIPPED (no new content)",
+    "skipped_no_eligible_corpus": "SKIPPED (no eligible corpus)",
+    "disabled_by_operator": "DISABLED BY OPERATOR",
     "postponed": "POSTPONED (inference active)",
     "failed": "FAILED",
 }
@@ -37,6 +39,8 @@ _STATUS_COLORS = {
     "NOT TRAINED": ("#f1f3f4", "#5f6368"),
     "FAILED": ("#fdecea", "#c5221f"),
     "SKIPPED (no new content)": ("#fff8e1", "#8a6d00"),
+    "SKIPPED (no eligible corpus)": ("#fff8e1", "#8a6d00"),
+    "DISABLED BY OPERATOR": ("#f1f3f4", "#5f6368"),
     "POSTPONED (inference active)": ("#fff8e1", "#8a6d00"),
 }
 _DEFAULT_STATUS_COLOR = ("#f1f3f4", "#5f6368")
@@ -136,7 +140,7 @@ def _outcome_body_lines(
 ) -> list[str]:
     if outcome in ("promoted", "rejected"):
         return ["TRAINING / EVALUATION", *_evaluation_lines(context)]
-    if outcome == "skipped_no_new_content":
+    if outcome in {"skipped_no_new_content", "skipped_no_eligible_corpus"}:
         summaries = _project_summaries()
         if not summaries:
             return ["TRAINING", "  No projects were discovered; run skipped."]
@@ -145,6 +149,16 @@ def _outcome_body_lines(
             lines.append(f"  {skipped_project}: {_not_trained_reason(summary)}")
             lines.append("")
         lines.pop()
+        return lines
+    if outcome == "disabled_by_operator":
+        lines = [
+            "TRAINING",
+            "  Training admission is disabled; inference remains available.",
+            "  Capture, distillation, and corpus assembly remain active.",
+        ]
+        configuration_error = context.get("configuration_error")
+        if configuration_error:
+            lines.append(f"  configuration_error: {configuration_error}")
         return lines
     if outcome == "postponed":
         return [
@@ -156,8 +170,13 @@ def _outcome_body_lines(
     if outcome == "failed":
         return [
             "FAILURE",
+            f"  project: {context.get('project') or 'n/a'}",
             f"  adapter_id: {context.get('adapter_id') or 'n/a'}",
+            f"  mlflow_run_id: {context.get('mlflow_run_id') or 'n/a'}",
+            f"  error_type: {context.get('error_type') or 'n/a'}",
             f"  error: {context.get('error')}",
+            f"  traceback_sha256: {context.get('traceback_sha256') or 'n/a'}",
+            f"  traceback_artifact: {context.get('traceback_artifact') or 'n/a'}",
         ]
     return []
 
@@ -172,9 +191,25 @@ def _outcome_html_sections(
                 _html_evaluation_table([(project or "unknown", label, context, {})]),
             )
         ]
-    if outcome == "skipped_no_new_content":
+    if outcome in {"skipped_no_new_content", "skipped_no_eligible_corpus"}:
         return [
             _html_section("Training", _html_skipped_reasons_table(_project_summaries()))
+        ]
+    if outcome == "disabled_by_operator":
+        configuration_error = context.get("configuration_error")
+        detail = (
+            f"<p><strong>configuration_error:</strong> "
+            f"{_esc(configuration_error)}</p>"
+            if configuration_error
+            else ""
+        )
+        return [
+            _html_section(
+                "Training",
+                "<p>Training admission is disabled; inference remains available.</p>"
+                "<p>Capture, distillation, and corpus assembly remain active.</p>"
+                f"{detail}",
+            )
         ]
     if outcome == "postponed":
         return [
@@ -193,7 +228,17 @@ def _outcome_html_sections(
                 f'<p><span class="badge badge-fail">FAILED</span></p>'
                 f"<p><strong>adapter_id:</strong> "
                 f"{_esc(context.get('adapter_id') or 'n/a')}</p>"
-                f"<p><strong>error:</strong> {_esc(context.get('error'))}</p>",
+                f"<p><strong>project:</strong> "
+                f"{_esc(context.get('project') or 'n/a')}</p>"
+                f"<p><strong>mlflow_run_id:</strong> "
+                f"{_esc(context.get('mlflow_run_id') or 'n/a')}</p>"
+                f"<p><strong>error_type:</strong> "
+                f"{_esc(context.get('error_type') or 'n/a')}</p>"
+                f"<p><strong>error:</strong> {_esc(context.get('error'))}</p>"
+                f"<p><strong>traceback_sha256:</strong> "
+                f"{_esc(context.get('traceback_sha256') or 'n/a')}</p>"
+                f"<p><strong>traceback_artifact:</strong> "
+                f"{_esc(context.get('traceback_artifact') or 'n/a')}</p>",
             )
         ]
     return []

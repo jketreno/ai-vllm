@@ -17,11 +17,6 @@ RUN_ID=$(python3 -c 'import json; print(json.load(open("'"$STATE"'"))["run_id"])
 # Discover per-project corpora: training/{project}/current.jsonl
 mapfile -t PROJECT_DIRS < <(find "$TRAINING_ROOT" -mindepth 2 -maxdepth 2 -name current.jsonl -size +0c 2>/dev/null | sort)
 
-if [[ ${#PROJECT_DIRS[@]} -eq 0 ]]; then
-  echo "No non-empty per-project corpus files found under $TRAINING_ROOT" >&2
-  exit 1
-fi
-
 # True if the project's most recent adapter for this exact corpus hash
 # already produced a durable outcome (approved, loaded, retired, or still
 # training) — not just any hash match. A rejected, failed, or unevaluated
@@ -96,9 +91,27 @@ _send_skipped_callback() {
 }
 
 _send_failure_callback() {
-  local error="$1"
+  local error="$1" project="$2" adapter_id="$3" failure_path="$4"
   local payload timestamp signature
-  payload=$(python3 -c 'import json, sys; print(json.dumps({"run_id": sys.argv[1], "error": sys.argv[2]}, separators=(",", ":")))' "$RUN_ID" "$error")
+  payload=$(python3 - "$RUN_ID" "$error" "$project" "$adapter_id" "$failure_path" <<'PY'
+import json
+import pathlib
+import sys
+
+from failure_reporting import load_callback_context
+
+run_id, error, project, adapter_id, failure_path = sys.argv[1:6]
+payload = {
+    "run_id": run_id,
+    "error": error,
+    "project": project,
+    "adapter_id": adapter_id,
+    "error_type": "TrainerProcessExit",
+}
+payload.update(load_callback_context(pathlib.Path(failure_path)))
+print(json.dumps(payload, separators=(",", ":")))
+PY
+  )
   timestamp=$(date +%s)
   signature=$(printf '%s.%s' "$timestamp" "$payload" |
     openssl dgst -sha256 -hmac "$(cat /run/secrets/clare2_callback_secret)" -hex |
@@ -162,7 +175,9 @@ for corpus_file in "${PROJECT_DIRS[@]}"; do
     if [[ "${CLARE2_TRAIN_SKIP_CALLBACK:-0}" == "1" ]]; then
       echo "Skipping training-failed callback for dream-mode run: $RUN_ID" >&2
     else
-      _send_failure_callback "train.py exited with status ${TRAIN_EXIT} for project ${project}" ||
+      _send_failure_callback \
+        "train.py exited with status ${TRAIN_EXIT} for project ${project}" \
+        "$project" "$adapter_id" "$adapter_out/failure.json" ||
         echo "Failed to post training failure callback" >&2
     fi
     exit "$TRAIN_EXIT"

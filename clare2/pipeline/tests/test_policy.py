@@ -171,6 +171,7 @@ class IngestFlowTests(unittest.TestCase):
         def assemble():
             calls.append("assemble")
             return {"sft_pairs": 3}
+
         with patch.object(main.corpus_sync, "sync_all", side_effect=sync), patch.object(
             main.distiller, "run_daily", side_effect=distill
         ), patch.object(main.corpus, "assemble", side_effect=assemble):
@@ -180,6 +181,31 @@ class IngestFlowTests(unittest.TestCase):
         self.assertEqual(result["sync"]["succeeded"], 1)
         self.assertEqual(result["distill"]["sessions"], 2)
         self.assertEqual(result["assemble"]["sft_pairs"], 3)
+
+
+class StartupScheduleTests(unittest.TestCase):
+    def test_disabled_training_does_not_remove_learning_plane_jobs(self):
+        with patch.object(main, "initialize_registry"), patch.object(
+            main.metrics, "start_metrics_server"
+        ), patch.object(main, "scheduler") as scheduler, patch.object(
+            main.lifecycle, "TRAINING_ENABLED", False
+        ), patch.object(
+            main.lifecycle, "TRAINING_CONFIGURATION_ERROR", None
+        ), patch.object(main.lifecycle, "reconcile_terminal_state"), patch.object(
+            main.lifecycle, "reconcile_stalled_training"
+        ), patch.object(main.controller, "reconcile"):
+            main.startup()
+
+        job_ids = {call.kwargs["id"] for call in scheduler.add_job.call_args_list}
+        self.assertTrue(
+            {
+                "corpus_sync",
+                "distill_daily",
+                "summarize",
+                "corpus_assemble",
+                "train",
+            }.issubset(job_ids)
+        )
 
 
 def safetensors(path: pathlib.Path) -> None:

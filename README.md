@@ -273,10 +273,9 @@ stops `vllm-engine`, grants the lease once memory is safe, then restarts vLLM
 when the request finishes. Concurrent image requests queue behind the active
 lease, and an expired lease is reconciled automatically.
 
-vLLM is still always stopped during CLARE2 nightly training regardless of
-this flag — that exclusivity (`clare2/pipeline/app/lifecycle.py`'s
-`drain_and_stop_infer`) is unrelated to the image-edit lease and exists so
-training has enough GPU memory to fit.
+When CLARE2 training is explicitly enabled, vLLM is stopped during the nightly
+training window regardless of this flag. That exclusivity is unrelated to the
+image-edit lease and exists so training has enough GPU memory to fit.
 
 `QWEN_IMAGE_EDIT_PROFILE=base` is the production default (20 steps, CFG 4).
 The optional `lightning` profile loads the configured LightX2V four-step FP32
@@ -449,6 +448,14 @@ fingerprint before training. `registry.example.json` documents the schema.
 
 ## Nightly Lifecycle
 
+Training admission is contained by `CLARE2_TRAINING_ENABLED`, which is strictly
+parsed and defaults to `false`. While it is disabled, the nightly admission
+records `disabled_by_operator` before maintenance mode, inference drain, or
+trainer startup. Capture, corpus sync, distillation, summarization, corpus
+assembly, and base-model inference continue normally. Leave the setting
+disabled until the Phase 09 admission review; changing it to `true` authorizes
+the existing training lifecycle.
+
 The persisted, single-run state machine performs:
 
 ```text
@@ -462,25 +469,49 @@ The policy persists each handoff phase. A temporarily absent training container
 during a Compose transition remains a waiting status and is retried; it does not
 fail the lifecycle or stop inference before the container is available.
 `clare2-train` is part of the normal Compose model, but its entrypoint exits
-without training unless policy has persisted an explicit start request. Thus a
-plain `docker compose down && docker compose up -d` safely recreates the stopped
-trainer that the nightly lifecycle starts later.
+without training unless both training admission is enabled and policy has
+persisted an explicit start request. The dream-training override is subject to
+the same admission control. Thus a plain
+`docker compose down && docker compose up -d` safely recreates the stopped
+trainer without accidentally starting a run.
 
 Promotion requires all mandatory probes, pass rate `>= 0.90`, and no category
 regression. Failure restarts the prior approved adapter and preserves the
-candidate directory.
+candidate directory. Terminal outcomes distinguish operator-disabled runs
+(`disabled_by_operator`), runs with no eligible changed corpus
+(`skipped_no_eligible_corpus`), and trainer/lifecycle faults (`failed`).
+Trainer failures retain a full traceback artifact in the candidate directory
+and expose only bounded diagnostic metadata in callbacks and notifications.
 
 Operator calls require `Authorization: Bearer <clare2_operator_token>`:
 
 ```text
 GET  /operator/adapters
 GET  /operator/status
+GET  /operator/audit
 POST /operator/promote/{adapter_id}
 POST /operator/rollback
 POST /operator/maintenance/{enter|exit}
 ```
 
 Training callbacks use a timestamped HMAC and are idempotent.
+
+The authenticated audit endpoint and equivalent in-container command produce a
+read-only, redacted JSON baseline. It includes corpus and summary counts,
+content hashes, build and dependency fingerprints, registry and MLflow status,
+stale state, container image IDs, lifecycle state, and training-admission
+blockers. It never includes raw SFT text or full tracebacks.
+
+```bash
+docker compose exec clare2-policy python -m app.audit
+
+curl --fail --silent \
+  -H "Authorization: Bearer $(<secrets/clare2_operator_token)" \
+  http://127.0.0.1:8000/operator/audit
+```
+
+Set `CLARE2_BUILD_REVISION` to the deployed Git commit before deployment so
+archived audit reports identify the exact source revision.
 
 ## Corpus Sync
 

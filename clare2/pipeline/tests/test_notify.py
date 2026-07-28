@@ -127,7 +127,7 @@ class SendRunNotificationTests(unittest.TestCase):
         self.assertEqual(after, before + 1)
 
     def test_missing_corpus_stats_does_not_raise(self):
-        notify.send_run_notification("skipped_no_new_content", run_id="run-1")
+        notify.send_run_notification("skipped_no_eligible_corpus", run_id="run-1")
         self.smtp_instance.send_message.assert_called_once()
 
     def test_composes_postponement_notice_with_active_count(self):
@@ -156,7 +156,7 @@ class SendRunNotificationTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        notify.send_run_notification("skipped_no_new_content", run_id="run-1")
+        notify.send_run_notification("skipped_no_eligible_corpus", run_id="run-1")
         body = _text_body(self.smtp_instance.send_message.call_args[0][0])
         self.assertIn("ai-vllm:", body)
         self.assertIn("clare:", body)
@@ -167,11 +167,41 @@ class SendRunNotificationTests(unittest.TestCase):
         session_path = self.corpus_root / "sessions/backstory/2026/07/06/session.jsonl"
         session_path.parent.mkdir(parents=True)
         session_path.write_text("{}\n")
-        notify.send_run_notification("skipped_no_new_content", run_id="run-1")
+        notify.send_run_notification("skipped_no_eligible_corpus", run_id="run-1")
         body = _text_body(self.smtp_instance.send_message.call_args[0][0])
         self.assertIn(
             "backstory: 1 captured session(s) remain pending distillation", body
         )
+
+    def test_disabled_run_explains_that_learning_continues(self):
+        notify.send_run_notification("disabled_by_operator", run_id="run-1")
+
+        sent_msg = self.smtp_instance.send_message.call_args[0][0]
+        self.assertIn("DISABLED", sent_msg["Subject"])
+        self.assertIn(
+            "Capture, distillation, and corpus assembly remain active",
+            _text_body(sent_msg),
+        )
+
+    def test_failure_includes_structured_diagnostics(self):
+        notify.send_run_notification(
+            "failed",
+            run_id="run-1",
+            error="CUDA out of memory",
+            project="Zoo-Code",
+            adapter_id="adapter-1",
+            mlflow_run_id="mlflow-1",
+            error_type="OutOfMemoryError",
+            traceback_sha256="a" * 64,
+            traceback_artifact="/models/adapters/adapter-1/failure.json",
+        )
+
+        sent_msg = self.smtp_instance.send_message.call_args[0][0]
+        body = _text_body(sent_msg)
+        self.assertIn("project: Zoo-Code", body)
+        self.assertIn("mlflow_run_id: mlflow-1", body)
+        self.assertIn("error_type: OutOfMemoryError", body)
+        self.assertIn("traceback_sha256:", body)
 
     def test_sends_multipart_message_with_html_alternative(self):
         self._write_corpus_stats()

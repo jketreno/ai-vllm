@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import corpus, corpus_sync, distiller, lifecycle, metrics, summarizer
+from . import audit, corpus, corpus_sync, distiller, lifecycle, metrics, summarizer
 from .proxy import router_api as proxy_router
 from .registry import RegistryError
 from .routing import RouteError
@@ -58,6 +58,12 @@ class TrainingSkippedPayload(BaseModel):
 class TrainingFailedPayload(BaseModel):
     run_id: str
     error: str
+    project: str | None = None
+    adapter_id: str | None = None
+    mlflow_run_id: str | None = None
+    error_type: str | None = None
+    traceback_sha256: str | None = None
+    traceback_artifact: str | None = None
 
 
 class SummarizePayload(BaseModel):
@@ -93,6 +99,12 @@ def sync_distill_and_assemble() -> dict:
 def startup() -> None:
     initialize_registry()
     metrics.start_metrics_server()
+    metrics.training_admission_enabled.set(
+        int(
+            lifecycle.TRAINING_ENABLED
+            and lifecycle.TRAINING_CONFIGURATION_ERROR is None
+        )
+    )
     scheduler.add_job(
         corpus_sync.sync_all, "cron", hour=21, minute=30, id="corpus_sync"
     )
@@ -240,7 +252,15 @@ async def training_failed(
     if state.get("run_id") == payload.run_id and state.get("phase") == "failed":
         return {"status": "already_completed"}
     background_tasks.add_task(
-        lifecycle.report_training_failure, payload.run_id, payload.error
+        lifecycle.report_training_failure,
+        payload.run_id,
+        payload.error,
+        project=payload.project,
+        adapter_id=payload.adapter_id,
+        mlflow_run_id=payload.mlflow_run_id,
+        error_type=payload.error_type,
+        traceback_sha256=payload.traceback_sha256,
+        traceback_artifact=payload.traceback_artifact,
     )
     return {"status": "accepted"}
 
@@ -263,7 +283,16 @@ def operator_status() -> dict:
         "maintenance": maintenance.enabled,
         "active_requests": maintenance.active,
         "lifecycle": lifecycle.status(),
+        "training_admission": {
+            "enabled": lifecycle.TRAINING_ENABLED,
+            "configuration_error": lifecycle.TRAINING_CONFIGURATION_ERROR,
+        },
     }
+
+
+@app.get("/operator/audit", dependencies=[Depends(operator_auth)])
+def operator_audit() -> dict:
+    return audit.build_report(registry)
 
 
 @app.post("/operator/promote/{adapter_id}", dependencies=[Depends(operator_auth)])
