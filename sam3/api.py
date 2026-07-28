@@ -16,6 +16,7 @@ from prometheus_client import Counter, Gauge, Histogram, start_http_server
 try:
     from .runtime import (
         PlatformSAM3Annotator,
+        empty_device_cache,
         inference_context,
         memory_snapshot,
         reset_peak_memory_stats,
@@ -24,6 +25,7 @@ try:
 except ImportError:  # The container installs this API as /app/sam3_worker.py.
     from sam3_runtime import (
         PlatformSAM3Annotator,
+        empty_device_cache,
         inference_context,
         memory_snapshot,
         reset_peak_memory_stats,
@@ -34,6 +36,17 @@ except ImportError:  # The container installs this API as /app/sam3_worker.py.
 PROTOCOL_VERSION = "1"
 MAX_ATTACHMENT_BYTES = int(
     os.environ.get("MODEL_RPC_MAX_ATTACHMENT_BYTES", str(64 * 1024 * 1024))
+)
+# Sam3Processor._forward_grounding bilinear-upsamples every mask above
+# confidence_threshold to the original image's full resolution before
+# returning. A prompt matching many near-identical objects (e.g. a table
+# full of playing cards) can keep far more candidates than any caller uses,
+# and each full-resolution mask is multiple MB -- enough in aggregate to
+# exhaust a 12GB Arc B580 on a single prompt. This bounds how many
+# candidates per prompt ever reach that upsample step, independent of how
+# many score above threshold.
+MAX_CANDIDATES_PER_PROMPT = int(
+    os.environ.get("SAM3_MAX_CANDIDATES_PER_PROMPT", "32")
 )
 app = FastAPI(title="SAM3 model worker", version="1.0.0")
 runtime = runtime_config()
@@ -179,15 +192,68 @@ def _mask_attachment(mask: np.ndarray, name: str) -> dict:
     }
 
 
+def _grounding_for_prompt(processor, state: dict, concept: str, threshold: float):
+    """Run text-prompt grounding and return capped, full-resolution results.
+
+    Reimplements Sam3Processor.set_text_prompt/_forward_grounding's tail
+    instead of calling them directly so we can cap the candidate count
+    *before* each candidate's mask is bilinear-upsampled to the original
+    image's resolution -- that upsample is what OOMs on a 12GB Arc B580 when
+    a prompt matches many near-identical small objects (e.g. a table full of
+    playing cards), even with a reasonable confidence threshold.
+    """
+    from sam3.model import box_ops
+    from sam3.model.data_misc import interpolate
+
+    model = processor.model
+    text_outputs = model.backbone.forward_text([concept], device=processor.device)
+    state["backbone_out"].update(text_outputs)
+    if "geometric_prompt" not in state:
+        state["geometric_prompt"] = model._get_dummy_prompt()
+
+    outputs = model.forward_grounding(
+        backbone_out=state["backbone_out"],
+        find_input=processor.find_stage,
+        geometric_prompt=state["geometric_prompt"],
+        find_target=None,
+    )
+    out_logits = outputs["pred_logits"]
+    out_probs = out_logits.sigmoid()
+    presence_score = outputs["presence_logit_dec"].sigmoid().unsqueeze(1)
+    out_probs = (out_probs * presence_score).squeeze(-1)
+
+    keep = out_probs > threshold
+    out_probs = out_probs[keep]
+    out_masks = outputs["pred_masks"][keep]
+    out_bbox = outputs["pred_boxes"][keep]
+
+    if out_probs.shape[0] > MAX_CANDIDATES_PER_PROMPT:
+        top = torch.topk(out_probs, MAX_CANDIDATES_PER_PROMPT)
+        out_probs = out_probs[top.indices]
+        out_masks = out_masks[top.indices]
+        out_bbox = out_bbox[top.indices]
+
+    boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
+    img_h, img_w = state["original_height"], state["original_width"]
+    scale_fct = torch.tensor([img_w, img_h, img_w, img_h]).to(processor.device)
+    boxes = boxes * scale_fct[None, :]
+
+    out_masks = interpolate(
+        out_masks.unsqueeze(1), (img_h, img_w), mode="bilinear", align_corners=False
+    ).sigmoid()
+
+    return {"scores": out_probs, "boxes": boxes, "masks": out_masks > 0.5}
+
+
 def _segment(image: Image.Image, prompts: list[str], threshold: float):
     _, processor = annotator.initialize()
-    processor.confidence_threshold = 0.05
     state = processor.set_image(image)
     segments = []
     attachments = []
     for concept in prompts:
         processor.reset_all_prompts(state)
-        output = processor.set_text_prompt(state=state, prompt=concept)
+        empty_device_cache(runtime)
+        output = _grounding_for_prompt(processor, state, concept, threshold)
         scores = output["scores"].detach().float().cpu().numpy()
         boxes = output["boxes"].detach().float().cpu().numpy()
         masks = output["masks"].detach().float().cpu().numpy()
@@ -209,6 +275,8 @@ def _segment(image: Image.Image, prompts: list[str], threshold: float):
                 "box": [round(float(value), 1) for value in boxes[index]],
                 "mask_attachment": name,
             })
+    processor.reset_all_prompts(state)
+    empty_device_cache(runtime)
     return segments, attachments
 
 
@@ -241,6 +309,7 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
     try:
         with inference_lock:
             reset_peak_memory_stats(runtime)
+            empty_device_cache(runtime)
             with (
                 torch.inference_mode(),
                 inference_context(runtime),

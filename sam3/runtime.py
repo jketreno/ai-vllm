@@ -84,6 +84,19 @@ def reset_peak_memory_stats(config: RuntimeConfig) -> None:
         device_module.reset_peak_memory_stats()
 
 
+def empty_device_cache(config: RuntimeConfig) -> None:
+    """Return unused cached allocations to the device.
+
+    Without this, per-prompt inference tensors fragment the caching
+    allocator's reserved pool across a multi-prompt request until an
+    otherwise-small allocation fails with an out-of-memory/out-of-resources
+    error on memory-constrained devices (e.g. a 12GB Arc B580).
+    """
+    device_module = _device_module(config)
+    if device_module is not None and device_module.is_available():
+        device_module.empty_cache()
+
+
 def memory_snapshot(config: RuntimeConfig) -> dict[str, int]:
     device_module = _device_module(config)
     if device_module is None or not device_module.is_available():
