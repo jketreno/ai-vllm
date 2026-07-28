@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +239,61 @@ def _with_provenance(
     }
 
 
+def _without_speech_capability_claims(value: str) -> str:
+    sentences = re.split(r"(?<=[.!?])\s+", value.strip())
+    capability_terms = ("transcript", "diarization", "speaker separation")
+    retained = [
+        sentence
+        for sentence in sentences
+        if not any(term in sentence.lower() for term in capability_terms)
+    ]
+    return " ".join(retained).strip()
+
+
+def _normalize_speech_capabilities(
+    result: dict, request: EvidenceRequest
+) -> dict:
+    speech_status = next(
+        (
+            item.get("payload", {})
+            for item in request.observations
+            if item.get("observation_type") == "speech_status"
+        ),
+        {},
+    )
+    has_transcript = any(
+        item.get("observation_type") == "transcript_segment"
+        for item in request.observations
+    )
+    if speech_status.get("transcription") != "available" or has_transcript:
+        return result
+
+    normalized = dict(result)
+    canonical = [
+        "Transcription ran, but no transcript text segments were produced."
+    ]
+    if speech_status.get("diarization") == "unavailable":
+        canonical.append(
+            "Anonymous speaker separation was unavailable and did not affect "
+            "transcription."
+        )
+    base_summary = _without_speech_capability_claims(
+        str(normalized.get("summary", ""))
+    )
+    normalized["summary"] = " ".join([base_summary, *canonical]).strip()
+    normalized["concise_summary"] = " ".join(canonical)
+    capability_terms = ("transcript", "diarization", "speaker separation")
+    for field in ("known_facts", "inferences", "uncertainties"):
+        retained = [
+            item
+            for item in normalized.get(field, [])
+            if not any(term in item.lower() for term in capability_terms)
+        ]
+        normalized[field] = retained
+    normalized["known_facts"].extend(canonical)
+    return normalized
+
+
 @router.get("/capabilities")
 async def capabilities():
     return capability_document(await _media_ready())
@@ -337,6 +393,7 @@ async def report_synthesis(request: EvidenceRequest):
         f"Evidence JSON: {serialized}"
     )
     result = await _completion(prompt, REPORT_SCHEMA, max_tokens=2500)
+    result = _normalize_speech_capabilities(result, request)
     return _with_provenance(result, REPORT_PROMPT_VERSION)
 
 

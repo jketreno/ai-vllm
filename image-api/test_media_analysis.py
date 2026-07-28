@@ -69,9 +69,14 @@ def test_semantic_schema_forbids_untracked_fields():
 async def test_report_synthesis_keeps_transcription_and_diarization_independent():
     completion = AsyncMock(
         return_value={
-            "summary": "Transcription completed without speaker labels.",
+            "summary": (
+                "A party is shown. No transcript text was produced due to "
+                "unavailable speaker separation."
+            ),
             "concise_summary": "Anonymous transcript available.",
-            "known_facts": [],
+            "known_facts": [
+                "No transcript was produced because diarization was unavailable."
+            ],
             "inferences": [],
             "uncertainties": [],
             "evidence_types": ["speech_status"],
@@ -99,3 +104,13 @@ async def test_report_synthesis_keeps_transcription_and_diarization_independent(
     )
     assert independence_rule in prompt
     assert result["prompt_version"] == "phai-report-v2"
+    assert "due to unavailable speaker separation" not in result["summary"]
+    assert result["summary"].endswith(
+        "Anonymous speaker separation was unavailable and did not affect "
+        "transcription."
+    )
+    assert result["known_facts"][-2:] == [
+        "Transcription ran, but no transcript text segments were produced.",
+        "Anonymous speaker separation was unavailable and did not affect "
+        "transcription.",
+    ]
