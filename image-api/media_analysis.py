@@ -26,6 +26,7 @@ MAX_UPLOAD_BYTES = int(
 )
 MAX_WINDOW_FRAMES = 12
 PROMPT_VERSION = "phai-media-v1"
+REPORT_PROMPT_VERSION = "phai-report-v2"
 CONTRACT_VERSION = "0.1.0"
 SCHEMA_FINGERPRINT = (
     "375289189b519a6590658764228b45bf7ecdb4002a7ac4f03cd008843ae51c69"
@@ -223,7 +224,9 @@ async def _completion(
     return result
 
 
-def _with_provenance(result: dict) -> dict:
+def _with_provenance(
+    result: dict, prompt_version: str = PROMPT_VERSION
+) -> dict:
     return {
         **result,
         "contract_version": CONTRACT_VERSION,
@@ -231,7 +234,7 @@ def _with_provenance(result: dict) -> dict:
         "schema_version": "1",
         "model": VISION_MODEL,
         "model_revision": MODEL_REVISION,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
     }
 
 
@@ -326,10 +329,15 @@ async def report_synthesis(request: EvidenceRequest):
         "Synthesize a media report using only the supplied evidence. Classify "
         "metadata/direct observations as known facts, keep model interpretations "
         "under inferences, preserve contradictions and uncertainty, and never invent "
-        f"names, dates, places, or events. Evidence JSON: {serialized}"
+        "names, dates, places, or events. Treat speech capabilities independently: "
+        "Diarization availability never determines transcription availability; "
+        "diarization only assigns anonymous speaker labels. If transcription is "
+        "available but there are no transcript_segment observations, state that no "
+        "transcript text was produced and do not attribute that to diarization. "
+        f"Evidence JSON: {serialized}"
     )
     result = await _completion(prompt, REPORT_SCHEMA, max_tokens=2500)
-    return _with_provenance(result)
+    return _with_provenance(result, REPORT_PROMPT_VERSION)
 
 
 @router.post("/taxonomy-normalize")

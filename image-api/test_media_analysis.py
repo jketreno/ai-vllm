@@ -63,3 +63,39 @@ async def test_semantic_window_rejects_timestamp_count_mismatch():
 def test_semantic_schema_forbids_untracked_fields():
     assert media.SEMANTIC_SCHEMA["additionalProperties"] is False
     assert media.OBSERVATION_SCHEMA["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_report_synthesis_keeps_transcription_and_diarization_independent():
+    completion = AsyncMock(
+        return_value={
+            "summary": "Transcription completed without speaker labels.",
+            "concise_summary": "Anonymous transcript available.",
+            "known_facts": [],
+            "inferences": [],
+            "uncertainties": [],
+            "evidence_types": ["speech_status"],
+        }
+    )
+    request = media.EvidenceRequest(
+        asset={"id": "asset"},
+        observations=[
+            {
+                "observation_type": "speech_status",
+                "payload": {
+                    "transcription": "available",
+                    "diarization": "unavailable",
+                },
+            }
+        ],
+    )
+
+    with patch.object(media, "_completion", new=completion):
+        result = await media.report_synthesis(request)
+
+    prompt = completion.await_args.args[0]
+    independence_rule = (
+        "Diarization availability never determines transcription availability"
+    )
+    assert independence_rule in prompt
+    assert result["prompt_version"] == "phai-report-v2"
