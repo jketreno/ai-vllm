@@ -30,6 +30,8 @@ ALLOWED_ENDPOINTS = {
     "/v1/completions",
     "/v1/embeddings",
     "/v1/models",
+    "/v1/capacity",
+    "/v1/health",
     "/capacity",
     "/health",
 }
@@ -268,11 +270,11 @@ async def forward(
         part in endpoint for part in BLOCKED_MANAGEMENT_PARTS
     ):
         raise HTTPException(status_code=404, detail="endpoint is not available")
-    if endpoint == "/health":
+    if endpoint in {"/health", "/v1/health"}:
         return Response(content='{"status":"ok"}', media_type="application/json")
     require_bearer(secret_value("CLARE2_PROXY_TOKEN"), authorization)
     workload = request.headers.get("X-Inference-Workload", "default")[:64]
-    if endpoint == "/capacity":
+    if endpoint in {"/capacity", "/v1/capacity"}:
         return await _capacity_response(workload)
     if maintenance.enabled:
         return _maintenance_response()
