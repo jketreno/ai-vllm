@@ -23,11 +23,14 @@ class SpamClassifierTests(unittest.TestCase):
         self.token_path = pathlib.Path(self.temp.name) / "token"
         self.token_path.write_text("test-token", encoding="utf-8")
         self.original_token_file = main.TOKEN_FILE
+        self.original_vllm_token_file = main.VLLM_TOKEN_FILE
         main.TOKEN_FILE = str(self.token_path)
+        main.VLLM_TOKEN_FILE = str(self.token_path)
         self.client = TestClient(main.app)
 
     def tearDown(self):
         main.TOKEN_FILE = self.original_token_file
+        main.VLLM_TOKEN_FILE = self.original_vllm_token_file
         self.temp.cleanup()
 
     def test_requires_bearer_token(self):
@@ -82,6 +85,9 @@ class SpamClassifierTests(unittest.TestCase):
         self.assertEqual(result["classification"], "SPAM")
         self.assertEqual(result["spam_score"], 0.93)
         request = post.call_args.kwargs["json"]
+        headers = post.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer test-token")
+        self.assertEqual(headers["X-Inference-Workload"], "spam")
         self.assertEqual(request["temperature"], 0)
         self.assertFalse(request["chat_template_kwargs"]["enable_thinking"])
         self.assertEqual(request["response_format"]["type"], "json_schema")

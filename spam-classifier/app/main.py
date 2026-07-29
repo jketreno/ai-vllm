@@ -18,6 +18,9 @@ VLLM_URL = os.environ.get("SPAM_VLLM_URL", "http://vllm-engine:8001")
 SPAM_THRESHOLD = float(os.environ.get("SPAM_THRESHOLD", "0.80"))
 MAX_MESSAGE_CHARS = int(os.environ.get("SPAM_MAX_MESSAGE_CHARS", "60000"))
 TOKEN_FILE = os.environ.get("SPAM_API_TOKEN_FILE", "/run/secrets/spam_api_token")
+VLLM_TOKEN_FILE = os.environ.get(
+    "SPAM_VLLM_TOKEN_FILE", "/run/secrets/clare2_proxy_token"
+)
 REQUEST_TIMEOUT = float(os.environ.get("SPAM_REQUEST_TIMEOUT_SECONDS", "120"))
 
 ShortText = Annotated[str, StringConstraints(max_length=4096)]
@@ -161,10 +164,19 @@ def _response_schema() -> dict:
     }
 
 
+def _vllm_headers() -> dict[str, str]:
+    token = Path(VLLM_TOKEN_FILE).read_text(encoding="utf-8").strip()
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Inference-Workload": "spam",
+    }
+
+
 def _classify_with_model(payload: ClassifyRequest) -> ModelAssessment:
     try:
         response = httpx.post(
             f"{VLLM_URL}/v1/chat/completions",
+            headers=_vllm_headers(),
             json={
                 "model": MODEL,
                 "messages": [

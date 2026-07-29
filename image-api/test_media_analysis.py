@@ -6,10 +6,12 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 MODULE_DIR = Path(__file__).parent
 sys.path.insert(0, str(MODULE_DIR))
+media_inference = importlib.import_module("media_inference")
 spec = importlib.util.spec_from_file_location(
     "media_analysis_contract", MODULE_DIR / "media_analysis.py"
 )
@@ -27,6 +29,81 @@ class AsyncUpload:
 
 def image_upload() -> AsyncUpload:
     return AsyncUpload()
+
+
+@pytest.mark.asyncio
+async def test_completion_labels_workload_and_uses_extended_timeout():
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, headers, json):
+            captured["headers"] = headers
+            captured["request"] = json
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"value":"ok"}'}}]},
+                request=httpx.Request("POST", "http://policy"),
+            )
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+    with patch.object(
+        media_inference.httpx, "AsyncClient", FakeClient
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        result = await media._completion(
+            "prompt", schema, workload="semantic"
+        )
+
+    assert result == {"value": "ok"}
+    assert captured["headers"]["X-Inference-Workload"] == "semantic"
+    assert captured["timeout"].read == media.INFERENCE_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_capacity_preserves_saturation_retry_after():
+    class FakeClient:
+        def __init__(self, timeout):
+            assert timeout == 5
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, headers):
+            assert headers["X-Inference-Workload"] == "projection"
+            return httpx.Response(
+                429,
+                json={"available": False, "retry_after": 75},
+                headers={"Retry-After": "75"},
+                request=httpx.Request("GET", "http://policy/capacity"),
+            )
+
+    with patch.object(
+        media_inference.httpx, "AsyncClient", FakeClient
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        response = await media.inference_capacity("projection")
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "75"
 
 
 @pytest.mark.asyncio

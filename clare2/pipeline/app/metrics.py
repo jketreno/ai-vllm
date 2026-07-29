@@ -173,3 +173,13 @@ evaluation_score = Gauge(
 proxy_latency = Histogram(
     "clare2_proxy_duration_seconds", "Policy proxy upstream latency"
 )
+inference_admission_active = Gauge(
+    "clare2_inference_admission_active",
+    "Requests admitted to vLLM",
+    ["workload"],
+)
+inference_admission_outcomes = Counter(
+    "clare2_inference_admission_outcomes_total",
+    "Inference admission and cancellation decisions",
+    ["workload", "outcome"],
+)

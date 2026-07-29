@@ -58,6 +58,27 @@ There is no host binding for raw vLLM.
 
 ## Image API and SAM3
 
+### Inference admission and backpressure
+
+All policy-proxied vLLM requests pass through bounded admission control before
+they reach the engine. `CLARE2_INFERENCE_MAX_ACTIVE` defaults to the engine's
+four-sequence limit, while `CLARE2_INFERENCE_MAX_WAITING` defaults to zero:
+when capacity is occupied, callers receive `429` and `Retry-After` instead of
+building a second in-memory queue. Workload quotas reserve two slots for
+semantic image analysis and one for report projection by default
+(`CLARE2_INFERENCE_WORKLOAD_LIMITS`), with one-request caps for spam,
+distillation, and unlabelled policy traffic. The spam classifier and scheduled
+CLARE2 generation use the policy proxy rather than bypassing admission through
+the private vLLM endpoint.
+
+The Image API exposes authenticated workload capacity at
+`/v1/media/capacity/semantic` and `/v1/media/capacity/projection`. Structured
+media calls use `IMAGE_API_INFERENCE_TIMEOUT_SECONDS` (15 minutes by default).
+If a downstream caller disconnects or times out, the policy proxy cancels and
+closes the corresponding upstream vLLM request. Saturation and transient
+availability errors carry `Retry-After` so durable workers can defer work with
+exponential circuit breaking instead of retrying immediately.
+
 `image-api` is the CPU-only public facade for analysis, segmentation, editing,
 inpainting, outpainting, and deterministic transforms. Host clients use
 `http://127.0.0.1:8005`; containers such as Auto SAM use

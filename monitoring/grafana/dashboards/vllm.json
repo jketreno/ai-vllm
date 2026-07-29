@@ -76,6 +76,22 @@
       "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6},
       "targets": [{"datasource": {"uid": "prometheus"}, "expr": "vllm:engine_sleep_state", "legendFormat": "awake"}],
       "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "SLEEPING", "color": "orange"}, "1": {"text": "AWAKE", "color": "green"}}}]}}
+    },
+    {
+      "id": 8,
+      "title": "Policy Admission Active",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "clare2_inference_admission_active", "legendFormat": "{{workload}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}}
+    },
+    {
+      "id": 9,
+      "title": "Admission Outcomes/min",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 6},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (workload, outcome) (rate(clare2_inference_admission_outcomes_total[2m])) * 60", "legendFormat": "{{workload}} / {{outcome}}"}],
+      "fieldConfig": {"defaults": {"unit": "ops", "min": 0}}
     }
   ]
 }

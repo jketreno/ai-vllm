@@ -1,242 +1,48 @@
 """Structured, archive-agnostic media analysis operations for ketr.phai."""
 
-from __future__ import annotations
-
-import base64
 import json
-import os
 import re
-from pathlib import Path
-from typing import Any
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+
+from media_contracts import (
+    EvidenceRequest,
+    IdentityCaptionRequest,
+    OBSERVATION_SCHEMA,
+    QUERY_SCHEMA,
+    REPORT_SCHEMA,
+    SEMANTIC_SCHEMA,
+    ValuesRequest,
+)
+from media_inference import (
+    CONTRACT_VERSION,
+    INFERENCE_TIMEOUT_SECONDS,
+    MODEL_REVISION,
+    POLICY_URL,
+    PROMPT_VERSION,
+    SCHEMA_FINGERPRINT,
+    VISION_MODEL,
+    _policy_token,
+    capacity_response,
+    completion as _completion,
+    image_content as _image_content,
+    read_image as _read_image,
+    with_provenance as _with_provenance,
+)
 
 router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
-POLICY_URL = os.environ.get("IMAGE_API_POLICY_URL", "http://clare2-policy:8000/v1")
-POLICY_TOKEN_FILE = Path(
-    os.environ.get(
-        "IMAGE_API_POLICY_TOKEN_FILE", "/run/secrets/clare2_proxy_token"
-    )
-)
-VISION_MODEL = os.environ.get("IMAGE_API_VISION_MODEL", "Qwen/Qwen3.6-27B-FP8")
-MODEL_REVISION = os.environ.get("CLARE2_INFERENCE_REVISION", "configured")
-MAX_UPLOAD_BYTES = int(
-    os.environ.get("IMAGE_API_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))
-)
 MAX_WINDOW_FRAMES = 12
-PROMPT_VERSION = "phai-media-v1"
 REPORT_PROMPT_VERSION = "phai-report-v2"
-CONTRACT_VERSION = "0.1.0"
-SCHEMA_FINGERPRINT = (
-    "375289189b519a6590658764228b45bf7ecdb4002a7ac4f03cd008843ae51c69"
-)
 
 
-class EvidenceRequest(BaseModel):
-    asset: dict[str, Any]
-    observations: list[dict[str, Any]] = Field(max_length=500)
-
-
-class ValuesRequest(BaseModel):
-    values: list[str] = Field(min_length=1, max_length=500)
-
-
-class IdentityCaptionRequest(BaseModel):
-    neutral_caption: str = Field(min_length=1, max_length=10000)
-    identities: list[dict[str, Any]] = Field(min_length=1, max_length=100)
-
-
-def _policy_token() -> str:
-    try:
-        return POLICY_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        raise HTTPException(
-            503, "media analysis policy token is unavailable"
-        ) from error
-
-
-def _image_content(payload: bytes, media_type: str) -> dict:
-    encoded = base64.b64encode(payload).decode("ascii")
-    return {
-        "type": "image_url",
-        "image_url": {"url": f"data:{media_type};base64,{encoded}"},
-    }
-
-
-async def _read_image(upload: UploadFile) -> tuple[bytes, str]:
-    media_type = upload.content_type or ""
-    if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(415, "semantic inputs must be JPEG, PNG, or WebP")
-    payload = await upload.read(MAX_UPLOAD_BYTES + 1)
-    if len(payload) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "semantic input exceeds configured limit")
-    return payload, media_type
-
-
-OBSERVATION_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "type": {"type": "string"},
-        "start_us": {"type": ["integer", "null"]},
-        "end_us": {"type": ["integer", "null"]},
-        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-        "summary": {"type": "string"},
-        "evidence": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["type", "start_us", "end_us", "confidence", "summary", "evidence"],
-}
-
-SEMANTIC_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "caption": {"type": "string"},
-        "concise_caption": {"type": "string"},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
-        "sam_prompts": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 24,
-        },
-        "visible_text": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 100,
-        },
-        "uncertainties": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 50,
-        },
-        "observations": {
-            "type": "array",
-            "items": OBSERVATION_SCHEMA,
-            "maxItems": 100,
-        },
-    },
-    "required": [
-        "caption",
-        "concise_caption",
-        "confidence",
-        "concepts",
-        "sam_prompts",
-        "visible_text",
-        "uncertainties",
-        "observations",
-    ],
-}
-
-REPORT_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "summary": {"type": "string"},
-        "concise_summary": {"type": "string"},
-        "known_facts": {"type": "array", "items": {"type": "string"}},
-        "inferences": {"type": "array", "items": {"type": "string"}},
-        "uncertainties": {"type": "array", "items": {"type": "string"}},
-        "evidence_types": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": [
-        "summary",
-        "concise_summary",
-        "known_facts",
-        "inferences",
-        "uncertainties",
-        "evidence_types",
-    ],
-}
-
-QUERY_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "media_types": {"type": "array", "items": {"type": "string"}},
-        "people": {"type": "array", "items": {"type": "string"}},
-        "events": {"type": "array", "items": {"type": "string"}},
-        "places": {"type": "array", "items": {"type": "string"}},
-        "concepts": {"type": "array", "items": {"type": "string"}},
-        "date_text": {"type": ["string", "null"]},
-        "semantic_query": {"type": ["string", "null"]},
-        "unresolved": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": [
-        "media_types",
-        "people",
-        "events",
-        "places",
-        "concepts",
-        "date_text",
-        "semantic_query",
-        "unresolved",
-    ],
-}
-
-
-async def _completion(
-    prompt: str,
-    schema: dict,
-    content: list[dict] | None = None,
-    max_tokens: int = 2500,
-) -> dict:
-    request = {
-        "model": VISION_MODEL,
-        "temperature": 0.1,
-        "max_tokens": max_tokens,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "phai_response",
-                "strict": True,
-                "schema": schema,
-            },
-        },
-        "chat_template_kwargs": {"enable_thinking": False},
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}, *(content or [])],
-            }
-        ],
-    }
-    try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(
-                f"{POLICY_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {_policy_token()}"},
-                json=request,
-            )
-        response.raise_for_status()
-        result = json.loads(response.json()["choices"][0]["message"]["content"])
-    except (
-        OSError,
-        httpx.HTTPError,
-        KeyError,
-        TypeError,
-        json.JSONDecodeError,
-    ) as error:
-        raise HTTPException(
-            503, f"structured media analysis unavailable: {error}"
-        ) from error
-    return result
-
-
-def _with_provenance(
-    result: dict, prompt_version: str = PROMPT_VERSION
-) -> dict:
-    return {
-        **result,
-        "contract_version": CONTRACT_VERSION,
-        "schema_fingerprint": SCHEMA_FINGERPRINT,
-        "schema_version": "1",
-        "model": VISION_MODEL,
-        "model_revision": MODEL_REVISION,
-        "prompt_version": prompt_version,
-    }
+@router.get("/capacity/{workload}")
+async def inference_capacity(
+    workload: Literal["semantic", "projection"],
+) -> JSONResponse:
+    return await capacity_response(workload)
 
 
 def _without_speech_capability_claims(value: str) -> str:
@@ -307,6 +113,7 @@ def capability_document(ready: bool) -> dict:
         "model": VISION_MODEL,
         "model_revision": MODEL_REVISION,
         "prompt_version": PROMPT_VERSION,
+        "inference_timeout_seconds": INFERENCE_TIMEOUT_SECONDS,
         "max_window_frames": MAX_WINDOW_FRAMES,
         "ready": ready,
         "operations": [
@@ -341,7 +148,10 @@ async def semantic_image(file: UploadFile = File(...)):
         "segmentation prompts. Times must be null for a still image."
     )
     result = await _completion(
-        prompt, SEMANTIC_SCHEMA, [_image_content(payload, media_type)]
+        prompt,
+        SEMANTIC_SCHEMA,
+        [_image_content(payload, media_type)],
+        workload="semantic",
     )
     return _with_provenance(result)
 
@@ -372,7 +182,13 @@ async def semantic_window(
     )
     if transcript:
         prompt += f" Timestamped transcript context: {transcript[:12000]}"
-    result = await _completion(prompt, SEMANTIC_SCHEMA, images, max_tokens=3500)
+    result = await _completion(
+        prompt,
+        SEMANTIC_SCHEMA,
+        images,
+        max_tokens=3500,
+        workload="semantic",
+    )
     return _with_provenance(result)
 
 
@@ -392,7 +208,9 @@ async def report_synthesis(request: EvidenceRequest):
         "transcript text was produced and do not attribute that to diarization. "
         f"Evidence JSON: {serialized}"
     )
-    result = await _completion(prompt, REPORT_SCHEMA, max_tokens=2500)
+    result = await _completion(
+        prompt, REPORT_SCHEMA, max_tokens=2500, workload="projection"
+    )
     result = _normalize_speech_capabilities(result, request)
     return _with_provenance(result, REPORT_PROMPT_VERSION)
 
