@@ -125,7 +125,7 @@ class AdmissionController:
 def _workload_limits(max_active: int) -> dict[str, int]:
     raw = os.environ.get(
         "CLARE2_INFERENCE_WORKLOAD_LIMITS",
-        '{"semantic":2,"projection":1,"spam":1,"distillation":1,"default":1}',
+        '{"semantic":2,"report_assembly":1,"spam":1,"distillation":1,"default":1}',
     )
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):

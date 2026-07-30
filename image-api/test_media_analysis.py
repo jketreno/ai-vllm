@@ -87,7 +87,7 @@ async def test_capacity_preserves_saturation_retry_after():
             return None
 
         async def get(self, _url, headers):
-            assert headers["X-Inference-Workload"] == "projection"
+            assert headers["X-Inference-Workload"] == "report_assembly"
             return httpx.Response(
                 429,
                 json={"available": False, "retry_after": 75},
@@ -100,7 +100,7 @@ async def test_capacity_preserves_saturation_retry_after():
     ), patch.object(
         media_inference, "_policy_token", return_value="token"
     ):
-        response = await media.inference_capacity("projection")
+        response = await media.inference_capacity("report_assembly")
 
     assert response.status_code == 429
     assert response.headers["retry-after"] == "75"

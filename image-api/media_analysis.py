@@ -40,7 +40,7 @@ REPORT_PROMPT_VERSION = "phai-report-v2"
 
 @router.get("/capacity/{workload}")
 async def inference_capacity(
-    workload: Literal["semantic", "projection"],
+    workload: Literal["semantic", "report_assembly"],
 ) -> JSONResponse:
     return await capacity_response(workload)
 
@@ -209,7 +209,7 @@ async def report_synthesis(request: EvidenceRequest):
         f"Evidence JSON: {serialized}"
     )
     result = await _completion(
-        prompt, REPORT_SCHEMA, max_tokens=2500, workload="projection"
+        prompt, REPORT_SCHEMA, max_tokens=2500, workload="report_assembly"
     )
     result = _normalize_speech_capabilities(result, request)
     return _with_provenance(result, REPORT_PROMPT_VERSION)

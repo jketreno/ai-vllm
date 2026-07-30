@@ -32,19 +32,19 @@ class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
             0,
             0,
             30,
-            {"semantic": 2, "projection": 1},
+            {"semantic": 2, "report_assembly": 1},
         )
         first = await controller.acquire("semantic", connected)
         second = await controller.acquire("semantic", connected)
 
         with self.assertRaises(AdmissionRejected):
             await controller.acquire("semantic", connected)
-        projection = await controller.acquire("projection", connected)
+        report_assembly = await controller.acquire("report_assembly", connected)
 
         self.assertEqual(controller.active, 3)
         await first.release()
         await second.release()
-        await projection.release()
+        await report_assembly.release()
 
     async def test_bounded_waiter_acquires_released_capacity(self):
         controller = AdmissionController(1, 1, 1, 30)
@@ -77,17 +77,17 @@ class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkloadLimitsTests(unittest.TestCase):
-    def test_semantic_is_not_reduced_to_reserve_capacity_for_projection(self):
+    def test_semantic_is_not_reduced_to_reserve_capacity_for_report_assembly(self):
         limits = _workload_limits(max_active=2)
 
         self.assertEqual(limits["semantic"], 2)
-        self.assertEqual(limits["projection"], 1)
+        self.assertEqual(limits["report_assembly"], 1)
 
     def test_configured_limits_are_capped_by_max_active(self):
         limits = _workload_limits(max_active=1)
 
         self.assertEqual(limits["semantic"], 1)
-        self.assertEqual(limits["projection"], 1)
+        self.assertEqual(limits["report_assembly"], 1)
 
 
 if __name__ == "__main__":
