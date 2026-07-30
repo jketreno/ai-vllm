@@ -16,10 +16,10 @@ async def connected() -> bool:
 class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_instead_of_building_an_unbounded_queue(self):
         controller = AdmissionController(1, 0, 0, 45)
-        lease = await controller.acquire("semantic", connected)
+        lease = await controller.acquire("semantic_report", connected)
 
         with self.assertRaises(AdmissionRejected) as rejected:
-            await controller.acquire("semantic", connected)
+            await controller.acquire("semantic_report", connected)
 
         self.assertEqual(rejected.exception.retry_after, 45)
         self.assertEqual(controller.active, 1)
@@ -32,19 +32,19 @@ class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
             0,
             0,
             30,
-            {"semantic": 2, "report_assembly": 1},
+            {"semantic_report": 2, "spam": 1},
         )
-        first = await controller.acquire("semantic", connected)
-        second = await controller.acquire("semantic", connected)
+        first = await controller.acquire("semantic_report", connected)
+        second = await controller.acquire("semantic_report", connected)
 
         with self.assertRaises(AdmissionRejected):
-            await controller.acquire("semantic", connected)
-        report_assembly = await controller.acquire("report_assembly", connected)
+            await controller.acquire("semantic_report", connected)
+        spam = await controller.acquire("spam", connected)
 
         self.assertEqual(controller.active, 3)
         await first.release()
         await second.release()
-        await report_assembly.release()
+        await spam.release()
 
     async def test_bounded_waiter_acquires_released_capacity(self):
         controller = AdmissionController(1, 1, 1, 30)
@@ -77,17 +77,17 @@ class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkloadLimitsTests(unittest.TestCase):
-    def test_semantic_is_not_reduced_to_reserve_capacity_for_report_assembly(self):
+    def test_semantic_report_is_not_reduced_to_reserve_capacity_for_spam(self):
         limits = _workload_limits(max_active=2)
 
-        self.assertEqual(limits["semantic"], 2)
-        self.assertEqual(limits["report_assembly"], 1)
+        self.assertEqual(limits["semantic_report"], 2)
+        self.assertEqual(limits["spam"], 1)
 
     def test_configured_limits_are_capped_by_max_active(self):
         limits = _workload_limits(max_active=1)
 
-        self.assertEqual(limits["semantic"], 1)
-        self.assertEqual(limits["report_assembly"], 1)
+        self.assertEqual(limits["semantic_report"], 1)
+        self.assertEqual(limits["spam"], 1)
 
 
 if __name__ == "__main__":

@@ -74,23 +74,53 @@ SEMANTIC_SCHEMA = {
     ],
 }
 
-REPORT_SCHEMA = {
+SEMANTIC_REPORT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
+        "caption": {"type": "string"},
+        "concise_caption": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
+        "sam_prompts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 24,
+        },
+        "visible_text": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 100,
+        },
+        "uncertainties": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 50,
+        },
+        "observations": {
+            "type": "array",
+            "items": OBSERVATION_SCHEMA,
+            "maxItems": 100,
+        },
         "summary": {"type": "string"},
         "concise_summary": {"type": "string"},
         "known_facts": {"type": "array", "items": {"type": "string"}},
         "inferences": {"type": "array", "items": {"type": "string"}},
-        "uncertainties": {"type": "array", "items": {"type": "string"}},
         "evidence_types": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
+        "caption",
+        "concise_caption",
+        "confidence",
+        "concepts",
+        "sam_prompts",
+        "visible_text",
+        "uncertainties",
+        "observations",
         "summary",
         "concise_summary",
         "known_facts",
         "inferences",
-        "uncertainties",
         "evidence_types",
     ],
 }

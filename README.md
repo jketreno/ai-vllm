@@ -65,17 +65,17 @@ they reach the engine. `CLARE2_INFERENCE_MAX_ACTIVE` defaults to the engine's
 four-sequence limit, while `CLARE2_INFERENCE_MAX_WAITING` defaults to zero:
 when capacity is occupied, callers receive `429` and `Retry-After` instead of
 building a second in-memory queue. Workload quotas cap each workload
-independently against the shared pool — two concurrent requests for semantic
-image analysis and one for report assembly by default
+independently against the shared pool — two concurrent requests for the
+combined semantic captioning + report synthesis pass by default
 (`CLARE2_INFERENCE_WORKLOAD_LIMITS`), with one-request caps for spam,
 distillation, and unlabelled policy traffic. No workload reserves capacity
-against the others: if semantic analysis is using the whole engine, report
-assembly simply waits its turn, the same as any other workload. The spam
-classifier and scheduled CLARE2 generation use the policy proxy rather than
-bypassing admission through the private vLLM endpoint.
+against the others: if semantic/report requests are using the whole engine,
+other workloads simply wait their turn. The spam classifier and scheduled
+CLARE2 generation use the policy proxy rather than bypassing admission
+through the private vLLM endpoint.
 
 The Image API exposes authenticated workload capacity at
-`/v1/media/capacity/semantic` and `/v1/media/capacity/report_assembly`. Structured
+`/v1/media/capacity/semantic_report`. Structured
 media calls use `IMAGE_API_INFERENCE_TIMEOUT_SECONDS` (15 minutes by default).
 If a downstream caller disconnects or times out, the policy proxy cancels and
 closes the corresponding upstream vLLM request. Saturation and transient

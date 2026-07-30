@@ -13,8 +13,7 @@ from media_contracts import (
     IdentityCaptionRequest,
     OBSERVATION_SCHEMA,
     QUERY_SCHEMA,
-    REPORT_SCHEMA,
-    SEMANTIC_SCHEMA,
+    SEMANTIC_REPORT_SCHEMA,
     ValuesRequest,
 )
 from media_inference import (
@@ -40,7 +39,7 @@ REPORT_PROMPT_VERSION = "phai-report-v2"
 
 @router.get("/capacity/{workload}")
 async def inference_capacity(
-    workload: Literal["semantic", "report_assembly"],
+    workload: Literal["semantic_report"],
 ) -> JSONResponse:
     return await capacity_response(workload)
 
@@ -57,19 +56,19 @@ def _without_speech_capability_claims(value: str) -> str:
 
 
 def _normalize_speech_capabilities(
-    result: dict, request: EvidenceRequest
+    result: dict, observations: list[dict]
 ) -> dict:
     speech_status = next(
         (
             item.get("payload", {})
-            for item in request.observations
+            for item in observations
             if item.get("observation_type") == "speech_status"
         ),
         {},
     )
     has_transcript = any(
         item.get("observation_type") == "transcript_segment"
-        for item in request.observations
+        for item in observations
     )
     if speech_status.get("transcription") != "available" or has_transcript:
         return result
@@ -119,7 +118,6 @@ def capability_document(ready: bool) -> dict:
         "operations": [
             "semantic_image_v1",
             "semantic_window_v1",
-            "report_synthesis_v1",
             "taxonomy_normalize_v1",
             "event_inference_v1",
             "query_plan_v1",
@@ -137,23 +135,64 @@ async def _media_ready() -> bool:
         return False
 
 
+_REPORT_SYNTHESIS_INSTRUCTIONS = (
+    "In addition to the visual analysis above, synthesize a media report "
+    "using both the image and the supplied prior evidence. Classify "
+    "metadata/direct observations as known facts, keep model interpretations "
+    "under inferences, preserve contradictions and uncertainty, and never "
+    "invent names, dates, places, or events. Diarization availability never "
+    "determines transcription availability; diarization only assigns "
+    "anonymous speaker labels. If transcription is available but there are "
+    "no transcript_segment observations, state that no transcript text was "
+    "produced and do not attribute that to diarization."
+)
+
+
+def _parse_observations(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise HTTPException(400, "observations must be a JSON array") from error
+    if not isinstance(parsed, list):
+        raise HTTPException(400, "observations must be a JSON array")
+    return parsed
+
+
+def _evidence_prompt(observations: list[dict]) -> str:
+    if not observations:
+        return f"{_REPORT_SYNTHESIS_INSTRUCTIONS} No prior evidence was supplied."
+    serialized = json.dumps(observations[:200])
+    if len(serialized) > 1_000_000:
+        raise HTTPException(413, "evidence request is too large")
+    return f"{_REPORT_SYNTHESIS_INSTRUCTIONS} Evidence JSON: {serialized}"
+
+
 @router.post("/semantic-image")
-async def semantic_image(file: UploadFile = File(...)):
+async def semantic_image(
+    file: UploadFile = File(...),
+    observations: str | None = Form(default=None),
+):
     payload, media_type = await _read_image(file)
+    parsed_observations = _parse_observations(observations)
     prompt = (
         "Analyze only what is supportable from this image. Do not identify real "
         "people by appearance. Separate direct visual evidence from uncertain "
         "interpretation. Extract objects, activities, scene, visible relationships, "
         "visible text, location/event clues, photographic role, and concise SAM "
-        "segmentation prompts. Times must be null for a still image."
+        "segmentation prompts. Times must be null for a still image. "
+        f"{_evidence_prompt(parsed_observations)}"
     )
     result = await _completion(
         prompt,
-        SEMANTIC_SCHEMA,
+        SEMANTIC_REPORT_SCHEMA,
         [_image_content(payload, media_type)],
-        workload="semantic",
+        max_tokens=4000,
+        workload="semantic_report",
     )
-    return _with_provenance(result)
+    result = _normalize_speech_capabilities(result, parsed_observations)
+    return _with_provenance(result, REPORT_PROMPT_VERSION)
 
 
 @router.post("/semantic-window")
@@ -161,6 +200,7 @@ async def semantic_window(
     frames: list[UploadFile] = File(...),
     timestamps_us: str = Form(...),
     transcript: str | None = Form(default=None),
+    observations: str | None = Form(default=None),
 ):
     if not frames or len(frames) > MAX_WINDOW_FRAMES:
         raise HTTPException(400, f"provide 1-{MAX_WINDOW_FRAMES} frames")
@@ -174,44 +214,24 @@ async def semantic_window(
     for frame in frames:
         payload, media_type = await _read_image(frame)
         images.append(_image_content(payload, media_type))
+    parsed_observations = _parse_observations(observations)
     prompt = (
         "Analyze these chronological video frames at timestamps "
         f"{timestamps}. Return time-bounded direct observations and uncertainties. "
         "Do not infer real-world identity from appearance. Cover scenes, activities, "
-        "objects, visible relationships, text, event/place clues, and narrative role."
+        "objects, visible relationships, text, event/place clues, and narrative role. "
+        f"{_evidence_prompt(parsed_observations)}"
     )
     if transcript:
         prompt += f" Timestamped transcript context: {transcript[:12000]}"
     result = await _completion(
         prompt,
-        SEMANTIC_SCHEMA,
+        SEMANTIC_REPORT_SCHEMA,
         images,
-        max_tokens=3500,
-        workload="semantic",
+        max_tokens=5000,
+        workload="semantic_report",
     )
-    return _with_provenance(result)
-
-
-@router.post("/report-synthesis")
-async def report_synthesis(request: EvidenceRequest):
-    serialized = request.model_dump_json()
-    if len(serialized) > 1_000_000:
-        raise HTTPException(413, "evidence request is too large")
-    prompt = (
-        "Synthesize a media report using only the supplied evidence. Classify "
-        "metadata/direct observations as known facts, keep model interpretations "
-        "under inferences, preserve contradictions and uncertainty, and never invent "
-        "names, dates, places, or events. Treat speech capabilities independently: "
-        "Diarization availability never determines transcription availability; "
-        "diarization only assigns anonymous speaker labels. If transcription is "
-        "available but there are no transcript_segment observations, state that no "
-        "transcript text was produced and do not attribute that to diarization. "
-        f"Evidence JSON: {serialized}"
-    )
-    result = await _completion(
-        prompt, REPORT_SCHEMA, max_tokens=2500, workload="report_assembly"
-    )
-    result = _normalize_speech_capabilities(result, request)
+    result = _normalize_speech_capabilities(result, parsed_observations)
     return _with_provenance(result, REPORT_PROMPT_VERSION)
 
 
