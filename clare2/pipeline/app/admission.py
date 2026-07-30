@@ -130,15 +130,10 @@ def _workload_limits(max_active: int) -> dict[str, int]:
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise ValueError("CLARE2_INFERENCE_WORKLOAD_LIMITS must be an object")
-    limits = {str(key): max(1, int(value)) for key, value in parsed.items()}
-    if {"semantic", "projection"} <= limits.keys():
-        projection = min(limits["projection"], max_active)
-        limits["projection"] = projection
-        limits["semantic"] = min(
-            limits["semantic"],
-            max(1, max_active - projection),
-        )
-    return limits
+    return {
+        str(key): min(max_active, max(1, int(value)))
+        for key, value in parsed.items()
+    }
 
 
 def from_environment() -> AdmissionController:

@@ -64,12 +64,15 @@ All policy-proxied vLLM requests pass through bounded admission control before
 they reach the engine. `CLARE2_INFERENCE_MAX_ACTIVE` defaults to the engine's
 four-sequence limit, while `CLARE2_INFERENCE_MAX_WAITING` defaults to zero:
 when capacity is occupied, callers receive `429` and `Retry-After` instead of
-building a second in-memory queue. Workload quotas reserve two slots for
-semantic image analysis and one for report projection by default
+building a second in-memory queue. Workload quotas cap each workload
+independently against the shared pool — two concurrent requests for semantic
+image analysis and one for report projection by default
 (`CLARE2_INFERENCE_WORKLOAD_LIMITS`), with one-request caps for spam,
-distillation, and unlabelled policy traffic. The spam classifier and scheduled
-CLARE2 generation use the policy proxy rather than bypassing admission through
-the private vLLM endpoint.
+distillation, and unlabelled policy traffic. No workload reserves capacity
+against the others: if semantic analysis is using the whole engine, report
+projection simply waits its turn, the same as any other workload. The spam
+classifier and scheduled CLARE2 generation use the policy proxy rather than
+bypassing admission through the private vLLM endpoint.
 
 The Image API exposes authenticated workload capacity at
 `/v1/media/capacity/semantic` and `/v1/media/capacity/projection`. Structured

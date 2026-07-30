@@ -5,6 +5,7 @@ from app.admission import (
     AdmissionController,
     AdmissionRejected,
     ClientDisconnected,
+    _workload_limits,
 )
 
 
@@ -25,7 +26,7 @@ class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(controller.waiting, 0)
         await lease.release()
 
-    async def test_workload_quota_reserves_capacity_for_other_work(self):
+    async def test_workload_quota_caps_one_workload_without_starving_another(self):
         controller = AdmissionController(
             4,
             0,
@@ -73,6 +74,20 @@ class AdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(controller.active, 1)
         self.assertEqual(controller.waiting, 0)
         await first.release()
+
+
+class WorkloadLimitsTests(unittest.TestCase):
+    def test_semantic_is_not_reduced_to_reserve_capacity_for_projection(self):
+        limits = _workload_limits(max_active=2)
+
+        self.assertEqual(limits["semantic"], 2)
+        self.assertEqual(limits["projection"], 1)
+
+    def test_configured_limits_are_capped_by_max_active(self):
+        limits = _workload_limits(max_active=1)
+
+        self.assertEqual(limits["semantic"], 1)
+        self.assertEqual(limits["projection"], 1)
 
 
 if __name__ == "__main__":
