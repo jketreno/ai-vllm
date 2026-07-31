@@ -121,6 +121,14 @@ def _semantic_report_result(**overrides) -> dict:
         "known_facts": ["The image shows a blue square."],
         "inferences": [],
         "evidence_types": ["semantic_summary"],
+        "place_resolution": {
+            "status": "none",
+            "candidate_id": None,
+            "name": None,
+            "confidence": 0,
+            "visual_evidence": [],
+            "spatial_evidence": [],
+        },
     }
     result.update(overrides)
     return result
@@ -134,7 +142,7 @@ async def test_semantic_image_adds_model_and_schema_provenance():
     assert response["schema_version"] == "1"
     assert response["contract_version"] == "0.1.0"
     assert len(response["schema_fingerprint"]) == 64
-    assert response["prompt_version"] == "phai-report-v3"
+    assert response["prompt_version"] == "phai-report-v4"
     assert response["caption"] == "A blue square."
     assert response["summary"] == "A blue square photographed outdoors."
 
@@ -166,6 +174,53 @@ async def test_semantic_window_rejects_timestamp_count_mismatch():
 def test_semantic_report_schema_forbids_untracked_fields():
     assert media.SEMANTIC_REPORT_SCHEMA["additionalProperties"] is False
     assert media.OBSERVATION_SCHEMA["additionalProperties"] is False
+    place_schema = media.SEMANTIC_REPORT_SCHEMA["properties"]["place_resolution"]
+    assert place_schema["additionalProperties"] is False
+    assert set(place_schema["properties"]["status"]["enum"]) == {
+        "none",
+        "possible",
+        "resolved",
+    }
+
+
+@pytest.mark.asyncio
+async def test_semantic_image_requires_grounded_poi_resolution():
+    completion = AsyncMock(return_value=_semantic_report_result())
+    observations = json.dumps(
+        [
+            {
+                "observation_type": "context_enrichment",
+                "payload": {
+                    "facts": [
+                        {
+                            "kind": "poi_candidate",
+                            "payload": {
+                                "asserted": False,
+                                "candidates": [
+                                    {
+                                        "overture_id": "poi-1",
+                                        "name": "XYZ Cathedral",
+                                        "category": "cathedral",
+                                        "relationship": "inside",
+                                        "distance_m": 0,
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    with patch.object(media, "_completion", new=completion):
+        await media.semantic_image(image_upload(), observations=observations)
+
+    prompt = completion.await_args.args[0]
+    assert "A suggestive name alone is not evidence" in prompt
+    assert "select at most one supplied candidate" in prompt
+    assert "both visual and spatial evidence" in prompt
+    assert "XYZ Cathedral" in prompt
 
 
 @pytest.mark.asyncio
@@ -205,7 +260,7 @@ async def test_semantic_image_keeps_transcription_and_diarization_independent():
         "Diarization availability never determines transcription availability"
     )
     assert independence_rule in prompt
-    assert result["prompt_version"] == "phai-report-v3"
+    assert result["prompt_version"] == "phai-report-v4"
     assert "due to unavailable speaker separation" not in result["summary"]
     assert result["summary"].endswith(
         "Anonymous speaker separation was unavailable and did not affect "

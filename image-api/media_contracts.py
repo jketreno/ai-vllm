@@ -56,6 +56,38 @@ SEMANTIC_OBSERVATION_SCHEMA = {
     },
 }
 
+PLACE_RESOLUTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["none", "possible", "resolved"],
+        },
+        "candidate_id": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "visual_evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 10,
+        },
+        "spatial_evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 10,
+        },
+    },
+    "required": [
+        "status",
+        "candidate_id",
+        "name",
+        "confidence",
+        "visual_evidence",
+        "spatial_evidence",
+    ],
+}
+
 SEMANTIC_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -130,6 +162,7 @@ SEMANTIC_REPORT_SCHEMA = {
         "known_facts": {"type": "array", "items": {"type": "string"}},
         "inferences": {"type": "array", "items": {"type": "string"}},
         "evidence_types": {"type": "array", "items": {"type": "string"}},
+        "place_resolution": PLACE_RESOLUTION_SCHEMA,
     },
     "required": [
         "caption",
@@ -145,6 +178,7 @@ SEMANTIC_REPORT_SCHEMA = {
         "known_facts",
         "inferences",
         "evidence_types",
+        "place_resolution",
     ],
 }
 

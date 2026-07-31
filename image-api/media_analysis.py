@@ -35,7 +35,7 @@ from media_inference import (
 
 router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
 MAX_WINDOW_FRAMES = 12
-REPORT_PROMPT_VERSION = "phai-report-v3"
+REPORT_PROMPT_VERSION = "phai-report-v4"
 
 
 @router.get("/capacity/{workload}")
@@ -148,6 +148,23 @@ _REPORT_SYNTHESIS_INSTRUCTIONS = (
     "produced and do not attribute that to diarization."
 )
 
+_PLACE_RESOLUTION_INSTRUCTIONS = (
+    "Resolve the depicted place against supplied poi_candidate evidence. POIs "
+    "are suggestions, not facts: select at most one supplied candidate and "
+    "never create or alter a candidate ID or name. A suggestive name alone is "
+    "not evidence. Compare direct visual evidence with candidate categories "
+    "and require compatible spatial evidence such as containment, an inside "
+    "relationship, or credible proximity given GPS accuracy. Set "
+    "place_resolution.status to resolved only when both visual and spatial "
+    "evidence strongly support the same candidate; then the caption may use "
+    "that exact supplied name as a definite location. Use possible and "
+    "qualified caption language such as 'possibly at' when the match is "
+    "plausible but not strong. Use none, null candidate_id/name, confidence 0, "
+    "and omit candidate names from the caption when evidence is insufficient "
+    "or conflicting. Ground every other caption detail independently in the "
+    "image; a resolved place does not support an unseen action or object."
+)
+
 
 def _parse_observations(raw: str | None) -> list[dict]:
     if not raw:
@@ -163,11 +180,17 @@ def _parse_observations(raw: str | None) -> list[dict]:
 
 def _evidence_prompt(observations: list[dict]) -> str:
     if not observations:
-        return f"{_REPORT_SYNTHESIS_INSTRUCTIONS} No prior evidence was supplied."
+        return (
+            f"{_REPORT_SYNTHESIS_INSTRUCTIONS} {_PLACE_RESOLUTION_INSTRUCTIONS} "
+            "No prior evidence was supplied."
+        )
     serialized = json.dumps(observations[:200])
     if len(serialized) > 1_000_000:
         raise HTTPException(413, "evidence request is too large")
-    return f"{_REPORT_SYNTHESIS_INSTRUCTIONS} Evidence JSON: {serialized}"
+    return (
+        f"{_REPORT_SYNTHESIS_INSTRUCTIONS} {_PLACE_RESOLUTION_INSTRUCTIONS} "
+        f"Evidence JSON: {serialized}"
+    )
 
 
 @router.post("/semantic-image")
