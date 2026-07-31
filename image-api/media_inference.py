@@ -1,6 +1,7 @@
 """Policy-proxy client and media inference provenance."""
 
 import base64
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,9 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from PIL import Image, ImageOps
+
+from media_contracts import SCHEMA_FINGERPRINT
 
 POLICY_URL = os.environ.get("IMAGE_API_POLICY_URL", "http://clare2-policy:8000/v1")
 POLICY_TOKEN_FILE = Path(
@@ -23,11 +27,12 @@ MODEL_REVISION = os.environ.get("CLARE2_INFERENCE_REVISION", "configured")
 MAX_UPLOAD_BYTES = int(
     os.environ.get("IMAGE_API_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))
 )
+# Long-edge target for the vision model's input image, aligned to the Qwen
+# ViT 28px patch grid (56 x 28 = 1568). 0 disables downscaling entirely.
+VISION_MAX_EDGE = int(os.environ.get("IMAGE_API_VISION_MAX_EDGE", "1568"))
+VISION_JPEG_QUALITY = int(os.environ.get("IMAGE_API_VISION_JPEG_QUALITY", "88"))
 PROMPT_VERSION = "phai-media-v1"
-CONTRACT_VERSION = "0.1.0"
-SCHEMA_FINGERPRINT = (
-    "5365b9fb95b1a21d6a0c4ddd4035c75852cc0ba2eb7e56a722dfbb831822afe0"
-)
+CONTRACT_VERSION = "0.2.0"
 
 
 def _policy_token() -> str:
@@ -47,6 +52,26 @@ def image_content(payload: bytes, media_type: str) -> dict:
     }
 
 
+def _downscale_for_vision(payload: bytes, media_type: str) -> tuple[bytes, str]:
+    if VISION_MAX_EDGE <= 0:
+        return payload, media_type
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            image = ImageOps.exif_transpose(image)
+            if max(image.size) <= VISION_MAX_EDGE:
+                return payload, media_type
+            image.thumbnail((VISION_MAX_EDGE, VISION_MAX_EDGE), Image.LANCZOS)
+            buffer = io.BytesIO()
+            if media_type == "image/png":
+                image.save(buffer, format="PNG", optimize=True)
+                return buffer.getvalue(), media_type
+            image = image.convert("RGB")
+            image.save(buffer, format="JPEG", quality=VISION_JPEG_QUALITY)
+            return buffer.getvalue(), "image/jpeg"
+    except OSError:
+        return payload, media_type
+
+
 async def read_image(upload: UploadFile) -> tuple[bytes, str]:
     media_type = upload.content_type or ""
     if media_type not in {"image/jpeg", "image/png", "image/webp"}:
@@ -54,7 +79,7 @@ async def read_image(upload: UploadFile) -> tuple[bytes, str]:
     payload = await upload.read(MAX_UPLOAD_BYTES + 1)
     if len(payload) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "semantic input exceeds configured limit")
-    return payload, media_type
+    return _downscale_for_vision(payload, media_type)
 
 
 async def completion(

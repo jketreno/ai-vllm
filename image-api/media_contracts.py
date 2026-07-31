@@ -1,5 +1,7 @@
 """Structured media request models and JSON schemas."""
 
+import hashlib
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -48,12 +50,19 @@ SEMANTIC_OBSERVATION_TYPES = (
     "narrative_role",
 )
 
+# Standalone (not spread over OBSERVATION_SCHEMA, which /event-inference still
+# uses): drops the unbounded `evidence` array, which no consumer reads.
 SEMANTIC_OBSERVATION_SCHEMA = {
-    **OBSERVATION_SCHEMA,
+    "type": "object",
+    "additionalProperties": False,
     "properties": {
-        **OBSERVATION_SCHEMA["properties"],
         "type": {"type": "string", "enum": list(SEMANTIC_OBSERVATION_TYPES)},
+        "start_us": {"type": ["integer", "null"]},
+        "end_us": {"type": ["integer", "null"]},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "summary": {"type": "string", "maxLength": 240},
     },
+    "required": ["type", "start_us", "end_us", "confidence", "summary"],
 }
 
 PLACE_RESOLUTION_SCHEMA = {
@@ -70,12 +79,12 @@ PLACE_RESOLUTION_SCHEMA = {
         "visual_evidence": {
             "type": "array",
             "items": {"type": "string"},
-            "maxItems": 10,
+            "maxItems": 6,
         },
         "spatial_evidence": {
             "type": "array",
             "items": {"type": "string"},
-            "maxItems": 10,
+            "maxItems": 6,
         },
     },
     "required": [
@@ -88,13 +97,27 @@ PLACE_RESOLUTION_SCHEMA = {
     ],
 }
 
+BOX_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+        "w": {"type": "number", "minimum": 0, "maximum": 1},
+        "h": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["x", "y", "w", "h"],
+}
+
+# `id` and `priority` are intentionally absent: _normalize_focus_plan assigns
+# both server-side from array order, so asking the model for them is pure
+# ceremony (see commit 3f3ade7 for the precedent of dropping model-facing
+# fields that duplicate server-derived output).
 FOCUS_TARGET_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "id": {"type": "string", "pattern": "^focus-[1-8]$"},
-        "priority": {"type": "integer", "minimum": 1, "maximum": 8},
-        "display_label": {"type": "string", "minLength": 1, "maxLength": 160},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 120},
         "sam_prompt": {
             "type": ["string", "null"],
             "minLength": 1,
@@ -143,11 +166,22 @@ FOCUS_TARGET_SCHEMA = {
             },
             "required": ["horizontal", "vertical"],
         },
-        "reason": {"type": "string", "minLength": 1, "maxLength": 240},
+        "box": BOX_SCHEMA,
+        "gaze_direction": {
+            "type": "string",
+            "enum": [
+                "toward_camera",
+                "left",
+                "right",
+                "up",
+                "down",
+                "away",
+                "not_applicable",
+            ],
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 120},
     },
     "required": [
-        "id",
-        "priority",
         "display_label",
         "sam_prompt",
         "role",
@@ -156,59 +190,38 @@ FOCUS_TARGET_SCHEMA = {
         "segmentability",
         "confidence",
         "location",
+        "box",
+        "gaze_direction",
         "reason",
     ],
 }
 
-SEMANTIC_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "caption": {"type": "string"},
-        "concise_caption": {"type": "string"},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
-        "focus_targets": {
-            "type": "array",
-            "items": FOCUS_TARGET_SCHEMA,
-            "maxItems": 8,
-        },
-        "visible_text": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 100,
-        },
-        "uncertainties": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 50,
-        },
-        "observations": {
-            "type": "array",
-            "items": SEMANTIC_OBSERVATION_SCHEMA,
-            "maxItems": 100,
-        },
-    },
-    "required": [
-        "caption",
-        "concise_caption",
-        "confidence",
-        "concepts",
-        "focus_targets",
-        "visible_text",
-        "uncertainties",
-        "observations",
-    ],
-}
+NARRATIVE_ROLES = (
+    "establishing",
+    "detail",
+    "portrait",
+    "action",
+    "transition",
+    "climax",
+    "closing",
+)
+
+SCALES = ("wide", "medium", "close", "detail")
 
 SEMANTIC_REPORT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "caption": {"type": "string"},
-        "concise_caption": {"type": "string"},
+        "caption": {"type": "string", "maxLength": 700},
+        "concise_caption": {"type": "string", "maxLength": 200},
+        "narrative_role": {"type": "string", "enum": list(NARRATIVE_ROLES)},
+        "scale": {"type": "string", "enum": list(SCALES)},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
+        "concepts": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 64},
+            "maxItems": 24,
+        },
         "focus_targets": {
             "type": "array",
             "items": FOCUS_TARGET_SCHEMA,
@@ -216,34 +229,42 @@ SEMANTIC_REPORT_SCHEMA = {
         },
         "visible_text": {
             "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 100,
-        },
-        "uncertainties": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 50,
+            "items": {"type": "string", "maxLength": 160},
+            "maxItems": 32,
         },
         "observations": {
             "type": "array",
             "items": SEMANTIC_OBSERVATION_SCHEMA,
-            "maxItems": 100,
+            "maxItems": 24,
         },
-        "summary": {"type": "string"},
-        "concise_summary": {"type": "string"},
-        "known_facts": {"type": "array", "items": {"type": "string"}},
-        "inferences": {"type": "array", "items": {"type": "string"}},
-        "evidence_types": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string", "maxLength": 1500},
+        "concise_summary": {"type": "string", "maxLength": 300},
+        "known_facts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 16,
+        },
+        "inferences": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 16,
+        },
+        "evidence_types": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 40},
+            "maxItems": 12,
+        },
         "place_resolution": PLACE_RESOLUTION_SCHEMA,
     },
     "required": [
         "caption",
         "concise_caption",
+        "narrative_role",
+        "scale",
         "confidence",
         "concepts",
         "focus_targets",
         "visible_text",
-        "uncertainties",
         "observations",
         "summary",
         "concise_summary",
@@ -278,3 +299,24 @@ QUERY_SCHEMA = {
         "unresolved",
     ],
 }
+
+
+def schema_fingerprint() -> str:
+    """Stable hash over model-facing schemas, recomputed on every import.
+
+    Replaces a hand-maintained literal that could silently go stale after
+    a schema edit.
+    """
+    payload = json.dumps(
+        {
+            "semantic_report": SEMANTIC_REPORT_SCHEMA,
+            "observation": OBSERVATION_SCHEMA,
+            "query": QUERY_SCHEMA,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+SCHEMA_FINGERPRINT = schema_fingerprint()

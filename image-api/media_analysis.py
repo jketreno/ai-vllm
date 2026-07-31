@@ -1,6 +1,7 @@
 """Structured, archive-agnostic media analysis operations for ketr.phai."""
 
 import json
+import os
 import re
 from typing import Literal
 
@@ -35,7 +36,15 @@ from media_inference import (
 
 router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
 MAX_WINDOW_FRAMES = 12
-REPORT_PROMPT_VERSION = "phai-report-v6"
+REPORT_PROMPT_VERSION = "phai-report-v7"
+SEMANTIC_IMAGE_MAX_TOKENS = int(
+    os.environ.get("IMAGE_API_SEMANTIC_IMAGE_MAX_TOKENS", "1800")
+)
+SEMANTIC_WINDOW_MAX_TOKENS = int(
+    os.environ.get("IMAGE_API_SEMANTIC_WINDOW_MAX_TOKENS", "2600")
+)
+EVIDENCE_MAX_CHARS = int(os.environ.get("IMAGE_API_EVIDENCE_MAX_CHARS", "64000"))
+EVIDENCE_MAX_ITEMS = 128
 
 
 @router.get("/capacity/{workload}")
@@ -89,14 +98,14 @@ def _normalize_speech_capabilities(
     normalized["summary"] = " ".join([base_summary, *canonical]).strip()
     normalized["concise_summary"] = " ".join(canonical)
     capability_terms = ("transcript", "diarization", "speaker separation")
-    for field in ("known_facts", "inferences", "uncertainties"):
+    for field in ("known_facts", "inferences"):
         retained = [
             item
             for item in normalized.get(field, [])
             if not any(term in item.lower() for term in capability_terms)
         ]
         normalized[field] = retained
-    normalized["known_facts"].extend(canonical)
+    normalized.setdefault("known_facts", []).extend(canonical)
     return normalized
 
 
@@ -140,12 +149,22 @@ _REPORT_SYNTHESIS_INSTRUCTIONS = (
     "In addition to the visual analysis above, synthesize a media report "
     "using both the image and the supplied prior evidence. Classify "
     "metadata/direct observations as known facts, keep model interpretations "
-    "under inferences, preserve contradictions and uncertainty, and never "
-    "invent names, dates, places, or events. Diarization availability never "
-    "determines transcription availability; diarization only assigns "
-    "anonymous speaker labels. If transcription is available but there are "
-    "no transcript_segment observations, state that no transcript text was "
-    "produced and do not attribute that to diarization."
+    "under inferences, state contradictions and uncertainty inside "
+    "inferences, and never invent names, dates, places, or events. "
+    "Diarization availability never determines transcription availability; "
+    "diarization only assigns anonymous speaker labels. If transcription is "
+    "available but there are no transcript_segment observations, state that "
+    "no transcript text was produced and do not attribute that to "
+    "diarization."
+)
+
+_BREVITY_AND_TAXONOMY_INSTRUCTIONS = (
+    "Set narrative_role to the single best photobook role for this image "
+    "(establishing, detail, portrait, action, transition, climax, or "
+    "closing) and scale to its framing distance (wide, medium, close, or "
+    "detail). Keep caption to at most two sentences and summary to at most "
+    "four sentences. Concepts are 1-3 word noun phrases. Emit at most 24 "
+    "observations, one sentence each, without restating supplied evidence."
 )
 
 _PLACE_RESOLUTION_INSTRUCTIONS = (
@@ -167,37 +186,37 @@ _PLACE_RESOLUTION_INSTRUCTIONS = (
 
 _FOCUS_PLANNING_INSTRUCTIONS = (
     "Create `focus_targets` as an ordered photographic focus plan with no more "
-    "than 8 entries. Rank coherent visible subjects by what a photographer "
-    "would preserve when reframing: primary subject first, then supporting "
-    "subjects, then only genuinely useful context. Use contiguous priorities "
-    "starting at 1 and matching IDs focus-1, focus-2, and so on. Prefer whole "
-    "people, groups, animals, food arrangements, vehicles, prominent objects, "
-    "signs, buildings, or unified landscape features with clear boundaries. "
-    "Do not select tiny incidental details, arbitrary leaves, repeated-pattern "
-    "fragments, shadows, reflections, or generic background texture unless "
-    "they are clearly the photograph's subject. When similar instances cannot "
-    "be distinguished reliably, describe the coherent group or containing "
-    "subject instead of an arbitrary instance. `display_label` must uniquely "
-    "identify the target with visible attributes and coarse location. "
-    "`sam_prompt` must be a literal 1-6 word noun phrase using only visually "
-    "segmentable attributes; use null when the target cannot be reliably "
-    "text-segmented. Mark such targets segmentability low. Separate narrative "
-    "importance from segmentability. Background regions must use role context "
-    "and must not outrank a foreground subject unless the background is the "
-    "apparent subject."
+    "than 8 entries, ordered from most to least important: primary subject "
+    "first, then supporting subjects, then only genuinely useful context. "
+    "Prefer whole people, groups, animals, food arrangements, vehicles, "
+    "prominent objects, signs, buildings, or unified landscape features with "
+    "clear boundaries. Do not select tiny incidental details, arbitrary "
+    "leaves, repeated-pattern fragments, shadows, reflections, or generic "
+    "background texture unless they are clearly the photograph's subject. "
+    "When similar instances cannot be distinguished reliably, describe the "
+    "coherent group or containing subject instead of an arbitrary instance. "
+    "`display_label` must uniquely identify the target with visible "
+    "attributes and coarse location. `sam_prompt` must be a literal 1-6 word "
+    "noun phrase using only visually segmentable attributes; use null when "
+    "the target cannot be reliably text-segmented. Mark such targets "
+    "segmentability low. Separate narrative importance from segmentability. "
+    "Background regions must use role context and must not outrank a "
+    "foreground subject unless the background is the apparent subject. For "
+    "each target, set box to a normalized {x, y, w, h} with values in 0..1 "
+    "relative to the full image (x, y is the top-left corner), rounded to "
+    "two decimals, tightly enclosing the visible subject. Set gaze_direction "
+    "for person or group targets to the direction the subject faces in "
+    "image coordinates; use not_applicable for every other target."
 )
 
 
 def _normalize_focus_plan(result: dict) -> dict:
     normalized = dict(result)
-    targets = sorted(
-        (
-            target
-            for target in normalized.get("focus_targets", [])
-            if isinstance(target, dict)
-        ),
-        key=lambda target: target.get("priority", 99),
-    )
+    targets = [
+        target
+        for target in normalized.get("focus_targets", [])
+        if isinstance(target, dict)
+    ]
     targets = [
         {**target, "id": f"focus-{index}", "priority": index}
         for index, target in enumerate(targets, start=1)
@@ -234,18 +253,35 @@ def _parse_observations(raw: str | None) -> list[dict]:
     return parsed
 
 
+def _bounded_evidence_json(observations: list[dict]) -> str:
+    """Serialize observations within a char/item budget, truncating rather
+    than rejecting. phai-media-workers already allowlists evidence to
+    <=48KB/128 items before sending it; this is defense-in-depth against
+    any other caller."""
+    included = []
+    used_chars = 0
+    for item in observations[:EVIDENCE_MAX_ITEMS]:
+        piece = json.dumps(item, separators=(",", ":"))
+        if used_chars + len(piece) > EVIDENCE_MAX_CHARS:
+            break
+        included.append(item)
+        used_chars += len(piece)
+    serialized = json.dumps(included, separators=(",", ":"))
+    omitted = len(observations) - len(included)
+    if omitted > 0:
+        serialized += f" ({omitted} additional evidence items omitted.)"
+    return serialized
+
+
 def _evidence_prompt(observations: list[dict]) -> str:
     if not observations:
         return (
             f"{_REPORT_SYNTHESIS_INSTRUCTIONS} {_PLACE_RESOLUTION_INSTRUCTIONS} "
             "No prior evidence was supplied."
         )
-    serialized = json.dumps(observations[:200])
-    if len(serialized) > 1_000_000:
-        raise HTTPException(413, "evidence request is too large")
     return (
         f"{_REPORT_SYNTHESIS_INSTRUCTIONS} {_PLACE_RESOLUTION_INSTRUCTIONS} "
-        f"Evidence JSON: {serialized}"
+        f"Evidence JSON: {_bounded_evidence_json(observations)}"
     )
 
 
@@ -262,13 +298,14 @@ async def semantic_image(
         "interpretation. For each entry in `observations`, set `type` to exactly "
         f"one of: {', '.join(SEMANTIC_OBSERVATION_TYPES)}. "
         f"{_FOCUS_PLANNING_INSTRUCTIONS} Times must be null for a still image. "
+        f"{_BREVITY_AND_TAXONOMY_INSTRUCTIONS} "
         f"{_evidence_prompt(parsed_observations)}"
     )
     result = await _completion(
         prompt,
         SEMANTIC_REPORT_SCHEMA,
         [_image_content(payload, media_type)],
-        max_tokens=4000,
+        max_tokens=SEMANTIC_IMAGE_MAX_TOKENS,
         workload="semantic_report",
     )
     result = _normalize_focus_plan(result)
@@ -298,11 +335,12 @@ async def semantic_window(
     parsed_observations = _parse_observations(observations)
     prompt = (
         "Analyze these chronological video frames at timestamps "
-        f"{timestamps}. Return time-bounded direct observations and uncertainties. "
+        f"{timestamps}. Return time-bounded direct observations. "
         "Do not infer real-world identity from appearance. For each entry in "
         f"`observations`, set `type` to exactly one of: "
         f"{', '.join(SEMANTIC_OBSERVATION_TYPES)}. "
         f"{_FOCUS_PLANNING_INSTRUCTIONS} "
+        f"{_BREVITY_AND_TAXONOMY_INSTRUCTIONS} "
         f"{_evidence_prompt(parsed_observations)}"
     )
     if transcript:
@@ -311,7 +349,7 @@ async def semantic_window(
         prompt,
         SEMANTIC_REPORT_SCHEMA,
         images,
-        max_tokens=5000,
+        max_tokens=SEMANTIC_WINDOW_MAX_TOKENS,
         workload="semantic_report",
     )
     result = _normalize_focus_plan(result)
