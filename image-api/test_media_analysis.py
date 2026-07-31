@@ -144,7 +144,6 @@ def _semantic_report_result(**overrides) -> dict:
         "concise_caption": "Blue square",
         "confidence": 0.9,
         "concepts": ["blue", "square"],
-        "sam_prompts": ["blue square"],
         "focus_targets": [
             {
                 "id": "focus-1",
@@ -189,7 +188,7 @@ async def test_semantic_image_adds_model_and_schema_provenance():
     assert response["schema_version"] == "1"
     assert response["contract_version"] == "0.1.0"
     assert len(response["schema_fingerprint"]) == 64
-    assert response["prompt_version"] == "phai-report-v5"
+    assert response["prompt_version"] == "phai-report-v6"
     assert response["caption"] == "A blue square."
     assert response["summary"] == "A blue square photographed outdoors."
 
@@ -234,10 +233,19 @@ def test_semantic_report_schema_forbids_untracked_fields():
     focus_schema = media.SEMANTIC_REPORT_SCHEMA["properties"]["focus_targets"]
     assert focus_schema["maxItems"] == 8
     assert focus_schema["items"]["additionalProperties"] is False
+    # sam_prompts is derived server-side from focus_targets[].sam_prompt
+    # (_normalize_focus_plan); asking the model for it too let it satisfy
+    # the schema with a list disconnected from focus_targets.
+    assert "sam_prompts" not in media.SEMANTIC_REPORT_SCHEMA["properties"]
+    assert "sam_prompts" not in media.SEMANTIC_REPORT_SCHEMA["required"]
 
 
 @pytest.mark.asyncio
 async def test_semantic_image_derives_sam_prompts_from_ranked_focus_targets():
+    # sam_prompts is not part of the model-facing schema (removed so the
+    # model can't satisfy it with content disconnected from focus_targets),
+    # but the response field is always rebuilt server-side; a stray/legacy
+    # sam_prompts key on the raw model dict must still be ignored.
     result = _semantic_report_result(
         sam_prompts=["unrelated model output"],
         focus_targets=[
@@ -352,7 +360,7 @@ async def test_semantic_image_keeps_transcription_and_diarization_independent():
         "Diarization availability never determines transcription availability"
     )
     assert independence_rule in prompt
-    assert result["prompt_version"] == "phai-report-v5"
+    assert result["prompt_version"] == "phai-report-v6"
     assert "due to unavailable speaker separation" not in result["summary"]
     assert result["summary"].endswith(
         "Anonymous speaker separation was unavailable and did not affect "

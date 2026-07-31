@@ -35,7 +35,7 @@ from media_inference import (
 
 router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
 MAX_WINDOW_FRAMES = 12
-REPORT_PROMPT_VERSION = "phai-report-v5"
+REPORT_PROMPT_VERSION = "phai-report-v6"
 
 
 @router.get("/capacity/{workload}")
@@ -184,9 +184,7 @@ _FOCUS_PLANNING_INSTRUCTIONS = (
     "text-segmented. Mark such targets segmentability low. Separate narrative "
     "importance from segmentability. Background regions must use role context "
     "and must not outrank a foreground subject unless the background is the "
-    "apparent subject. Derive `sam_prompts`, in focus priority order, from the "
-    "unique non-null focus target prompts whose segmentability is high or "
-    "medium; do not invent any independent SAM prompts."
+    "apparent subject."
 )
 
 

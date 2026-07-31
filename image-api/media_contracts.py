@@ -168,11 +168,6 @@ SEMANTIC_SCHEMA = {
         "concise_caption": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
-        "sam_prompts": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 24,
-        },
         "focus_targets": {
             "type": "array",
             "items": FOCUS_TARGET_SCHEMA,
@@ -199,7 +194,6 @@ SEMANTIC_SCHEMA = {
         "concise_caption",
         "confidence",
         "concepts",
-        "sam_prompts",
         "focus_targets",
         "visible_text",
         "uncertainties",
@@ -215,11 +209,6 @@ SEMANTIC_REPORT_SCHEMA = {
         "concise_caption": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
-        "sam_prompts": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 24,
-        },
         "focus_targets": {
             "type": "array",
             "items": FOCUS_TARGET_SCHEMA,
@@ -252,7 +241,6 @@ SEMANTIC_REPORT_SCHEMA = {
         "concise_caption",
         "confidence",
         "concepts",
-        "sam_prompts",
         "focus_targets",
         "visible_text",
         "uncertainties",
