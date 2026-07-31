@@ -13,6 +13,7 @@ from media_contracts import (
     IdentityCaptionRequest,
     OBSERVATION_SCHEMA,
     QUERY_SCHEMA,
+    SEMANTIC_OBSERVATION_TYPES,
     SEMANTIC_REPORT_SCHEMA,
     ValuesRequest,
 )
@@ -34,7 +35,7 @@ from media_inference import (
 
 router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
 MAX_WINDOW_FRAMES = 12
-REPORT_PROMPT_VERSION = "phai-report-v2"
+REPORT_PROMPT_VERSION = "phai-report-v3"
 
 
 @router.get("/capacity/{workload}")
@@ -179,8 +180,8 @@ async def semantic_image(
     prompt = (
         "Analyze only what is supportable from this image. Do not identify real "
         "people by appearance. Separate direct visual evidence from uncertain "
-        "interpretation. Extract objects, activities, scene, visible relationships, "
-        "visible text, location/event clues, photographic role, and concise SAM "
+        "interpretation. For each entry in `observations`, set `type` to exactly "
+        f"one of: {', '.join(SEMANTIC_OBSERVATION_TYPES)}. Also produce concise SAM "
         "segmentation prompts. Times must be null for a still image. "
         f"{_evidence_prompt(parsed_observations)}"
     )
@@ -218,8 +219,9 @@ async def semantic_window(
     prompt = (
         "Analyze these chronological video frames at timestamps "
         f"{timestamps}. Return time-bounded direct observations and uncertainties. "
-        "Do not infer real-world identity from appearance. Cover scenes, activities, "
-        "objects, visible relationships, text, event/place clues, and narrative role. "
+        "Do not infer real-world identity from appearance. For each entry in "
+        f"`observations`, set `type` to exactly one of: "
+        f"{', '.join(SEMANTIC_OBSERVATION_TYPES)}. "
         f"{_evidence_prompt(parsed_observations)}"
     )
     if transcript:

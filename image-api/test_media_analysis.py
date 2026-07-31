@@ -134,7 +134,7 @@ async def test_semantic_image_adds_model_and_schema_provenance():
     assert response["schema_version"] == "1"
     assert response["contract_version"] == "0.1.0"
     assert len(response["schema_fingerprint"]) == 64
-    assert response["prompt_version"] == "phai-report-v2"
+    assert response["prompt_version"] == "phai-report-v3"
     assert response["caption"] == "A blue square."
     assert response["summary"] == "A blue square photographed outdoors."
 
@@ -205,7 +205,7 @@ async def test_semantic_image_keeps_transcription_and_diarization_independent():
         "Diarization availability never determines transcription availability"
     )
     assert independence_rule in prompt
-    assert result["prompt_version"] == "phai-report-v2"
+    assert result["prompt_version"] == "phai-report-v3"
     assert "due to unavailable speaker separation" not in result["summary"]
     assert result["summary"].endswith(
         "Anonymous speaker separation was unavailable and did not affect "

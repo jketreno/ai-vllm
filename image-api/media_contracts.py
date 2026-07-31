@@ -33,6 +33,29 @@ OBSERVATION_SCHEMA = {
     "required": ["type", "start_us", "end_us", "confidence", "summary", "evidence"],
 }
 
+# Fixed vocabulary for semantic-image/semantic-window per-observation `type`.
+# Without an enum here the model paraphrases the prompt's category names
+# (e.g. "location_event_clue" vs "location/event clues" vs "location_event")
+# and every variant is persisted verbatim as a distinct observation_type.
+SEMANTIC_OBSERVATION_TYPES = (
+    "scene",
+    "activity",
+    "object",
+    "visible_relationship",
+    "visible_text",
+    "location_event_clue",
+    "photographic_role",
+    "narrative_role",
+)
+
+SEMANTIC_OBSERVATION_SCHEMA = {
+    **OBSERVATION_SCHEMA,
+    "properties": {
+        **OBSERVATION_SCHEMA["properties"],
+        "type": {"type": "string", "enum": list(SEMANTIC_OBSERVATION_TYPES)},
+    },
+}
+
 SEMANTIC_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -58,7 +81,7 @@ SEMANTIC_SCHEMA = {
         },
         "observations": {
             "type": "array",
-            "items": OBSERVATION_SCHEMA,
+            "items": SEMANTIC_OBSERVATION_SCHEMA,
             "maxItems": 100,
         },
     },
@@ -99,7 +122,7 @@ SEMANTIC_REPORT_SCHEMA = {
         },
         "observations": {
             "type": "array",
-            "items": OBSERVATION_SCHEMA,
+            "items": SEMANTIC_OBSERVATION_SCHEMA,
             "maxItems": 100,
         },
         "summary": {"type": "string"},
