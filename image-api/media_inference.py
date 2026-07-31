@@ -108,6 +108,11 @@ async def completion(
                     "Retry-After": response.headers.get("Retry-After", "30")
                 },
             )
+        if 400 <= response.status_code < 500:
+            raise HTTPException(
+                response.status_code,
+                f"inference request rejected: {response.text[:1000]}",
+            )
         response.raise_for_status()
         return json.loads(response.json()["choices"][0]["message"]["content"])
     except httpx.TimeoutException as error:
