@@ -88,6 +88,78 @@ PLACE_RESOLUTION_SCHEMA = {
     ],
 }
 
+FOCUS_TARGET_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "id": {"type": "string", "pattern": "^focus-[1-8]$"},
+        "priority": {"type": "integer", "minimum": 1, "maximum": 8},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 160},
+        "sam_prompt": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 80,
+        },
+        "role": {
+            "type": "string",
+            "enum": ["primary", "supporting", "context"],
+        },
+        "subject_type": {
+            "type": "string",
+            "enum": [
+                "person",
+                "group",
+                "animal",
+                "food",
+                "vehicle",
+                "object",
+                "structure",
+                "landscape",
+                "text",
+                "other",
+            ],
+        },
+        "extent": {
+            "type": "string",
+            "enum": ["whole_subject", "group", "detail", "region"],
+        },
+        "segmentability": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "location": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "horizontal": {
+                    "type": "string",
+                    "enum": ["left", "center", "right", "full"],
+                },
+                "vertical": {
+                    "type": "string",
+                    "enum": ["top", "center", "bottom", "full"],
+                },
+            },
+            "required": ["horizontal", "vertical"],
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 240},
+    },
+    "required": [
+        "id",
+        "priority",
+        "display_label",
+        "sam_prompt",
+        "role",
+        "subject_type",
+        "extent",
+        "segmentability",
+        "confidence",
+        "location",
+        "reason",
+    ],
+}
+
 SEMANTIC_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -100,6 +172,11 @@ SEMANTIC_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
             "maxItems": 24,
+        },
+        "focus_targets": {
+            "type": "array",
+            "items": FOCUS_TARGET_SCHEMA,
+            "maxItems": 8,
         },
         "visible_text": {
             "type": "array",
@@ -123,6 +200,7 @@ SEMANTIC_SCHEMA = {
         "confidence",
         "concepts",
         "sam_prompts",
+        "focus_targets",
         "visible_text",
         "uncertainties",
         "observations",
@@ -141,6 +219,11 @@ SEMANTIC_REPORT_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
             "maxItems": 24,
+        },
+        "focus_targets": {
+            "type": "array",
+            "items": FOCUS_TARGET_SCHEMA,
+            "maxItems": 8,
         },
         "visible_text": {
             "type": "array",
@@ -170,6 +253,7 @@ SEMANTIC_REPORT_SCHEMA = {
         "confidence",
         "concepts",
         "sam_prompts",
+        "focus_targets",
         "visible_text",
         "uncertainties",
         "observations",

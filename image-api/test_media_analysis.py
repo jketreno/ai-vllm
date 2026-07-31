@@ -145,6 +145,21 @@ def _semantic_report_result(**overrides) -> dict:
         "confidence": 0.9,
         "concepts": ["blue", "square"],
         "sam_prompts": ["blue square"],
+        "focus_targets": [
+            {
+                "id": "focus-1",
+                "priority": 1,
+                "display_label": "blue square in the center",
+                "sam_prompt": "blue square",
+                "role": "primary",
+                "subject_type": "object",
+                "extent": "whole_subject",
+                "segmentability": "high",
+                "confidence": 0.95,
+                "location": {"horizontal": "center", "vertical": "center"},
+                "reason": "The square is the principal visible subject.",
+            }
+        ],
         "visible_text": [],
         "uncertainties": [],
         "observations": [],
@@ -174,7 +189,7 @@ async def test_semantic_image_adds_model_and_schema_provenance():
     assert response["schema_version"] == "1"
     assert response["contract_version"] == "0.1.0"
     assert len(response["schema_fingerprint"]) == 64
-    assert response["prompt_version"] == "phai-report-v4"
+    assert response["prompt_version"] == "phai-report-v5"
     assert response["caption"] == "A blue square."
     assert response["summary"] == "A blue square photographed outdoors."
 
@@ -190,6 +205,9 @@ async def test_semantic_image_forwards_evidence_to_the_prompt():
 
     prompt = completion.await_args.args[0]
     assert "capture_time" in prompt
+    assert "ordered photographic focus plan" in prompt
+    assert "arbitrary leaves" in prompt
+    assert "literal 1-6 word noun phrase" in prompt
     assert completion.await_args.kwargs["workload"] == "semantic_report"
 
 
@@ -213,6 +231,48 @@ def test_semantic_report_schema_forbids_untracked_fields():
         "possible",
         "resolved",
     }
+    focus_schema = media.SEMANTIC_REPORT_SCHEMA["properties"]["focus_targets"]
+    assert focus_schema["maxItems"] == 8
+    assert focus_schema["items"]["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_semantic_image_derives_sam_prompts_from_ranked_focus_targets():
+    result = _semantic_report_result(
+        sam_prompts=["unrelated model output"],
+        focus_targets=[
+            {
+                "id": "focus-1",
+                "priority": 1,
+                "display_label": "girl in a blue dress",
+                "sam_prompt": "girl in blue dress",
+                "role": "primary",
+                "subject_type": "person",
+                "extent": "whole_subject",
+                "segmentability": "high",
+                "confidence": 0.96,
+                "location": {"horizontal": "right", "vertical": "center"},
+                "reason": "Principal person.",
+            },
+            {
+                "id": "focus-2",
+                "priority": 2,
+                "display_label": "small flag in the pastries",
+                "sam_prompt": "small flag",
+                "role": "supporting",
+                "subject_type": "object",
+                "extent": "detail",
+                "segmentability": "low",
+                "confidence": 0.7,
+                "location": {"horizontal": "right", "vertical": "bottom"},
+                "reason": "Interesting but too small for reliable segmentation.",
+            },
+        ],
+    )
+    with patch.object(media, "_completion", new=AsyncMock(return_value=result)):
+        response = await media.semantic_image(image_upload(), observations=None)
+
+    assert response["sam_prompts"] == ["girl in blue dress"]
 
 
 @pytest.mark.asyncio
@@ -292,7 +352,7 @@ async def test_semantic_image_keeps_transcription_and_diarization_independent():
         "Diarization availability never determines transcription availability"
     )
     assert independence_rule in prompt
-    assert result["prompt_version"] == "phai-report-v4"
+    assert result["prompt_version"] == "phai-report-v5"
     assert "due to unavailable speaker separation" not in result["summary"]
     assert result["summary"].endswith(
         "Anonymous speaker separation was unavailable and did not affect "

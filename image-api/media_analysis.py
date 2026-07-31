@@ -35,7 +35,7 @@ from media_inference import (
 
 router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
 MAX_WINDOW_FRAMES = 12
-REPORT_PROMPT_VERSION = "phai-report-v4"
+REPORT_PROMPT_VERSION = "phai-report-v5"
 
 
 @router.get("/capacity/{workload}")
@@ -165,6 +165,64 @@ _PLACE_RESOLUTION_INSTRUCTIONS = (
     "image; a resolved place does not support an unseen action or object."
 )
 
+_FOCUS_PLANNING_INSTRUCTIONS = (
+    "Create `focus_targets` as an ordered photographic focus plan with no more "
+    "than 8 entries. Rank coherent visible subjects by what a photographer "
+    "would preserve when reframing: primary subject first, then supporting "
+    "subjects, then only genuinely useful context. Use contiguous priorities "
+    "starting at 1 and matching IDs focus-1, focus-2, and so on. Prefer whole "
+    "people, groups, animals, food arrangements, vehicles, prominent objects, "
+    "signs, buildings, or unified landscape features with clear boundaries. "
+    "Do not select tiny incidental details, arbitrary leaves, repeated-pattern "
+    "fragments, shadows, reflections, or generic background texture unless "
+    "they are clearly the photograph's subject. When similar instances cannot "
+    "be distinguished reliably, describe the coherent group or containing "
+    "subject instead of an arbitrary instance. `display_label` must uniquely "
+    "identify the target with visible attributes and coarse location. "
+    "`sam_prompt` must be a literal 1-6 word noun phrase using only visually "
+    "segmentable attributes; use null when the target cannot be reliably "
+    "text-segmented. Mark such targets segmentability low. Separate narrative "
+    "importance from segmentability. Background regions must use role context "
+    "and must not outrank a foreground subject unless the background is the "
+    "apparent subject. Derive `sam_prompts`, in focus priority order, from the "
+    "unique non-null focus target prompts whose segmentability is high or "
+    "medium; do not invent any independent SAM prompts."
+)
+
+
+def _normalize_focus_plan(result: dict) -> dict:
+    normalized = dict(result)
+    targets = sorted(
+        (
+            target
+            for target in normalized.get("focus_targets", [])
+            if isinstance(target, dict)
+        ),
+        key=lambda target: target.get("priority", 99),
+    )
+    targets = [
+        {**target, "id": f"focus-{index}", "priority": index}
+        for index, target in enumerate(targets, start=1)
+    ]
+    normalized["focus_targets"] = targets
+    prompts = []
+    seen = set()
+    for target in targets:
+        prompt = target.get("sam_prompt")
+        if (
+            target.get("segmentability") not in {"high", "medium"}
+            or not isinstance(prompt, str)
+        ):
+            continue
+        prompt = " ".join(prompt.strip().split())
+        key = prompt.casefold()
+        if not prompt or key in seen:
+            continue
+        seen.add(key)
+        prompts.append(prompt)
+    normalized["sam_prompts"] = prompts[:24]
+    return normalized
+
 
 def _parse_observations(raw: str | None) -> list[dict]:
     if not raw:
@@ -204,8 +262,8 @@ async def semantic_image(
         "Analyze only what is supportable from this image. Do not identify real "
         "people by appearance. Separate direct visual evidence from uncertain "
         "interpretation. For each entry in `observations`, set `type` to exactly "
-        f"one of: {', '.join(SEMANTIC_OBSERVATION_TYPES)}. Also produce concise SAM "
-        "segmentation prompts. Times must be null for a still image. "
+        f"one of: {', '.join(SEMANTIC_OBSERVATION_TYPES)}. "
+        f"{_FOCUS_PLANNING_INSTRUCTIONS} Times must be null for a still image. "
         f"{_evidence_prompt(parsed_observations)}"
     )
     result = await _completion(
@@ -215,6 +273,7 @@ async def semantic_image(
         max_tokens=4000,
         workload="semantic_report",
     )
+    result = _normalize_focus_plan(result)
     result = _normalize_speech_capabilities(result, parsed_observations)
     return _with_provenance(result, REPORT_PROMPT_VERSION)
 
@@ -245,6 +304,7 @@ async def semantic_window(
         "Do not infer real-world identity from appearance. For each entry in "
         f"`observations`, set `type` to exactly one of: "
         f"{', '.join(SEMANTIC_OBSERVATION_TYPES)}. "
+        f"{_FOCUS_PLANNING_INSTRUCTIONS} "
         f"{_evidence_prompt(parsed_observations)}"
     )
     if transcript:
@@ -256,6 +316,7 @@ async def semantic_window(
         max_tokens=5000,
         workload="semantic_report",
     )
+    result = _normalize_focus_plan(result)
     result = _normalize_speech_capabilities(result, parsed_observations)
     return _with_provenance(result, REPORT_PROMPT_VERSION)
 
