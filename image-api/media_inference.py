@@ -3,6 +3,7 @@
 import base64
 import io
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps
 
 from media_contracts import SCHEMA_FINGERPRINT
+
+logger = logging.getLogger(__name__)
 
 POLICY_URL = os.environ.get("IMAGE_API_POLICY_URL", "http://clare2-policy:8000/v1")
 POLICY_TOKEN_FILE = Path(
@@ -139,7 +142,22 @@ async def completion(
                 f"inference request rejected: {response.text[:1000]}",
             )
         response.raise_for_status()
-        return json.loads(response.json()["choices"][0]["message"]["content"])
+        body = response.json()
+        choice = body["choices"][0]
+        content = choice["message"]["content"]
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning(
+                "workload=%s model=%s finish_reason=%s content_chars=%d "
+                "content_tail=%r",
+                workload,
+                body.get("model"),
+                choice.get("finish_reason"),
+                len(content),
+                content[-200:],
+            )
+            raise
     except httpx.TimeoutException as error:
         raise HTTPException(
             503,
@@ -153,6 +171,12 @@ async def completion(
         TypeError,
         json.JSONDecodeError,
     ) as error:
+        logger.warning(
+            "workload=%s completion failed (%s): %s",
+            workload,
+            type(error).__name__,
+            error,
+        )
         raise HTTPException(
             503,
             f"structured media analysis unavailable: {error}",
