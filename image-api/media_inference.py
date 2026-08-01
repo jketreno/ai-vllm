@@ -159,6 +159,15 @@ async def completion(
                 content[-200:],
             )
             if finish_reason == "length":
+                repaired = _repair_truncated_json(content, schema)
+                if repaired is not None:
+                    logger.warning(
+                        "workload=%s recovered a partial result after "
+                        "max_tokens truncation (fields recovered: %s)",
+                        workload,
+                        sorted(repaired.keys()),
+                    )
+                    return repaired
                 raise HTTPException(
                     503,
                     {
@@ -224,6 +233,187 @@ async def capacity_response(workload: str) -> JSONResponse:
             status_code=503,
             headers={"Retry-After": "60"},
         )
+
+
+def _schema_default(schema: dict) -> object:
+    """A minimal value satisfying `schema`'s type, for a field the model
+    never reached before truncation."""
+    types = schema.get("type", "null")
+    types = types if isinstance(types, list) else [types]
+    if "array" in types:
+        return []
+    if "object" in types:
+        return {
+            key: _schema_default(subschema)
+            for key, subschema in schema.get("properties", {}).items()
+        }
+    if "string" in types:
+        return ""
+    if "integer" in types or "number" in types:
+        return 0
+    return None
+
+
+def _find_matching_bracket(text: str, open_index: int) -> int:
+    """Index of the bracket that closes the one at `open_index`, or -1."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _find_scalar_end(text: str, start: int) -> int:
+    """Index just past a scalar value (string/number/bool/null) starting at
+    `start`, i.e. the position of its terminating `,` or `}` — skipping
+    over commas and braces that appear inside a quoted string."""
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in ",}":
+            return index
+    return -1
+
+
+def _repair_truncated_array(remainder: str) -> list:
+    """Trim a cut-off array to its last syntactically complete element."""
+    items: list = []
+    index = 0
+    while True:
+        start = min(
+            (i for i in (remainder.find("{", index), remainder.find("[", index))
+             if i != -1),
+            default=-1,
+        )
+        if start == -1:
+            return items
+        end = _find_matching_bracket(remainder, start)
+        if end == -1:
+            return items
+        try:
+            items.append(json.loads(remainder[start : end + 1]))
+        except json.JSONDecodeError:
+            pass
+        index = end + 1
+
+
+def _locate_field_value(content: str, cursor: int, key: str) -> int | None:
+    """Start index of `key`'s value in `content` at or after `cursor`, or
+    None if the key/colon/value never appears (the cutoff landed before
+    this field even started)."""
+    key_index = content.find(f'"{key}"', cursor)
+    if key_index == -1:
+        return None
+    colon_index = content.find(":", key_index)
+    if colon_index == -1:
+        return None
+    value_start = colon_index + 1
+    while value_start < len(content) and content[value_start] in " \t\n\r":
+        value_start += 1
+    if value_start >= len(content):
+        return None
+    return value_start
+
+
+def _recover_field(
+    content: str, value_start: int, subschema: dict
+) -> tuple[object, int] | None:
+    """`(value, cursor_after_value)` for the value at `value_start`, or None
+    if it was cut off before closing (the field the truncation landed on)."""
+    opener = content[value_start]
+    if opener in "{[":
+        close_index = _find_matching_bracket(content, value_start)
+        if close_index == -1:
+            remainder = content[value_start + 1 :]
+            partial = (
+                _repair_truncated_array(remainder)
+                if opener == "["
+                else _walk_object_fields(remainder, subschema)
+            )
+            return partial, len(content)
+        value_text = content[value_start : close_index + 1]
+        cursor = close_index + 1
+    else:
+        end_index = _find_scalar_end(content, value_start)
+        if end_index == -1:
+            return None
+        value_text = content[value_start:end_index]
+        cursor = end_index
+    try:
+        return json.loads(value_text), cursor
+    except json.JSONDecodeError:
+        return None
+
+
+def _walk_object_fields(content: str, schema: dict) -> dict:
+    """Recover as many of `schema`'s top-level fields as closed cleanly in
+    `content` before it was cut off, in schema property order. The field
+    left mid-flight at the cutoff is recovered on a best-effort basis
+    (trimmed to its last complete element for an array, recursed into for
+    an object); every field never reached is backfilled with a schema-typed
+    default so the result always matches `schema`'s required-field shape.
+    """
+    properties = schema.get("properties", {})
+    recovered: dict[str, object] = {}
+    cursor = 0
+    for key, subschema in properties.items():
+        value_start = _locate_field_value(content, cursor, key)
+        if value_start is None:
+            break
+        outcome = _recover_field(content, value_start, subschema)
+        if outcome is None:
+            break
+        recovered[key], cursor = outcome
+        if cursor == len(content):
+            break
+    for key, subschema in properties.items():
+        if key not in recovered:
+            recovered[key] = _schema_default(subschema)
+    return recovered
+
+
+def _repair_truncated_json(content: str, schema: dict) -> dict | None:
+    """Best-effort recovery from a `finish_reason=length` cutoff.
+
+    Strict json_schema mode means one unclosed field invalidates the whole
+    document even when every field before it is complete. Returns None,
+    signaling a clean failure, unless the recovered document has real
+    content in at least `caption` and `summary` — a cutoff too early to
+    salvage a `focus_targets` bounding box, say, is still not worth
+    returning over the existing 503.
+    """
+    recovered = _walk_object_fields(content, schema)
+    if recovered.get("caption") and recovered.get("summary"):
+        return recovered
+    return None
 
 
 def with_provenance(result: dict, prompt_version: str = PROMPT_VERSION) -> dict:

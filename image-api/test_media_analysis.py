@@ -156,6 +156,202 @@ async def test_completion_labels_max_tokens_truncation_as_output_truncated():
     assert raised.value.headers["Retry-After"] == "5"
 
 
+def _truncated_response(content: str):
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {"finish_reason": "length", "message": {"content": content}}
+            ]
+        },
+        request=httpx.Request("POST", "http://policy"),
+    )
+
+
+class _TruncatedClient:
+    def __init__(self, content: str):
+        self._content = content
+
+    def __call__(self, timeout):
+        del timeout
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def post(self, _url, headers, json):
+        del headers, json
+        return _truncated_response(self._content)
+
+
+@pytest.mark.asyncio
+async def test_completion_repairs_truncation_mid_array():
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "caption": {"type": "string"},
+            "summary": {"type": "string"},
+            "observations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            "known_facts": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["caption", "summary", "observations", "known_facts"],
+    }
+    content = (
+        '{"caption": "A dog in a park.", "summary": "Longer summary text.", '
+        '"observations": [{"summary": "first, complete"}, '
+        '{"summary": "second, still writ'
+    )
+    with patch.object(
+        media_inference.httpx, "AsyncClient", _TruncatedClient(content)
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        result = await media._completion(
+            "prompt", schema, workload="semantic_report"
+        )
+
+    assert result["caption"] == "A dog in a park."
+    assert result["summary"] == "Longer summary text."
+    assert result["observations"] == [{"summary": "first, complete"}]
+    assert result["known_facts"] == []
+
+
+@pytest.mark.asyncio
+async def test_completion_repairs_truncation_inside_nested_object():
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "caption": {"type": "string"},
+            "summary": {"type": "string"},
+            "known_facts": {"type": "array", "items": {"type": "string"}},
+            "place_resolution": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "visual_evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "spatial_evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "required": ["caption", "summary", "known_facts", "place_resolution"],
+    }
+    content = (
+        '{"caption": "A castle on a hill.", "summary": "Detailed summary.", '
+        '"known_facts": ["fact one"], '
+        '"place_resolution": {"status": "possible", "confidence": 0.6, '
+        '"visual_evidence": ["matches architectural style"], '
+        '"spatial_evidence": ["GPS coordinates are very cl'
+    )
+    with patch.object(
+        media_inference.httpx, "AsyncClient", _TruncatedClient(content)
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        result = await media._completion(
+            "prompt", schema, workload="semantic_report"
+        )
+
+    assert result["caption"] == "A castle on a hill."
+    assert result["known_facts"] == ["fact one"]
+    place = result["place_resolution"]
+    assert place["status"] == "possible"
+    assert place["visual_evidence"] == ["matches architectural style"]
+    assert place["spatial_evidence"] == []
+
+
+@pytest.mark.asyncio
+async def test_completion_repairs_truncation_inside_focus_target_box():
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "caption": {"type": "string"},
+            "summary": {"type": "string"},
+            "focus_targets": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "display_label": {"type": "string"},
+                        "box": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "w": {"type": "number"},
+                                "h": {"type": "number"},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "required": ["caption", "summary", "focus_targets"],
+    }
+    content = (
+        '{"caption": "A dog in a park.", "summary": "Longer summary text.", '
+        '"focus_targets": [{"display_label": "dog", '
+        '"box": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}}, '
+        '{"display_label": "bench", "box": {"x": 0.5, "y": 0.'
+    )
+    with patch.object(
+        media_inference.httpx, "AsyncClient", _TruncatedClient(content)
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        result = await media._completion(
+            "prompt", schema, workload="semantic_report"
+        )
+
+    assert result["focus_targets"] == [
+        {"display_label": "dog", "box": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_completion_still_returns_503_when_cutoff_is_too_early_to_repair():
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "caption": {"type": "string"},
+            "summary": {"type": "string"},
+        },
+        "required": ["caption", "summary"],
+    }
+    content = '{"caption": "cut off mid str'
+    with patch.object(
+        media_inference.httpx, "AsyncClient", _TruncatedClient(content)
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        with pytest.raises(media.HTTPException) as raised:
+            await media._completion(
+                "prompt", schema, workload="semantic_report"
+            )
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail["reason_code"] == "output_truncated"
+
+
 @pytest.mark.asyncio
 async def test_completion_preserves_generic_json_decode_failure():
     class FakeClient:

@@ -38,7 +38,7 @@ router = APIRouter(prefix="/v1/media", tags=["media intelligence"])
 MAX_WINDOW_FRAMES = 12
 REPORT_PROMPT_VERSION = "phai-report-v7"
 SEMANTIC_IMAGE_MAX_TOKENS = int(
-    os.environ.get("IMAGE_API_SEMANTIC_IMAGE_MAX_TOKENS", "3600")
+    os.environ.get("IMAGE_API_SEMANTIC_IMAGE_MAX_TOKENS", "6000")
 )
 SEMANTIC_WINDOW_MAX_TOKENS = int(
     os.environ.get("IMAGE_API_SEMANTIC_WINDOW_MAX_TOKENS", "2600")
