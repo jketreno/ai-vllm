@@ -109,6 +109,93 @@ async def test_completion_preserves_permanent_upstream_rejection():
 
 
 @pytest.mark.asyncio
+async def test_completion_labels_max_tokens_truncation_as_output_truncated():
+    class FakeClient:
+        def __init__(self, timeout):
+            del timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, headers, json):
+            del headers, json
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": '{"value": "unterminat'},
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", "http://policy"),
+            )
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+    with patch.object(
+        media_inference.httpx, "AsyncClient", FakeClient
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        with pytest.raises(media.HTTPException) as raised:
+            await media._completion(
+                "prompt", schema, workload="semantic_report"
+            )
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail["reason_code"] == "output_truncated"
+    assert raised.value.headers["Retry-After"] == "5"
+
+
+@pytest.mark.asyncio
+async def test_completion_preserves_generic_json_decode_failure():
+    class FakeClient:
+        def __init__(self, timeout):
+            del timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, headers, json):
+            del headers, json
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": "not json at all"},
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", "http://policy"),
+            )
+
+    with patch.object(
+        media_inference.httpx, "AsyncClient", FakeClient
+    ), patch.object(
+        media_inference, "_policy_token", return_value="token"
+    ):
+        with pytest.raises(media.HTTPException) as raised:
+            await media._completion("prompt", {"type": "object"})
+
+    assert raised.value.status_code == 503
+    assert "structured media analysis unavailable" in raised.value.detail
+
+
+@pytest.mark.asyncio
 async def test_capacity_preserves_saturation_retry_after():
     class FakeClient:
         def __init__(self, timeout):

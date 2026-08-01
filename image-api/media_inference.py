@@ -147,16 +147,29 @@ async def completion(
         content = choice["message"]["content"]
         try:
             return json.loads(content)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as error:
+            finish_reason = choice.get("finish_reason")
             logger.warning(
                 "workload=%s model=%s finish_reason=%s content_chars=%d "
                 "content_tail=%r",
                 workload,
                 body.get("model"),
-                choice.get("finish_reason"),
+                finish_reason,
                 len(content),
                 content[-200:],
             )
+            if finish_reason == "length":
+                raise HTTPException(
+                    503,
+                    {
+                        "reason_code": "output_truncated",
+                        "message": (
+                            f"structured media analysis hit max_tokens "
+                            f"before completing valid JSON: {error}"
+                        ),
+                    },
+                    headers={"Retry-After": "5"},
+                ) from error
             raise
     except httpx.TimeoutException as error:
         raise HTTPException(
