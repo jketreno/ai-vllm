@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+import torch
 from fastapi import Response
 from PIL import Image
 
@@ -155,6 +156,64 @@ class InvokeErrorTrackingTests(unittest.TestCase):
             self._run(api.invoke(manifest=json.dumps(manifest), attachments=[upload]))
 
         self.assertIsNone(api.last_inference_error)
+
+    def _invoke_manifest(self, request_id: str) -> tuple[dict, mock.Mock]:
+        manifest = {
+            "protocol_version": api.PROTOCOL_VERSION,
+            "request_id": request_id,
+            "operation": "segment",
+            "parameters": {"prompts": ["a shape"], "threshold": 0.15},
+            "attachments": [{"name": "image"}],
+        }
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (4, 4)).save(image_bytes, format="PNG")
+        upload = mock.Mock()
+        upload.read = mock.AsyncMock(return_value=image_bytes.getvalue())
+        return manifest, upload
+
+    def test_recovers_from_a_single_oom_by_retrying_after_emptying_cache(self):
+        # A single OOM can be caching-allocator fragmentation rather than a
+        # wedged device -- retrying once after empty_cache() is much faster
+        # than forcing the caller through a full container restart.
+        manifest, upload = self._invoke_manifest("test-oom-retry")
+        empty_cache_calls = []
+
+        with (
+            mock.patch.object(
+                api,
+                "_segment",
+                side_effect=[torch.OutOfMemoryError("XPU out of memory"), ([], [])],
+            ),
+            mock.patch.object(
+                api,
+                "empty_device_cache",
+                side_effect=lambda config: empty_cache_calls.append(config),
+            ),
+        ):
+            result = self._run(
+                api.invoke(manifest=json.dumps(manifest), attachments=[upload])
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(api.last_inference_error)
+        # Once up front, once after the OOM before the retry.
+        self.assertEqual(len(empty_cache_calls), 2)
+
+    def test_surfaces_the_error_when_the_retry_also_ooms(self):
+        manifest, upload = self._invoke_manifest("test-oom-retry-fails")
+
+        with mock.patch.object(
+            api,
+            "_segment",
+            side_effect=torch.OutOfMemoryError("XPU out of memory"),
+        ):
+            with self.assertRaises(torch.OutOfMemoryError):
+                self._run(
+                    api.invoke(manifest=json.dumps(manifest), attachments=[upload])
+                )
+
+        self.assertIsNotNone(api.last_inference_error)
+        self.assertEqual(api.last_inference_error["type"], "OutOfMemoryError")
 
 
 if __name__ == "__main__":

@@ -306,20 +306,31 @@ async def invoke(manifest: str = Form(...), attachments: list[UploadFile] = File
         if isinstance(value, str) and value.strip()
     ][:24]
     global last_inference_error
+    threshold = float(parameters.get("threshold", 0.15))
     try:
         with inference_lock:
             reset_peak_memory_stats(runtime)
             empty_device_cache(runtime)
-            with (
-                torch.inference_mode(),
-                inference_context(runtime),
-                INFERENCE_SECONDS.time(),
-            ):
-                segments, outputs = _segment(
-                    image,
-                    prompts,
-                    float(parameters.get("threshold", 0.15)),
-                )
+            try:
+                with (
+                    torch.inference_mode(),
+                    inference_context(runtime),
+                    INFERENCE_SECONDS.time(),
+                ):
+                    segments, outputs = _segment(image, prompts, threshold)
+            except torch.OutOfMemoryError:
+                # A single OOM doesn't mean the device is wedged -- the
+                # caching allocator can be fragmented from a prior request
+                # even though the model itself is fine. Retry once after a
+                # full cache eviction before surfacing an error and forcing
+                # the caller through a much slower container restart.
+                empty_device_cache(runtime)
+                with (
+                    torch.inference_mode(),
+                    inference_context(runtime),
+                    INFERENCE_SECONDS.time(),
+                ):
+                    segments, outputs = _segment(image, prompts, threshold)
             inference_memory = memory_snapshot(runtime)
         INFERENCE_REQUESTS.labels("success").inc()
         _update_device_metrics()
