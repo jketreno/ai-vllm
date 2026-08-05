@@ -21,6 +21,14 @@ class IdentityCaptionRequest(BaseModel):
     identities: list[dict[str, Any]] = Field(min_length=1, max_length=100)
 
 
+class ContextReportRequest(BaseModel):
+    asset: dict[str, Any]
+    visual_semantics: dict[str, Any]
+    observations: list[dict[str, Any]] = Field(max_length=128)
+    accepted_identities: list[dict[str, Any]] = Field(max_length=100)
+    location_override: dict[str, Any] | None = None
+
+
 OBSERVATION_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -275,6 +283,43 @@ SEMANTIC_REPORT_SCHEMA = {
     ],
 }
 
+_VISUAL_SEMANTIC_FIELDS = (
+    "caption",
+    "concise_caption",
+    "narrative_role",
+    "scale",
+    "confidence",
+    "concepts",
+    "focus_targets",
+    "visible_text",
+    "observations",
+)
+VISUAL_SEMANTIC_SCHEMA = {
+    **SEMANTIC_REPORT_SCHEMA,
+    "properties": {
+        key: SEMANTIC_REPORT_SCHEMA["properties"][key]
+        for key in _VISUAL_SEMANTIC_FIELDS
+    },
+    "required": list(_VISUAL_SEMANTIC_FIELDS),
+}
+
+_CONTEXT_REPORT_FIELDS = (
+    "summary",
+    "concise_summary",
+    "known_facts",
+    "inferences",
+    "evidence_types",
+    "place_resolution",
+)
+CONTEXT_REPORT_SCHEMA = {
+    **SEMANTIC_REPORT_SCHEMA,
+    "properties": {
+        key: SEMANTIC_REPORT_SCHEMA["properties"][key]
+        for key in _CONTEXT_REPORT_FIELDS
+    },
+    "required": list(_CONTEXT_REPORT_FIELDS),
+}
+
 QUERY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -310,6 +355,8 @@ def schema_fingerprint() -> str:
     payload = json.dumps(
         {
             "semantic_report": SEMANTIC_REPORT_SCHEMA,
+            "visual_semantic": VISUAL_SEMANTIC_SCHEMA,
+            "context_report": CONTEXT_REPORT_SCHEMA,
             "observation": OBSERVATION_SCHEMA,
             "query": QUERY_SCHEMA,
         },

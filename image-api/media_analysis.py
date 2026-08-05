@@ -10,12 +10,15 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from media_contracts import (
+    CONTEXT_REPORT_SCHEMA,
+    ContextReportRequest,
     EvidenceRequest,
     IdentityCaptionRequest,
     OBSERVATION_SCHEMA,
     QUERY_SCHEMA,
     SEMANTIC_OBSERVATION_TYPES,
     SEMANTIC_REPORT_SCHEMA,
+    VISUAL_SEMANTIC_SCHEMA,
     ValuesRequest,
 )
 from media_inference import (
@@ -43,13 +46,16 @@ SEMANTIC_IMAGE_MAX_TOKENS = int(
 SEMANTIC_WINDOW_MAX_TOKENS = int(
     os.environ.get("IMAGE_API_SEMANTIC_WINDOW_MAX_TOKENS", "2600")
 )
+CONTEXT_REPORT_MAX_TOKENS = int(
+    os.environ.get("IMAGE_API_CONTEXT_REPORT_MAX_TOKENS", "1400")
+)
 EVIDENCE_MAX_CHARS = int(os.environ.get("IMAGE_API_EVIDENCE_MAX_CHARS", "64000"))
 EVIDENCE_MAX_ITEMS = 128
 
 
 @router.get("/capacity/{workload}")
 async def inference_capacity(
-    workload: Literal["semantic_report"],
+    workload: Literal["semantic_report", "visual_semantics", "context_report"],
 ) -> JSONResponse:
     return await capacity_response(workload)
 
@@ -128,6 +134,9 @@ def capability_document(ready: bool) -> dict:
         "operations": [
             "semantic_image_v1",
             "semantic_window_v1",
+            "visual_semantics_image_v1",
+            "visual_semantics_window_v1",
+            "context_report_v1",
             "taxonomy_normalize_v1",
             "event_inference_v1",
             "query_plan_v1",
@@ -283,6 +292,88 @@ def _evidence_prompt(observations: list[dict]) -> str:
         f"{_REPORT_SYNTHESIS_INSTRUCTIONS} {_PLACE_RESOLUTION_INSTRUCTIONS} "
         f"Evidence JSON: {_bounded_evidence_json(observations)}"
     )
+
+
+def _visual_prompt(*, video: bool = False, timestamps: list | None = None) -> str:
+    subject = (
+        f"these chronological video frames at timestamps {timestamps}"
+        if video
+        else "this image"
+    )
+    timing = "Return time-bounded direct observations." if video else (
+        "Times must be null for a still image."
+    )
+    return (
+        f"Analyze only what is visually supportable from {subject}. "
+        "Do not identify real people by appearance and do not infer a named "
+        "place from appearance alone. Separate direct visual evidence from "
+        "uncertain interpretation. For each entry in `observations`, set "
+        f"`type` to exactly one of: {', '.join(SEMANTIC_OBSERVATION_TYPES)}. "
+        f"{_FOCUS_PLANNING_INSTRUCTIONS} {timing} "
+        f"{_BREVITY_AND_TAXONOMY_INSTRUCTIONS}"
+    )
+
+
+@router.post("/visual-semantics-image")
+async def visual_semantics_image(file: UploadFile = File(...)):
+    payload, media_type = await _read_image(file)
+    result = await _completion(
+        _visual_prompt(),
+        VISUAL_SEMANTIC_SCHEMA,
+        [_image_content(payload, media_type)],
+        max_tokens=SEMANTIC_IMAGE_MAX_TOKENS,
+        workload="visual_semantics",
+    )
+    return _with_provenance(_normalize_focus_plan(result), REPORT_PROMPT_VERSION)
+
+
+@router.post("/visual-semantics-window")
+async def visual_semantics_window(
+    frames: list[UploadFile] = File(...),
+    timestamps_us: str = Form(...),
+):
+    if not frames or len(frames) > MAX_WINDOW_FRAMES:
+        raise HTTPException(400, f"provide 1-{MAX_WINDOW_FRAMES} frames")
+    try:
+        timestamps = json.loads(timestamps_us)
+    except json.JSONDecodeError as error:
+        raise HTTPException(400, "timestamps_us must be a JSON array") from error
+    if not isinstance(timestamps, list) or len(timestamps) != len(frames):
+        raise HTTPException(400, "timestamps must correspond to every frame")
+    images = []
+    for frame in frames:
+        payload, media_type = await _read_image(frame)
+        images.append(_image_content(payload, media_type))
+    result = await _completion(
+        _visual_prompt(video=True, timestamps=timestamps),
+        VISUAL_SEMANTIC_SCHEMA,
+        images,
+        max_tokens=SEMANTIC_WINDOW_MAX_TOKENS,
+        workload="visual_semantics",
+    )
+    return _with_provenance(_normalize_focus_plan(result), REPORT_PROMPT_VERSION)
+
+
+@router.post("/context-report")
+async def context_report(request: ContextReportRequest):
+    prompt = (
+        "Synthesize a concise media report without re-analyzing image pixels. "
+        "Treat the supplied visual_semantics as model-derived visual evidence; "
+        "treat metadata, confirmed identities, and explicit location_override "
+        "as known context. Other enrichment candidates remain suggestions. "
+        "Never invent names, dates, places, events, objects, or actions. A "
+        "capture location does not prove that a named landmark is depicted. "
+        "Use confirmed identity names only when supplied. Classify direct "
+        "context under known_facts and interpretations under inferences. "
+        f"Input JSON: {request.model_dump_json()}"
+    )
+    result = await _completion(
+        prompt,
+        CONTEXT_REPORT_SCHEMA,
+        max_tokens=CONTEXT_REPORT_MAX_TOKENS,
+        workload="context_report",
+    )
+    return _with_provenance(result, REPORT_PROMPT_VERSION)
 
 
 @router.post("/semantic-image")

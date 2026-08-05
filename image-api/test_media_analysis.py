@@ -480,6 +480,53 @@ async def test_semantic_image_adds_model_and_schema_provenance():
 
 
 @pytest.mark.asyncio
+async def test_visual_semantics_uses_visual_only_schema_and_workload():
+    completion = AsyncMock(return_value=_semantic_report_result())
+
+    with patch.object(media, "_completion", new=completion):
+        response = await media.visual_semantics_image(image_upload())
+
+    assert response["caption"] == "A blue square."
+    assert completion.await_args.args[1] == media.VISUAL_SEMANTIC_SCHEMA
+    assert "summary" not in media.VISUAL_SEMANTIC_SCHEMA["properties"]
+    assert completion.await_args.kwargs["workload"] == "visual_semantics"
+    assert len(completion.await_args.args[2]) == 1
+
+
+@pytest.mark.asyncio
+async def test_context_report_is_text_only_and_receives_current_context():
+    completion = AsyncMock(return_value=_semantic_report_result())
+    request = media.ContextReportRequest(
+        asset={"id": "asset-1", "original_filename": "family.jpg"},
+        visual_semantics={"caption": "Two people beside a lake."},
+        observations=[
+            {
+                "observation_type": "context_enrichment",
+                "payload": {"status": "resolved"},
+            }
+        ],
+        accepted_identities=[{"display_name": "Alice"}],
+        location_override={
+            "latitude": 44.5,
+            "longitude": -107.5,
+            "source_label": "Wyoming",
+        },
+    )
+
+    with patch.object(media, "_completion", new=completion):
+        response = await media.context_report(request)
+
+    prompt = completion.await_args.args[0]
+    assert "Two people beside a lake" in prompt
+    assert "Alice" in prompt
+    assert "Wyoming" in prompt
+    assert completion.await_args.args[1] == media.CONTEXT_REPORT_SCHEMA
+    assert len(completion.await_args.args) == 2
+    assert completion.await_args.kwargs["workload"] == "context_report"
+    assert response["summary"] == "A blue square photographed outdoors."
+
+
+@pytest.mark.asyncio
 async def test_semantic_image_forwards_evidence_to_the_prompt():
     completion = AsyncMock(return_value=_semantic_report_result())
     observations = json.dumps(
