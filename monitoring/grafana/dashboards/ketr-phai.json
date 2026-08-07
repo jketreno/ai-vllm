@@ -1,0 +1,70 @@
+{
+  "title": "ketr.phai",
+  "uid": "ketr-phai",
+  "tags": ["ketr-phai", "api", "postgres"],
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "API Up", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "up{job=\"ketr_phai_api\"}", "legendFormat": "api"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "id": 2, "title": "Requests (1h)", "type": "stat", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum(increase(phai_api_requests_total{outcome=\"success\"}[1h]))", "legendFormat": "successful"}]
+    },
+    {
+      "id": 3, "title": "Errors (1h)", "type": "stat", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum(increase(phai_api_requests_total{outcome=\"error\"}[1h]))", "legendFormat": "errors"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "red", "value": 1}]}}}
+    },
+    {
+      "id": 4, "title": "DB Pool Size", "type": "stat", "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "phai_db_pool_size", "legendFormat": "size"}]
+    },
+    {
+      "id": 5, "title": "DB Pool Available", "type": "stat", "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "phai_db_pool_available", "legendFormat": "idle"}]
+    },
+    {
+      "id": 6, "title": "DB Requests Waiting", "type": "stat", "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "phai_db_pool_requests_waiting", "legendFormat": "waiting"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "red", "value": 1}]}}}
+    },
+    {
+      "id": 7, "title": "Requests by Route", "type": "timeseries", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (route, outcome) (rate(phai_api_requests_total[5m])) * 60", "legendFormat": "{{route}} / {{outcome}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqpm"}}
+    },
+    {
+      "id": 8, "title": "Request Latency (p95 by route)", "type": "timeseries", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, route) (rate(phai_api_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 9, "title": "Slowest Routes (p99, top 10)", "type": "timeseries", "gridPos": {"x": 0, "y": 11, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "topk(10, histogram_quantile(0.99, sum by (le, route) (rate(phai_api_request_duration_seconds_bucket[15m]))))", "legendFormat": "{{route}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 10, "title": "Error Rate by Route", "type": "timeseries", "gridPos": {"x": 12, "y": 11, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (route) (rate(phai_api_requests_total{outcome=\"error\"}[5m])) * 60", "legendFormat": "{{route}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqpm"}}
+    },
+    {
+      "id": 11, "title": "DB Connection Pool", "type": "timeseries", "gridPos": {"x": 0, "y": 18, "w": 12, "h": 7},
+      "targets": [
+        {"datasource": {"uid": "prometheus"}, "expr": "phai_db_pool_size", "legendFormat": "size"},
+        {"datasource": {"uid": "prometheus"}, "expr": "phai_db_pool_available", "legendFormat": "available"},
+        {"datasource": {"uid": "prometheus"}, "expr": "phai_db_pool_requests_waiting", "legendFormat": "waiting"}
+      ]
+    },
+    {
+      "id": 12, "title": "Request Volume by Method", "type": "timeseries", "gridPos": {"x": 12, "y": 18, "w": 12, "h": 7},
+      "targets": [{"datasource": {"uid": "prometheus"}, "expr": "sum by (method) (rate(phai_api_requests_total[5m])) * 60", "legendFormat": "{{method}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqpm"}}
+    }
+  ]
+}

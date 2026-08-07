@@ -39,3 +39,8 @@ scrape_configs:
   - job_name: image_api
     static_configs:
       - targets: ['image-api:9094']
+
+  - job_name: ketr_phai_api
+    metrics_path: /internal/metrics
+    static_configs:
+      - targets: ['battle-linux.ketrenos.com:8000']
